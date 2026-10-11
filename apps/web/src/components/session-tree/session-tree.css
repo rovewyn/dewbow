@@ -1,0 +1,47 @@
+.session-tree-view { padding: 20px 10px 10px; background: var(--sidebar); border-radius: inherit; color: var(--sidebar-foreground); }
+.session-tree-heading { display: flex; justify-content: space-between; align-items: center; padding: 0 12px 14px; gap: 8px; }
+.session-tree-heading h2 { font-size: 14px; font-weight: 600; }
+.session-tree-heading > span { color: var(--muted-foreground); font-size: 12px; }
+.session-tree-search { position: relative; margin: 0 6px; }
+.session-tree-search input { height: 36px; padding-inline: 32px; background: var(--background); font-size: 13px; }
+.session-tree-search input::-webkit-search-cancel-button { display: none; }
+.session-tree-search-icon { position: absolute; left: 10px; top: 10px; width: 16px; height: 16px; pointer-events: none; color: var(--muted-foreground); }
+.session-tree-clear { position: absolute; right: 5px; top: 6px; }
+.session-tree-search-status { min-height: 28px; padding: 5px 12px; color: var(--muted-foreground); font-size: 12px; }
+.session-tree-error { margin: 0; padding: 0 12px 12px; font-size: 12px; color: var(--destructive); overflow-wrap: anywhere; }
+.session-tree-nodes, .session-tree-nodes ul { list-style: none; padding: 0; margin: 0; }
+.session-tree-nodes { max-height: 600px; overflow-y: auto; padding: 3px; }
+.session-tree-nodes li { outline: none; }
+.session-tree-host + .session-tree-host { margin-top: 16px; }
+.session-tree-row { display: flex; align-items: center; min-width: 0; min-height: 37px; border-radius: 7px; padding-inline-end: 5px; }
+.session-tree-row:hover { background: var(--sidebar-accent); }
+.session-tree-row.is-selected { background: color-mix(in oklch, var(--sidebar-accent), var(--sidebar-foreground) 7%); }
+.session-tree-nodes li:focus-visible > .session-tree-row { outline: 2px solid var(--sidebar-ring); outline-offset: 1px; }
+.session-tree-host-button, .session-tree-select { justify-content: flex-start; height: auto; min-height: 37px; padding: 6px 2px; font-weight: 400; text-align: left; min-width: 0; flex: 1; gap: 7px; border: 0; background: transparent; }
+.session-tree-host-button:hover, .session-tree-select:hover { background: transparent; }
+.session-tree-host-button { font-weight: 500; }
+.session-tree-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-size: 13px; }
+.session-tree-row.is-ancestor .session-tree-title { color: var(--muted-foreground); }
+.session-tree-title mark { background: transparent; color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.session-tree-toggle { width: 24px; flex-shrink: 0; color: var(--muted-foreground); }
+.session-tree-leaf-space { width: 24px; flex-shrink: 0; }
+.session-tree-host-status, .session-tree-state { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; white-space: nowrap; flex-shrink: 0; font-weight: 400; }
+.session-tree-host-status { margin-left: auto; color: var(--muted-foreground); }
+.session-tree-state { color: var(--muted-foreground); }
+.session-tree-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.session-tree-host-status.tone-positive .session-tree-dot { color: #26714e; }
+.session-tree-state.tone-running { color: #26714e; }
+.session-tree-state.tone-warning { color: #845d17; }
+.session-tree-state.tone-danger, .session-tree-host-status.tone-danger { color: var(--destructive); }
+.session-tree-select .session-tree-warning { width: 13px; height: 13px; color: #845d17; }
+.session-tree-selection { border-top: 1px solid var(--sidebar-border); margin: 16px 12px 0; padding: 12px 0 6px; display: grid; gap: 3px; overflow-wrap: anywhere; }
+.session-tree-selection > span { color: var(--muted-foreground); font-size: 11px; }
+.session-tree-selection strong { font-size: 13px; font-weight: 500; }
+.session-tree-empty { padding: 16px 12px; margin: 0; color: var(--muted-foreground); font-size: 13px; }
+@media (pointer: coarse) {
+  .session-tree-toggle { width: 44px; height: 44px; }
+  .session-tree-host-button, .session-tree-select { min-height: 44px; }
+  .session-tree-search input { height: 44px; font-size: 16px; padding-inline-end: 44px; }
+  .session-tree-search-icon { top: 14px; }
+  .session-tree-clear { width: 44px; height: 44px; top: 0; right: 0; }
+}

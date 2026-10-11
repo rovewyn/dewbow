@@ -1,0 +1,96 @@
+# MVP interfaces
+
+[MVP specification](mvp.md) defines the product scope. The private `@dewbow/protocol` workspace owns wire records, management input schemas, and the SQLite journal used by both services. The daemon uses the SDK for native discovery, saved messages, and explicit conversation connection. Management records track execution ownership.
+
+## Management operations
+
+All Dewbow-owned request, response, TypeScript object, configuration and persisted JSON fields use `camelCase`, such as `hostId`, `sessionId`, `workDir` and `requestId`. Operation and MCP tool names use verb-first `camelCase`. The HTTP path uses the same operation name, for example `POST /api/createSession`. SQLite tables and columns retain lowercase `snake_case`; the event journal maps JSON `sessionId` to SQL `session_id`. Native Codex protocol and storage names stay unchanged at their adapter boundaries.
+
+Identifiers are opaque strings; times are ISO 8601 UTC. `POST /api/<operation>` accepts a JSON object matching the schemas in `packages/protocol/src/index.ts`. Responses are `{ result: ... }` or `{ error: { code, message, retryable, sessionId?, turnId? } }`. Bearer authentication identifies the external agent. The Web operator uses an HttpOnly, SameSite=Strict cookie issued by `POST /auth/login`; `POST /auth/logout` clears it. Only the operator can call `decideApproval`.
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| `listHosts` | `{}` | `{ hosts: Host[] }` |
+| `listSessions` | optional `hostId` | `{ sessions: SessionSummary[], discovery }` |
+| `createSession` | `hostId`, absolute `workDir`, `requestId`, optional `agentRef`, `sessionOptions` | `Operation` with stable `sessionId` |
+| `connectSession` | SDK-discovered `sessionId`, `requestId` | `Operation`; resume the same native conversation, then poll readiness |
+| `getSession` | `sessionId` | `{ session, turns, approvals, operations }` |
+| `readSessionHistory` | `sessionId`, optional exclusive integer `cursor` (default 0), opaque `messageCursor`, `limit` (1–500, default 100) | `{ events, nextCursor, hasMore, messages, nextMessageCursor, liveMessages, historyError }` |
+| `sendMessage` | `sessionId`, `message`, `requestId` | `Operation` with stable `turnId` |
+| `interruptTurn` | `sessionId`, exact `turnId`, `requestId` | `Operation`; delivery does not confirm interruption |
+| `decideApproval` | exact `sessionId`, `turnId`, `approvalId`, `decision` (`allow` or `deny`) | `Operation`; operator only, absent from MCP |
+
+Conversation summaries combine SDK-native metadata with optional Dewbow execution metadata. `managed` indicates a management record, not confirmed ownership. `managed: false` means there is no management record; send, interrupt and approval operations return `SESSION_NOT_CONNECTED`. Call `connectSession` to resume it through the SDK. Its management and native IDs stay unchanged. `connectionState` becomes `connecting`, then `connected` or `error`; sending requires a confirmed connection. An existing writer produces `SESSION_IN_USE` without stopping that process. Release the conversation there, then retry connection with a new request ID. Native IDs are scoped by host and Codex home. A managed conversation retains its original management ID and appears once. Discovery includes archived and child conversations. `discovery` reports each host's observation time, source outcomes and read error. Inventories are held in memory, not copied into Dewbow SQLite. A disconnected host retains only the current process's last snapshot; a Control Plane restart needs the host to reconnect before discovering its conversations again.
+
+History has two independent streams. `events` are daemon-owned Dewbow management history with an exclusive integer cursor; `messages` are SDK-native saved chat messages with an opaque cursor. `nextCursor` is the last returned management event or the input cursor. Follow `nextMessageCursor` until it is null, then keep the input cursor of that final page for polling. Re-read that page and replace messages by native item ID, because an active Codex message can change in place. `liveMessages` supplies volatile assistant output until native storage catches up; merge by item ID. `eventsError` reports an unavailable daemon journal without advancing the event cursor. `historyError` reports an unavailable native history store or host, instead of claiming the conversation is empty. Previously loaded messages may remain in the browser's memory during a disconnect.
+
+`Operation.status` is `accepted`, `delivered`, `error`, or `unknown`. Accepted means durably recorded. Delivered means the daemon applied the command; observe the turn separately for completion or interruption. Delivery without a result within 15 seconds becomes unknown with `DELIVERY_UNCERTAIN`. Inspect `getSession` or retry with the same request ID. Do not change IDs to work around uncertainty.
+
+Create, connect, send, and interrupt request IDs are scoped to caller and operation. Their fingerprints and results persist for the session's lifetime. Same ID and input return the original operation with its current delivery status. Changed input returns `REQUEST_CONFLICT`. Both services journal command IDs and fingerprints before execution. Message bodies are never written to either Dewbow SQLite journal. The daemon never repeats a command whose outcome remains unresolved after restart. Pending message bodies are volatile. After a Control Plane restart, an unseen send remains unresolved and blocks another turn; the client must retry the original message and request ID. The daemon deduplicates that retry. This is deduplication, not an exactly-once guarantee.
+
+## Agent configuration and session snapshots
+
+Team owns agent definitions. Dewbow receives resolved text and session overrides; it does not read a Team repository or resolve an agent ID. For example:
+
+```json
+{
+  "hostId": "writing-host",
+  "workDir": "/workspace/article",
+  "requestId": "create-editor-001",
+  "agentRef": { "id": "editor", "revision": "1" },
+  "sessionOptions": {
+    "reasoningEffort": "high",
+    "instructionsAppend": "Act as an editor. Preserve the author's meaning."
+  }
+}
+```
+
+`agentRef` is optional provenance with required non-empty `id` and `revision` strings. It does not select behavior. Both fields are limited to 200 characters. The default agent omits `sessionOptions` or uses `{}`. It inherits the host's Codex configuration for the selected work directory, including native instructions and tools; Dewbow does not copy or replace Codex's built-in base instructions.
+
+`sessionOptions` accepts only:
+
+| Field | Meaning |
+| --- | --- |
+| `model` | Non-empty model name, at most 200 characters; overrides the host model default |
+| `reasoningEffort` | Non-empty effort name, at most 200 characters; must be advertised by the selected model |
+| `instructionsAppend` | Additional developer instructions, at most 100,000 characters; an empty string adds nothing |
+
+Omitted fields inherit the creation-time baseline; `null`, unknown keys and arbitrary native `config` passthrough are rejected. Model names and effort support are checked on the host, not hard-coded into the management schema. Model selection is session override, then `DEWBOW_CODEX_MODEL`, then effective native project/user config, then the native catalog default. Effort selection is session override, then effective native config, then the selected model's default. Sandbox, approval policy and reviewer remain host-owned. This version does not support session-specific MCP, skills or tool configuration. No shared config file is modified.
+
+`Session.sessionConfig` contains `{ agentRef?, overrides, resolved }`. Acceptance persists the original overrides with `resolved: null` before dispatch. The daemon reads effective native configuration and the model catalog, then persists the resolved snapshot before `thread/start`. Its `session_configured` event synchronizes that snapshot to the Control Plane. The snapshot contains model, model provider, reasoning effort, composed `developerInstructions`, approval policy, reviewer and the workspace sandbox policy. Creation succeeds only when the native response confirms the selected model, effort, directory and execution policy. `getSession` exposes the same snapshot, and both journals retain it for recovery.
+
+Instructions are composed once as the effective baseline's additional developer instructions plus `instructionsAppend`, separated by a blank line when both are non-empty. Recovery and explicit reconnection of created sessions send the saved `developerInstructions` value directly to `thread/resume`; they never append again or send instructions as a user message. `connectSession` accepts no new overrides. Team definition revisions and later host defaults affect new sessions only. A changed model/policy, missing snapshot or failed resume leaves the session unresolved; it never creates another native thread or silently substitutes defaults. Nested JSON key order does not change request fingerprints; changed values or agent revisions conflict under the same request ID.
+
+Native conversations connected without a Team definition have `sessionConfig: null`. Dewbow leaves their native model and instructions selected by native resume, while retaining its existing host approval/sandbox boundary. This is separate from snapshot recovery of Dewbow-created sessions. Old managed records without the new configuration field are unsupported; use fresh Dewbow journals under the [state reset procedure](operations.md#resetting-dewbow-state-after-contract-changes). There are no compatibility aliases or migrations, and the contract remains `v1`.
+
+Snapshots fix the fields Dewbow manages, not the entire Codex environment. Codex upgrades, `AGENTS.md`, built-in instructions, provider connection settings, and host tools/MCP/skills may still change execution. A snapshot does not preserve credentials or guarantee full prompt reproducibility.
+
+## State and errors
+
+Hosts are `connected`, `disconnected`, or `revoked`. A heartbeat runs every 10 seconds; no pong for 30 seconds disconnects the host. Reconnect retains the configured host identity. The daemon replays events after saved cursors, reports sessions, turns, approvals and command results, and waits for `ready` before accepting new commands.
+
+Session `runtimeState` is `idle`, `running`, `awaiting_approval`, `interrupted`, `error`, or `unknown`. It expresses observed Codex execution. `connectionState` is independently `disconnected`, `connecting`, `connected`, or `error`; a failed connection does not make the native runtime erroneous. Request acceptance reserves `activeTurnId` but does not report `running` before Codex confirms start. Preserve `lastKnownState` and `lastKnownAt` when state becomes unknown. Turns add `accepted` and `completed`. `activeTurnId` stays set for accepted, running, awaiting approval, and unknown turns. A session has one active turn; separate sessions can progress independently. Only a confirmed terminal event clears the active turn. Completion means Codex ended normally, not that the task was correct.
+
+Stable errors include `INVALID_INPUT`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `HOST_UNAVAILABLE`, `SESSION_BUSY`, `SESSION_NOT_READY`, `SESSION_NOT_CONNECTED`, `SESSION_IN_USE`, `STALE_TURN`, `STALE_APPROVAL`, `REQUEST_CONFLICT`, `DELIVERY_UNCERTAIN`, `INVALID_WORKDIR`, `EXECUTION_FAILED`, and `RECOVERY_REQUIRED`. Unavailable hosts reject new commands instead of queuing them. Disconnects and service restarts preserve terminal results and make unresolved execution unknown. Unavailable daemon history produces `eventsError` without advancing the event cursor.
+
+Approvals are `pending`, `requested`, `delivered`, `resolved`, or `invalidated`. Decisions survive delivery delays. Identical retries return the existing decision; changed decisions conflict. Host reconciliation must confirm the active Codex request before delivery after reconnect. Terminal turns invalidate remaining approvals. Each approval identifies an individual Codex callback, not just a tool item.
+
+## History and host transport
+
+Events have a session-local increasing cursor and `eventId = sessionId:cursor`, an optional management turn ID, timestamp, type and allowlisted payload. Append is idempotent on `(sessionId,cursor)`. Saved chat comes directly from the host's native Codex history through the SDK. Dewbow journals retain message references, tool metadata, approvals and state changes, but no message text or assistant plan text. Only the daemon retains event history. The Control Plane persists its own request/decision metadata and current execution summaries, not event payloads. Exclude transport credentials and raw account/configuration RPCs. Native Codex credentials remain on the host. Existing SDK-discovered conversations are visible and readable. Only an explicit connection request adopts their execution. Connected conversations use the same approval, interrupt, deduplication, and restart recovery flow as newly created ones.
+
+The daemon opens an authenticated WebSocket at `/hosts/connect`, using a bearer credential and a `hello` with `hostId`. Frames use the `ToHost` and `ToControlPlane` unions in the protocol package. One connection per permitted host is allowed. Read-only `query` / `query_result` frames fetch discovery pages, native history, and daemon event history on that connection. Discovery snapshots refresh every ten seconds and travel in pages of up to 500 records; native history preserves the SDK's bounded pages. Control Plane session IDs differ from Codex thread/turn references. Each service owns its private SQLite file.
+
+## MCP
+
+`/mcp` provides stateless Streamable HTTP with JSON responses and polling. Authenticated callers use JSON-RPC `initialize`, `notifications/initialized`, `tools/list`, and `tools/call`. The eight management tools excluding `decideApproval` use the same service as Web. Initialization negotiates `2025-03-26` and advertises `tools` and `serverInfo`. No MCP session ID is needed. GET and DELETE return 405; SSE and stateful MCP sessions are not implemented. Success includes structured content and JSON text. Tool failures return `isError: true` and a structured error in text. Unknown RPC methods use `-32601`; invalid requests use `-32600`/`-32602`.
+
+See the [MCP transport specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) and [Codex app-server reference](https://learn.chatgpt.com/docs/app-server). Check bindings against the installed Codex version when changing integration.
+
+## Scope and acceptance
+
+No scheduler, desktop wrapper, automatic host enrollment, package publication, or cloud provisioning is required. Existing native conversations can be connected explicitly; an active writer must release the conversation first. Manual credentials and permitted hosts are sufficient. Setup and recovery instructions belong in `docs/`; the root README stays brief under repository policy. Full acceptance requires two actual machines. Two daemons on one machine establish only a local transport test. The operator will start the second host manually.
+
+## Early development contracts
+
+Dewbow-owned contracts remain pinned to `v1`. Breaking changes update the current contract and all callers together, without version negotiation or legacy support. Old operation names and snake_case JSON fields are rejected; there are no aliases or naming migrations. Existing journals containing the old JSON contract must be replaced with fresh Dewbow state using the [state reset procedure](operations.md#resetting-dewbow-state-after-contract-changes). SQL schema names are unchanged. Session execution is exposed as `runtimeState`; turn and operation state fields retain their own meanings. Obsolete Dewbow-owned tables are recreated rather than migrated. Codex native data and credentials are outside this reset.
