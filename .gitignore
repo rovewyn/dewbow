@@ -1,0 +1,31 @@
+# Dependencies and caches.
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+dist/
+/.cache/
+*.tgz
+.DS_Store
+
+# Local configuration and private material.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/.aws/
+/.codex/
+
+# Local sessions, runtime state, and generated results.
+/.demo/
+/state/
+/outputs/
+/data/
+/results/
+/reports/
+/artifacts/
+/logs/
+*.log
+*.har
+*.trace
