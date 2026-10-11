@@ -1,0 +1,13 @@
+{
+  "name": "@dewbow-team/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli.js",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "dependencies": { "@dewbow-team/protocol": "0.1.0" }
+}

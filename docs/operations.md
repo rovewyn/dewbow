@@ -16,7 +16,7 @@ codex login status
 npm run local:init
 ```
 
-The initializer creates ignored, owner-only files in `state/local/`. Existing files are preserved, so rerunning it does not rotate credentials or erase history. It creates three distinct credentials, a permitted `local-host`, environment files, a private MCP configuration, and an empty work directory. Do not delete only one of these configuration files to rotate a credential; update its associated service/client configuration together.
+The initializer creates ignored, owner-only files in `state/local/`. Existing configuration values are preserved, so rerunning it does not rotate credentials or erase history. It creates distinct Core management, host, Core operator, and Team operator credentials, a permitted `local-host`, environment files, a private MCP configuration, and an empty work directory. For an existing Core setup, it adds `teamOperator` to the credential file and creates `team.env` only when absent, taking the Core origin and management credential from the existing `control-plane.env`. Do not delete only one of these configuration files to rotate a credential; update its associated service/client configuration together.
 
 Start services in separate terminals, from the same checkout root:
 
@@ -26,22 +26,29 @@ npm run local:control-plane
 
 # Terminal 2: local Codex runtime and host connection
 npm run local:host-daemon
+
+# Terminal 3: independent Team backend and built Team Web
+npm run local:team
 ```
 
 Open `http://127.0.0.1:3000`. Use the `operator` value in the private `state/local/credentials.json` for Web login. The Web has no separate production listener. `/health` only establishes listener availability; a connected machine plus a completed native turn establishes the execution path.
+
+Open `http://127.0.0.1:3100` for Team and sign in with `teamOperator` from the same private credential file. Team uses a separate cookie and database; its Core management credential stays in the backend environment. The Control Plane and Team can run without a daemon for operator-interface previews. Hosts then remain disconnected and execution actions are unavailable. Team definition and team management remain available when Core is stopped. See [Team workspace](team/workspace.md) for its standalone startup commands.
 
 | Local file | Owner and purpose |
 | --- | --- |
 | `control-plane.env` | Control Plane configuration and management/operator credentials |
 | `host-daemon.env` | This daemon's identity, credential, URL and journal |
 | `agent.env` | External management client credential and URL |
+| `team.env` | Independent Team listener, operator credential, database, Web directory, and Core connection |
 | `mcp.json` | Private example client configuration containing the management header |
 | `hosts.json` | Permitted-host identities and credentials |
 | `control.sqlite` | Control Plane management metadata, decisions, deduplication and operator cookies |
 | `daemon.sqlite` | Local owned sessions, process IDs, event journal and command results |
+| `team.sqlite` | Team definitions, members, bindings, and request deduplication |
 | `workdir/` | Existing work directory for the local smoke run |
 
-Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while both services are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
+Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while the Control Plane, Team backend, and daemon are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
 
 ## Connect an external MCP client
 

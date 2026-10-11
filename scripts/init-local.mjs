@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseEnv } from "node:util";
 
 const directory = resolve("state/local");
 mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -10,9 +11,14 @@ function create(name, content) {
   catch (error) { if (error.code !== "EEXIST") throw error; }
 }
 create("credentials.json", JSON.stringify(Object.fromEntries(
-  ["agent", "host", "operator"].map(name => [name, randomBytes(32).toString("base64url")]),
+  ["agent", "host", "operator", "teamOperator"].map(name => [name, randomBytes(32).toString("base64url")]),
 ), null, 2) + "\n");
 const credentials = JSON.parse(readFileSync(resolve(directory, "credentials.json"), "utf8"));
+// Extend existing local setups without rotating Core credentials.
+if (!credentials.teamOperator) {
+  credentials.teamOperator = randomBytes(32).toString("base64url");
+  writeFileSync(resolve(directory, "credentials.json"), JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 });
+}
 const origin = "http://127.0.0.1:3000";
 const environment = values => Object.entries(values).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n") + "\n";
 create("hosts.json", JSON.stringify([{ hostId: "local-host", name: "Local machine", token: credentials.host }], null, 2) + "\n");
@@ -27,6 +33,14 @@ create("host-daemon.env", environment({
   DEWBOW_HOST_STATE: resolve(directory, "daemon.sqlite"),
 }));
 create("agent.env", environment({ DEWBOW_MANAGEMENT_TOKEN: credentials.agent, DEWBOW_CONTROL_PLANE_URL: origin }));
+const coreEnvironment = parseEnv(readFileSync(resolve(directory, "control-plane.env"), "utf8"));
+create("team.env", environment({
+  DEWBOW_TEAM_HOST: "127.0.0.1", DEWBOW_TEAM_PORT: "3100", DEWBOW_TEAM_ORIGIN: "http://127.0.0.1:3100",
+  DEWBOW_TEAM_OPERATOR_TOKEN: credentials.teamOperator, DEWBOW_TEAM_DATABASE: resolve(directory, "team.sqlite"),
+  DEWBOW_TEAM_WEB_DIR: resolve("apps/team-web/dist"),
+  DEWBOW_CORE_URL: coreEnvironment.DEWBOW_PUBLIC_ORIGIN ?? origin,
+  DEWBOW_CORE_TOKEN: coreEnvironment.DEWBOW_MANAGEMENT_TOKEN ?? credentials.agent,
+}));
 create("mcp.json", JSON.stringify({ mcpServers: { dewbow: { url: `${origin}/mcp`, headers: { Authorization: `Bearer ${credentials.agent}` } } } }, null, 2) + "\n");
 console.log(`Local configuration: ${directory}`);
-console.log("Existing files were preserved. Start the built services with npm run local:control-plane and npm run local:host-daemon.");
+console.log("Existing Core configuration was preserved. Start built services with npm run local:control-plane, npm run local:host-daemon and npm run local:team.");

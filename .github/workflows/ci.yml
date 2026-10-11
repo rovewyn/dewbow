@@ -39,14 +39,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build workspaces
-        if: runner.os == 'Linux'
         run: npm run build
-      - name: Build SDK
-        if: runner.os == 'macOS'
-        run: npm run build --workspace @dewbow/sdk
-      - name: Build protocol
-        if: runner.os == 'macOS'
-        run: npm run build --workspace @dewbow/protocol
       - name: Test service journal
         working-directory: packages/protocol
         run: node --test tests/*.test.mjs
@@ -65,6 +58,14 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: apps/control-plane
         run: node --test tests/*.test.mjs
+      - name: Test Team backend
+        working-directory: apps/team-backend
+        run: node --test tests/*.test.mjs
+      - name: Test Team conversation projection
+        working-directory: apps/team-web
+        run: node --test tests/*.test.mjs
+      - name: Test Team to Core HTTP integration
+        run: node --test scripts/tests/team-core.test.mjs
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts
@@ -75,6 +76,7 @@ jobs:
         run: |
           node apps/host-daemon/dist/cli.js --check
           node apps/control-plane/dist/cli.js --check
+          DEWBOW_TEAM_OPERATOR_TOKEN=synthetic-team-operator-credential node apps/team-backend/dist/cli.js --check
       - name: Check local operation scripts
         if: runner.os == 'Linux'
         run: |

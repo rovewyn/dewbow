@@ -10,6 +10,8 @@ Keep the root `README.md` as simple as possible: a brief project introduction an
 
 Keep related code and resources together. Follow established directory boundaries and naming patterns. Update operating instructions when a change affects setup, configuration, commands, or expected behavior.
 
+Core owns hosts, native conversations, configuration snapshots, execution, recovery, and approvals. Team owns agent definitions, teams, members, and session bindings. Keep Team in `apps/team-backend`, `apps/team-web`, and `packages/team-protocol`, with its documentation in `docs/team/`. Team calls Core through its authenticated HTTP API; keep the Core credential on the Team backend and preserve independent service startup and operator authentication.
+
 Keep generated files, caches, dependency installations, and temporary outputs out of version control unless the repository explicitly tracks them. Preserve user-created files and local results during cleanup.
 
 ## Setup & Development Commands
