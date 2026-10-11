@@ -97,6 +97,10 @@ Stage only the files required for the current change. Inspect `git diff --cached
 
 Never commit credentials, tokens, cookies, private profiles, personal data, or machine-specific configuration. Use synthetic data and placeholders in examples. Redact sensitive information before sharing logs, screenshots, URLs, or reports.
 
+Never include absolute paths to the local machine's filesystem in committed content. Use repository-relative paths, environment variables, or generic placeholders instead.
+
+Never reveal the current operating system user's name or username in committed content, generated artifacts, logs, or user-facing output. Redact it or use a generic placeholder instead.
+
 Keep local environment files, Codex session exports, databases, machine paths, runtime state, raw logs, screenshots, and measured results out of commits and pull requests. Use the ignored local output directories listed in `CONTRIBUTING.md`. Commit only synthetic fixtures and configuration examples with placeholder values. Publishing local results requires explicit user authorization and a separate review for sensitive data.
 
 Run all configured commit hooks and security checks. Missing required tools, scan errors, or findings block commits. Do not bypass hooks with `--no-verify`; fix the issue, restage changes, and rerun the checks.
