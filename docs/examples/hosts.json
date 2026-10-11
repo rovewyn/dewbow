@@ -1,0 +1,4 @@
+[
+  { "hostId": "example-host", "name": "Example machine", "token": "replace-with-this-host-credential", "revoked": false },
+  { "hostId": "second-host", "name": "Second machine", "token": "replace-with-another-host-credential", "revoked": false }
+]
