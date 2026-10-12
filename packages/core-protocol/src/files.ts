@@ -12,11 +12,11 @@ foreach ($path in (ConvertFrom-Json $env:DEWBOW_PRIVATE_PATHS)) {
   $item = if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0) { [IO.DirectoryInfo]::new($path) } else { [IO.FileInfo]::new($path) }
   $ancestor = $item
   while ($null -ne $ancestor) {
-    if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Private state cannot traverse a reparse point.' }
+    if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 11 }
     $ancestor = if ($ancestor -is [IO.DirectoryInfo]) { $ancestor.Parent } else { $ancestor.Directory }
   }
   $existing = $item.GetAccessControl()
-  if ($existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { throw 'Private state must belong to the current account.' }
+  if ($existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { exit 12 }
   $acl = if ($item -is [IO.DirectoryInfo]) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($sid in @($user, $system)) {
@@ -47,7 +47,10 @@ function secure(paths: string[]): void {
     execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(aclScript, "utf16le").toString("base64")], {
       windowsHide: true, timeout: 15000, stdio: "pipe", env: { ...process.env, DEWBOW_PRIVATE_PATHS: JSON.stringify(paths) },
     });
-  } catch { throw new Error("Private Dewbow state ownership or ACL protection could not be established."); }
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    throw new Error(status === 11 ? "Private state cannot traverse a reparse point." : status === 12 ? "Private state must belong to the current account." : "Private Dewbow state ACL protection could not be established.");
+  }
 }
 
 /** Protect only the designated Dewbow directory; never rewrite ancestor ACLs. */
@@ -58,11 +61,12 @@ export function ensurePrivateDirectory(path: string): void {
     return process.platform === "win32" ? value.toLowerCase() : value;
   };
   if ([resolve(process.cwd()), resolve(homedir()), parse(absolute).root].map(identity).includes(identity(absolute))) throw new Error("Use a dedicated directory for private Dewbow state.");
-  // Reject links before creation as well as in the Windows ACL operation.
+  // Windows rejects every reparse ancestor. POSIX system temp paths may use
+  // trusted system aliases such as /var; validate the designated directory.
   for (let ancestor = absolute; ; ancestor = dirname(ancestor)) {
     try { if (lstatSync(ancestor).isSymbolicLink()) throw new Error("Private state cannot traverse a symbolic link."); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (dirname(ancestor) === ancestor) break;
+    if (process.platform !== "win32" || dirname(ancestor) === ancestor) break;
   }
   mkdirSync(absolute, { recursive: true, mode: 0o700 });
   if (!securedDirectories.has(absolute)) { secure([absolute]); securedDirectories.add(absolute); }
