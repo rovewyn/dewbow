@@ -94,6 +94,10 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     const empty = await history("new-history", { codexThreadId: thread, codexHome: dir });
     assert.equal(empty.error, undefined);
     assert.deepEqual(empty.result.messages, []); assert.equal(empty.result.nextCursor, null);
+    if (process.platform === "win32") {
+      const alias = await history("new-history-case-alias", { codexThreadId: thread, codexHome: dir.toUpperCase() });
+      assert.deepEqual(alias.result.messages, []); assert.equal(alias.error, undefined);
+    }
     assert.equal(rpc().length, beforeHistory);
     assert.equal((await history("missing-native-history", { codexThreadId: blockedId })).error.code, "SESSION_NOT_FOUND");
     assert.equal((await history("invalid-history-page", { codexThreadId: thread, limit: 0 })).error.code, "READ_FAILED");

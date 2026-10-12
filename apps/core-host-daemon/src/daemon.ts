@@ -145,14 +145,15 @@ export class HostDaemon {
         result = { events: events.slice(0, limit), nextCursor: events.slice(0, limit).at(-1)?.cursor ?? cursor,
           hasMore: events.length > limit, liveMessages: this.liveReplies.get(session.sessionId) };
       } else if (query.operation === "readSessionHistory") {
+        const queryHome = query.input.codexHome ? await realpath(query.input.codexHome).catch(() => query.input.codexHome!) : undefined;
         try {
-          const page = await readSessionHistory(query.input.codexThreadId!, { ...(query.input.codexHome ? { codexHome: query.input.codexHome } : this.config.codexHome ? { codexHome: this.config.codexHome } : {}),
+          const page = await readSessionHistory(query.input.codexThreadId!, { ...(queryHome ? { codexHome: queryHome } : this.config.codexHome ? { codexHome: this.config.codexHome } : {}),
             limit: query.input.limit ?? 100, ...(query.input.messageCursor ? { cursor: query.input.messageCursor } : {}) });
           result = { observedAt: page.observedAt, nextCursor: page.nextCursor, messages: page.messages.map(m => ({ id: m.id, turnId: m.turnId,
             role: m.role, text: m.text, phase: m.phase, createdAt: new Date(m.createdAtMs).toISOString(), turnStatus: m.turnStatus })) };
         } catch (cause) {
           const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId
-            && (!query.input.codexHome || s.codexHome === query.input.codexHome));
+            && (!queryHome || (process.platform === "win32" ? s.codexHome?.toLowerCase() === queryHome.toLowerCase() : s.codexHome === queryHome)));
           // Codex may not index a newly created conversation until its first turn.
           if (!(cause instanceof SessionHistoryError) || cause.code !== "SESSION_NOT_FOUND" || query.input.messageCursor
             || !session?.sessionConfig?.resolved || session.connectionState !== "connected" || session.runtimeState !== "idle"
