@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, copyFileSync, chmodSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, copyFileSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -18,7 +18,7 @@ async function until(predicate) {
 }
 test("owned runtime preserves conversations, deduplicates commands, routes exact approvals and recovers stopped turns", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "dewbow-daemon-")));
-  const executable = join(dir, "codex"); copyFileSync(new URL("fixtures/codex.mjs", import.meta.url), executable); chmodSync(executable, 0o755);
+  const executable = join(dir, "codex.mjs"); copyFileSync(new URL("fixtures/codex.mjs", import.meta.url), executable);
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(server, "listening");
   const config = { hostId: "synthetic-host", token: "synthetic-host-credential", codexHome: dir, codexExecutable: executable,
     controlPlaneUrl: `http://127.0.0.1:${server.address().port}`, statePath: join(dir, "daemon.sqlite"), model: "synthetic-host" };

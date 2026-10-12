@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest"]') }}
+        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,6 +35,7 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install pinned npm
+        shell: bash
         run: npm install --global "$(node -p 'require("./package.json").packageManager')"
       - name: Install dependencies
         run: npm ci
@@ -47,15 +48,12 @@ jobs:
         working-directory: packages/core-sdk
         run: node --test tests/*.test.mjs
       - name: Test conversation projection
-        if: runner.os == 'Linux'
         working-directory: apps/core-web
         run: node --test tests/*.test.mjs
       - name: Test host daemon
-        if: runner.os == 'Linux'
         working-directory: apps/core-host-daemon
         run: node --test tests/*.test.mjs
       - name: Test Control Plane
-        if: runner.os == 'Linux'
         working-directory: apps/core-control-plane
         run: node --test tests/*.test.mjs
       - name: Test Team backend
@@ -65,7 +63,7 @@ jobs:
         working-directory: apps/team-web
         run: node --test tests/*.test.mjs
       - name: Test Team to Core HTTP integration
-        run: node --test scripts/tests/team-core.test.mjs
+        run: node --test scripts/tests/*.test.mjs
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/core-sdk --dry-run --ignore-scripts

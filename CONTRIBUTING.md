@@ -20,6 +20,8 @@ Write only the necessary unit tests described in `AGENTS.md`. Use synthetic temp
 
 ## Enable commit checks
 
+With mise on Windows, use the repository runtime explicitly: `mise exec -- npm --version` must report 12.2.0 and `mise exec -- node --version` must report v24.21.0. If needed, run `mise install node@24.21.0` and `mise exec -- npm install --global npm@12.2.0`. Install Gitleaks through mise (`mise use --global gitleaks@8.30.1`) or another trusted distribution with the `git` scan command. Run the hook installer using Git for Windows' `sh.exe` inside `mise exec --` when `sh` is not on PATH. The same environment must expose Gitleaks when committing. See [local operations](docs/operations.md#windows-runtime-and-private-state) for standalone Codex and Windows state protection.
+
 Install Gitleaks with support for the `git` command. On macOS with Homebrew:
 
 ```sh

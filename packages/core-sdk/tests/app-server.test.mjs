@@ -58,7 +58,7 @@ async function endpoint(t, respond) {
   return { home, path, calls, sockets };
 }
 
-test("public API snapshot paginates, lists archive states, and reads loaded metadata only", async t => {
+test("public API snapshot paginates, lists archive states, and reads loaded metadata only", { skip: process.platform === "win32" }, async t => {
   const fake = await endpoint(t, (request, home) => {
     if (request.method === "initialize") return { result: { codexHome: home } };
     if (request.method === "thread/loaded/list") return { result: { data: [id], nextCursor: null } };
@@ -85,7 +85,7 @@ test("public API snapshot paginates, lists archive states, and reads loaded meta
   assert.deepEqual([...new Set(fake.calls.map(row => row.method))].sort(), ["initialize", "initialized", "thread/list", "thread/loaded/list", "thread/read"].sort());
 });
 
-test("failed and aborted API reads publish no partial inventory and close the connection", async t => {
+test("failed and aborted API reads publish no partial inventory and close the connection", { skip: process.platform === "win32" }, async t => {
   let fail = true;
   const fake = await endpoint(t, (request, home) => {
     if (request.method === "initialize") return { result: { codexHome: home } };

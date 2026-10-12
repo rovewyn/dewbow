@@ -1,16 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../dist/store.js";
+import { createPrivateFile } from "../dist/files.js";
+import { execFileSync } from "node:child_process";
 
 test("journal persists records, rolls back failed operations, and deduplicates ordered replay", () => {
   const directory = mkdtempSync(join(tmpdir(), "dewbow-store-"));
   const path = join(directory, "journal.sqlite");
   let store = new Store(path);
   try {
+    const credential = join(directory, "credential.txt");
+    assert.equal(createPrivateFile(credential, "synthetic-original"), true);
+    assert.equal(createPrivateFile(credential, "synthetic-replacement"), false);
+    assert.equal(readFileSync(credential, "utf8"), "synthetic-original");
+    const guard = `import assert from 'node:assert/strict'; import {ensurePrivateDirectory} from ${JSON.stringify(new URL("../dist/files.js", import.meta.url).href)}; assert.throws(() => ensurePrivateDirectory(process.platform === 'win32' ? process.cwd().toUpperCase() : process.cwd()), /dedicated directory/);`;
+    execFileSync(process.execPath, ["--input-type=module", "-e", guard], { cwd: directory, windowsHide: true });
+    if (process.platform === "win32") {
+      const check = "$ErrorActionPreference='Stop'; $acl=[IO.FileInfo]::new($env:DEWBOW_ACL_TEST_FILE).GetAccessControl(); $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if(-not $acl.AreAccessRulesProtected) { exit 1 }; foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin @($user,'S-1-5-18')) { exit 2 } }";
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(check,"utf16le").toString("base64")], { windowsHide: true, env: { ...process.env, DEWBOW_ACL_TEST_FILE: credential } });
+    }
     store.put("request", "caller:send:request-1", { turnId: "turn-1" });
     const event = cursor => ({ eventId: `session-1:${cursor}`, sessionId: "session-1", turnId: "turn-1", cursor, timestamp: "2026-01-01T00:00:00Z", type: "message", payload: { text: "synthetic" } });
     store.append(event(2)); store.append(event(1));

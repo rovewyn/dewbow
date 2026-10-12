@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
-import { dirname } from "node:path";
+import { ensurePrivateFile } from "./files.js";
 import { fail } from "./index.js";
 import type { Event } from "./index.js";
 
@@ -8,9 +7,7 @@ import type { Event } from "./index.js";
 export class Store {
   private readonly db: DatabaseSync;
   constructor(path: string, private readonly eventHistory = true) {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    closeSync(openSync(path, "a", 0o600));
-    chmodSync(path, 0o600);
+    ensurePrivateFile(path);
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000");
     const version = 1;

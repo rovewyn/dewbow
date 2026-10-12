@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface ControlPlaneConfig {
   host: string; port: number; statePath: string; hostsFile: string; publicOrigin: string;
@@ -18,6 +19,6 @@ export function readControlPlaneConfig(env: NodeJS.ProcessEnv = process.env): Co
   if (origin.origin !== publicOrigin || !["http:", "https:"].includes(origin.protocol)) throw new TypeError("DEWBOW_PUBLIC_ORIGIN must be an HTTP(S) origin without a path.");
   return { host, port, publicOrigin, statePath: resolve(env.DEWBOW_CONTROL_PLANE_STATE ?? "state/control-plane.sqlite"),
     hostsFile: resolve(env.DEWBOW_HOSTS_FILE ?? "state/hosts.json"), managementToken: env.DEWBOW_MANAGEMENT_TOKEN ?? "",
-    operatorPassword: env.DEWBOW_OPERATOR_PASSWORD ?? "", webRoot: env.DEWBOW_WEB_ROOT ?? new URL("../../core-web/dist/", import.meta.url).pathname,
+    operatorPassword: env.DEWBOW_OPERATOR_PASSWORD ?? "", webRoot: resolve(env.DEWBOW_WEB_ROOT ?? fileURLToPath(new URL("../../core-web/dist/", import.meta.url))),
     ...(tlsCert && tlsKey ? { tlsCert, tlsKey } : {}) };
 }

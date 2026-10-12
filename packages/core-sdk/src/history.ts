@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { canonicalHome, isMissing, object, uuid } from "./internal.js";
+import { isOwnedFile } from "./file-trust.js";
 import type { ReadSessionHistoryOptions, SessionHistoryErrorCode, SessionHistoryPage,
   SessionMessage, SessionMessageContent } from "./types.js";
 
@@ -86,7 +87,7 @@ export async function readSessionHistory(sessionId: string, options: ReadSession
     const selected = candidates[0];
     if (!selected) throw new SessionHistoryError("UNAVAILABLE", "No Codex history database was found.");
     const path = join(home, selected.name), info = await lstat(path);
-    if (!info.isFile() || info.uid !== process.getuid?.()) {
+    if (!isOwnedFile(path, info)) {
       throw new SessionHistoryError("UNAVAILABLE", "The history database must be a regular file owned by the current user.");
     }
     checkAbort(options.signal);

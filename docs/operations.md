@@ -4,7 +4,7 @@ The Control Plane serves the built Web and owns its SQLite journal. Each host da
 
 ## One reproducible local setup
 
-Use Node.js 24.21.0 LTS, npm 12.2.0, and Codex CLI 0.162.1 with local model access configured through `codex login`. Node's built-in SQLite is required. Commands below target macOS and Linux. CI checks both platforms with synthetic data; a native Codex run is a separate acceptance step. Windows is not part of this setup path.
+Use Node.js 24.21.0 LTS, npm 12.2.0, and Codex CLI 0.162.1 with local model access configured through `codex login`. Node's built-in SQLite is required. The local service commands support Windows, macOS, and Linux. CI checks all three platforms with synthetic data; a native Codex run is a separate acceptance step. With mise, prefix commands with `mise exec --` to select the pinned runtime.
 
 From the checkout root:
 
@@ -51,6 +51,14 @@ Open `http://127.0.0.1:3100` for Team and sign in with `teamOperator` from the s
 | `workdir/` | Existing work directory for the local smoke run |
 
 Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while the Control Plane, Team backend, and daemon are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
+
+### Windows runtime and private state
+
+Install a separate CLI without replacing a desktop application's bundled runtime, for example `mise install npm:@openai/codex@0.162.1`. Locate that installation with `mise where npm:@openai/codex@0.162.1` and set `DEWBOW_CODEX_EXECUTABLE` in the ignored daemon environment file to its actual `codex.exe`. Do not use a `.cmd` shim or the npm `codex.js` wrapper: Windows termination cannot rely on its signal forwarding. Check that executable's version and login status before acceptance. Leave desktop configuration, credentials, and existing native conversations intact.
+
+Private Dewbow directories and files must belong to the current Windows account. Initialization and database startup protect their ACLs, granting access to that account and SYSTEM, and disabling inherited grants. They reject links and reparse paths instead of securing their targets. Only the designated private directory is changed; ancestor directories are preserved. POSIX uses owner checks and directory/file modes 0700/0600. Windows ACL failures block startup. PowerShell is invoked without a profile or visible window only for this bounded setup operation; Codex execution uses no shell.
+
+For a Windows smoke run, pass `(Resolve-Path state/local/workdir).Path` as the work directory argument in PowerShell. Use separate fresh ignored state and a synthetic work directory for acceptance. Never reset an existing installation to obtain a clean run. Graceful service shutdown releases its owned runtime and listener; a runtime that misses the five-second deadline is reported as a failure.
 
 ## Connect an external MCP client
 

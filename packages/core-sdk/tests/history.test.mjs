@@ -10,14 +10,16 @@ import { readSessionHistory, SessionHistoryError } from "../dist/index.js";
 const session = "00000000-0000-4000-8000-000000000001";
 const other = "00000000-0000-4000-8000-000000000002";
 const empty = "00000000-0000-4000-8000-000000000003";
+const databases = new Map();
 
 async function home(t) {
   const path = await realpath(await mkdtemp(join(tmpdir(), "dewbow-history-test-")));
-  t.after(() => rm(path, { recursive: true, force: true }));
+  t.after(async () => { const db = databases.get(path); if (db?.isOpen) db.close(); databases.delete(path); await rm(path, { recursive: true, force: true }); });
   return path;
 }
 function database(path) {
   const db = new DatabaseSync(join(path, "thread_history_1.sqlite"));
+  databases.set(path, db);
   db.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY);
     CREATE TABLE thread_turns(thread_id TEXT, turn_id TEXT, status TEXT, PRIMARY KEY(thread_id,turn_id));
@@ -36,7 +38,7 @@ async function digest(path) { return createHash("sha256").update(await readFile(
 
 test("history reads one session from WAL without writes and pages saved chat content in both directions", async t => {
   const path = await home(t), db = database(path);
-  t.after(() => db.close());
+  t.after(() => { if (db.isOpen) db.close(); });
   insert(db, session, 30, { type: "agentMessage", id: "final", text: "Done.\n", phase: "final_answer", private: "PRIVATE_METADATA_MARKER" });
   const content = [{ type: "text", text: "  Hello\n", text_elements: [] },
     { type: "localImage", path: "/path/to/synthetic-image.png" }, { type: "text", text: "World" }];
@@ -80,7 +82,7 @@ test("history distinguishes empty sessions from unavailable stores and rejects i
   const error = code => value => value instanceof SessionHistoryError && value.code === code;
   await assert.rejects(read(), error("UNAVAILABLE"));
   const db = database(path);
-  t.after(() => db.close());
+  t.after(() => { if (db.isOpen) db.close(); });
   assert.deepEqual((await read(empty)).messages, []);
   await assert.rejects(read(other), error("SESSION_NOT_FOUND"));
   insert(db, session, 1, { type: "userMessage", id: "valid", content: [{ type: "text", text: "Synthetic request" }] });
@@ -92,7 +94,7 @@ test("history distinguishes empty sessions from unavailable stores and rejects i
   unsupported.close();
   await assert.rejects(read(), error("UNSUPPORTED_SCHEMA"));
   await rm(join(path, "thread_history_2.sqlite"));
-  await symlink(join(path, "thread_history_1.sqlite"), join(path, "thread_history_2.sqlite"));
+  await symlink(process.platform === "win32" ? path : join(path, "thread_history_1.sqlite"), join(path, "thread_history_2.sqlite"), process.platform === "win32" ? "junction" : "file");
   await assert.rejects(read(), error("UNAVAILABLE"));
   await rm(join(path, "thread_history_2.sqlite"));
   db.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?)").run(session, "turn-a", "invalid", 2, 1700000000002, "invalid JSON", "agentMessage");

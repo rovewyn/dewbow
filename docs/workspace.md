@@ -28,6 +28,8 @@ npm install --global npm@12.2.0
 
 From the repository root:
 
+With mise, enable `.node-version` support, install `node@24.21.0`, and run commands through `mise exec --`. Verify `mise exec -- node --version` and `mise exec -- npm --version` before installing dependencies. Pin npm inside that Node installation with `mise exec -- npm install --global npm@12.2.0` when required. A shell's unqualified Node or npm can resolve a different installation; use the mise prefix consistently for builds, service startup, and commits that run tool-dependent hooks.
+
 ```sh
 npm ci
 npm run build
@@ -48,14 +50,15 @@ The SDK package is `@dewbow/core-sdk`. Its discovery and history reads remain re
 
 ## Continuous integration
 
-The [CI workflow](../.github/workflows/ci.yml) runs for pull requests targeting `main`, pushes to `main`, and manual dispatches. Pull requests and manual dispatches run Linux and macOS jobs. Pushes to `main` run only the Linux job.
+The [CI workflow](../.github/workflows/ci.yml) runs for pull requests targeting `main`, pushes to `main`, and manual dispatches. Pull requests and manual dispatches run Linux, macOS, and Windows jobs. Pushes to `main` run only the Linux job.
 
-Both jobs install the pinned Node.js and npm versions and run `npm ci`. Each job builds its required workspaces once, then runs the SDK tests against the compiled output:
+All jobs install the pinned Node.js and npm versions and run `npm ci`. Each job builds its required workspaces once, then runs the tests against the compiled output:
 
 | Job | Build | Additional checks |
 | --- | --- | --- |
 | Linux | All workspaces | SDK, journal, daemon, Core and Team service/Web tests; Team-to-Core HTTP integration; SDK package contents; service configuration checks |
-| macOS | All workspaces | Journal and SDK tests, including the native writer lock test that Linux skips; Team backend and Web tests; Team-to-Core HTTP integration |
+| macOS | All workspaces | SDK, journal, daemon, Core and Team service/Web tests, native writer lock inspection, local configuration and Team-to-Core integration |
+| Windows | All workspaces | SDK, journal, daemon, Core and Team service/Web tests; private ACL, junction and environment path checks; Team-to-Core HTTP integration |
 
 The TypeScript builds perform the server workspaces' type checks, and the Web build includes type checks for browser code and the Vite configuration. CI does not repeat the separate `typecheck` command. SDK tests run with `node --test tests/*.test.mjs` from `packages/core-sdk/` to reuse the build output. Linux checks package contents with `npm pack --workspace @dewbow/core-sdk --dry-run --ignore-scripts`; `--ignore-scripts` avoids repeating the SDK's `prepack` build. The local `typecheck`, `test`, and packing commands retain their existing behavior when run independently.
 
@@ -67,4 +70,4 @@ node apps/core-control-plane/dist/cli.js --check
 DEWBOW_TEAM_OPERATOR_TOKEN=synthetic-team-operator-credential node apps/team-backend/dist/cli.js --check
 ```
 
-These configuration checks do not access local Codex data, start services, or validate a deployed environment. The protocol journal test runs on both platforms. Linux also exercises the management service with a synthetic host and the daemon with a synthetic app-server subprocess. These checks do not establish live Codex execution. The workflow has read-only repository permissions and does not publish packages or deploy applications. New runs cancel older runs for the same ref, and each job has a 15-minute timeout.
+These configuration checks do not access local Codex data, start services, or validate a deployed environment. All platforms exercise the journal, management service with a synthetic host, and daemon with a synthetic app-server subprocess. Windows skips Unix socket fixtures; macOS writer inspection runs only on macOS. These checks do not establish live Codex execution. The workflow has read-only repository permissions and does not publish packages or deploy applications. New runs cancel older runs for the same ref, and each job has a 15-minute timeout.
