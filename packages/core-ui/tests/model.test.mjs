@@ -50,6 +50,12 @@ test("projection uses exact turn and client identities, keeps instruction before
   const sequence = buildChatModel({ sessionKey: "session", turns: [turn], messages, events, activities: [orderedTool], interactions: [] });
   assert.deepEqual(sequence.turns[0].entries.map(entry => entry.kind === "message" ? entry.message.kind : entry.kind), ["user", "progress", "activity", "instruction", "final"]);
   assert.equal(afterFinal.turns[0].entries.at(-1).message.text, "Observed after final");
+  const completedPlan = messages.map(item => item.id === "final" ? { ...item, phase: "plan" } : item);
+  const planModel = buildChatModel({ sessionKey: "session", turns: [turn], messages: completedPlan, events, interactions: [] });
+  assert.equal(planModel.turns[0].messages.at(-1).kind,"final");
+  assert.deepEqual(planModel.turns[0].messages.map(item=>item.kind),["user","progress","instruction","final"]);
+  const streamingPlan = buildChatModel({ sessionKey: "session", turns: [turn], messages: [message("plan-stream",3,"assistant","Partial plan",{phase:"plan"})], interactions: [] });
+  assert.equal(streamingPlan.turns[0].messages[0].kind,"progress");
   const opaqueMessages = messages.map(item => item.id === "final" ? { ...item, id: "activity:tool" } : item);
   const opaqueEvents = [...events.map(item => item.payload.itemId === "final" ? { ...item, payload: { ...item.payload, itemId: "activity:tool" } } : item), event(4, "tool_activity", { activity: orderedTool })];
   assert.deepEqual(buildChatModel({ sessionKey: "session", turns: [turn], messages: opaqueMessages, events: opaqueEvents, activities: [orderedTool], interactions: [] }).turns[0].entries.map(entry => entry.kind === "message" ? entry.message.kind : entry.kind), ["user", "progress", "activity", "instruction", "final"]);

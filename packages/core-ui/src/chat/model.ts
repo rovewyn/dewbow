@@ -4,6 +4,7 @@ import type { ChatEntry, ChatMessage, ChatModel, ChatOrder, ChatRequest, ChatTur
 export type * from "./types.js";
 
 export const isMessageComplete = (message: NativeMessage): boolean => message.itemComplete === true || ["completed", "interrupted", "failed"].includes(message.turnStatus ?? "");
+const isFinalReply = (message: NativeMessage): boolean => message.phase === "final_answer" || message.phase === "plan" && (message.itemComplete === true || message.turnStatus === "completed");
 
 /** Source versions and completion protect final text; text length is never a version. */
 export function mergeNativeMessages(previous: NativeMessage[], incoming: NativeMessage[]): NativeMessage[] {
@@ -168,11 +169,11 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
     const group = byNative(item.turnId);
     const matching = (input.events ?? []).filter(event => eventMatches(event, group) && (item.role === "user" ? event.type === "user_message" && item.clientId != null && event.payload.clientId === item.clientId : event.payload.itemId === item.id && ["assistant_message", "assistant_delta"].includes(event.type)));
     const uniqueUser = matching.length === 1 && messages.filter(message => message.turnId === item.turnId && message.clientId === item.clientId).length === 1;
-    const event = item.role === "user" ? uniqueUser ? matching[0] : undefined : item.phase === "final_answer" ? matching.findLast(event => event.payload.stage === "completed") ?? matching[0] : matching[0];
+    const event = item.role === "user" ? uniqueUser ? matching[0] : undefined : isFinalReply(item) ? matching.findLast(event => event.payload.stage === "completed") ?? matching[0] : matching[0];
     if (item.role === "user" && event) matchedUserEvents.add(event.eventId);
     if (event) eventPositions.set(`message:${item.id}`, event.cursor);
     const order: ChatOrder = item.ordinal !== undefined ? { source: "native", value: item.ordinal } : event ? { source: "event", value: event.cursor } : unavailableOrder();
-    const message: ChatMessage = { id: item.id, kind: item.role === "user" ? event?.payload.steering === true ? "instruction" : "user" : item.phase === "final_answer" ? "final" : "progress", text: item.text, createdAt: item.createdAt, complete: isMessageComplete(item), restricted: item.availability === "restricted", order };
+    const message: ChatMessage = { id: item.id, kind: item.role === "user" ? event?.payload.steering === true ? "instruction" : "user" : isFinalReply(item) ? "final" : "progress", text: item.text, createdAt: item.createdAt, complete: isMessageComplete(item), restricted: item.availability === "restricted", order };
     group.messages.push(message); if (group.state === null) group.state = item.turnStatus;
   }
   for (const item of mergeActivities([], input.activities ?? [])) {
