@@ -7,7 +7,7 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 import { ControlPlane } from "../dist/index.js";
-import { now } from "@dewbow-core/protocol";
+import { now } from "@dewbow/core-protocol";
 import { DatabaseSync } from "node:sqlite";
 
 async function until(predicate) {

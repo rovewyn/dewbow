@@ -1,4 +1,4 @@
-import type { ApiError } from "@dewbow-team/protocol";
+import type { ApiError } from "@dewbow/team-protocol";
 
 export class ApiClientError extends Error {
   constructor(readonly detail: ApiError) { super(detail.message); this.name = "ApiClientError"; }

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { ApiError } from "@dewbow-team/protocol";
+import type { ApiError } from "@dewbow/team-protocol";
 import { useMutation } from "./useMutation.js";
 
 export function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "good" | "warning" | "purple" | "danger" }) {

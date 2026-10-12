@@ -1,5 +1,5 @@
 {
-  "name": "@dewbow-core/control-plane",
+  "name": "@dewbow/core-control-plane",
   "version": "0.1.0",
   "private": true,
   "description": "Dewbow Core authenticated management API, MCP, host gateway, and approvals",
@@ -22,7 +22,7 @@
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@dewbow-core/protocol": "0.1.0",
+    "@dewbow/core-protocol": "0.1.0",
     "ws": "8.22.0"
   },
   "devDependencies": {

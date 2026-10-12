@@ -1,4 +1,4 @@
-import { discoverSessions } from "@dewbow-core/sdk";
+import { discoverSessions } from "@dewbow/core-sdk";
 
 const snapshot = await discoverSessions();
 // Counts only: avoid printing private names, IDs, workspaces, or raw provider output.

@@ -1,4 +1,4 @@
-import { readSessionHistory } from "@dewbow-core/sdk";
+import { readSessionHistory } from "@dewbow/core-sdk";
 
 const [sessionId, limit = "20", sortDirection = "asc"] = process.argv.slice(2);
 if (!sessionId) {

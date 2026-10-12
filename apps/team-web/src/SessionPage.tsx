@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { ApiError, MemberOperation, MemberSessionResult, SessionBinding } from "@dewbow-team/protocol";
+import type { ApiError, MemberOperation, MemberSessionResult, SessionBinding } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 import { visibleMessages } from "./history.js";
 import type { Catalog, Route } from "./model.js";

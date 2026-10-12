@@ -1,5 +1,5 @@
-import type { AgentRef, ManagementErrorData, SessionOptions } from "@dewbow-core/protocol";
-export type { AgentRef, SessionOptions } from "@dewbow-core/protocol";
+import type { AgentRef, ManagementErrorData, SessionOptions } from "@dewbow/core-protocol";
+export type { AgentRef, SessionOptions } from "@dewbow/core-protocol";
 
 export const contractVersion = "v1" as const;
 

@@ -1,5 +1,5 @@
 import { HostDaemon, readHostDaemonConfig } from "./index.js";
-import { ManagementError } from "@dewbow-core/protocol";
+import { ManagementError } from "@dewbow/core-protocol";
 const args = process.argv.slice(2);
 if (args.length === 1 && args[0] === "--help") console.log("Usage: core-host-daemon [--check|--help]\nSee docs/host-daemon.md for credentials, Codex setup, and recovery. --check does not access Codex or open a connection.");
 else if (args.length > 1 || (args.length === 1 && args[0] !== "--check")) { console.error("Usage: core-host-daemon [--check|--help]"); process.exitCode = 1; }

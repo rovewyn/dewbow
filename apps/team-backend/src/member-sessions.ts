@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { fail, TeamError, type ApiError, type CoreOperation, type CoreSessionDetails, type MemberSessionResult, type SessionBinding, type SessionBindingDetails, type SessionOptions } from "@dewbow-team/protocol";
+import { fail, TeamError, type ApiError, type CoreOperation, type CoreSessionDetails, type MemberSessionResult, type SessionBinding, type SessionBindingDetails, type SessionOptions } from "@dewbow/team-protocol";
 import type { CoreApi, CoreOperationName } from "./core-client.js";
 import { fingerprintInput, TeamStore, type RequestRecord } from "./store.js";
 

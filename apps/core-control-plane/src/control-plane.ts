@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { extname, resolve, sep } from "node:path";
-import { ManagementError, fail } from "@dewbow-core/protocol";
-import { Store } from "@dewbow-core/protocol/store";
+import { ManagementError, fail } from "@dewbow/core-protocol";
+import { Store } from "@dewbow/core-protocol/store";
 import type { ControlPlaneConfig } from "./config.js";
 import { Gateway } from "./gateway.js";
 import { json, jsonBody, sameSecret } from "./http.js";
@@ -86,7 +86,7 @@ export class ControlPlane {
     const root = resolve(this.config.webRoot), file = resolve(root, path === "/" ? "index.html" : `.${decodeURIComponent(path)}`);
     if (!file.startsWith(root + sep)) fail("NOT_FOUND", "File not found.");
     let data: Buffer;
-    try { data = await readFile(file); } catch { fail("NOT_FOUND", "Web build not found. Build @dewbow-core/web first."); }
+    try { data = await readFile(file); } catch { fail("NOT_FOUND", "Web build not found. Build @dewbow/core-web first."); }
     const mime: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
     response.writeHead(200, { "Content-Type": mime[extname(file)] ?? "application/octet-stream", "Cache-Control": "no-cache" }); response.end(data);
   }

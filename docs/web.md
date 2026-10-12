@@ -1,6 +1,6 @@
 # Dewbow Core operator Web interface
 
-`@dewbow-core/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports only shared record types, never server implementations or the SDK. All assets are local.
+`@dewbow/core-web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports only shared record types, never server implementations or the SDK. All assets are local.
 
 ## Workflow
 

@@ -1,5 +1,5 @@
 {
-  "name": "@dewbow-team/backend",
+  "name": "@dewbow/team-backend",
   "version": "0.1.0",
   "private": true,
   "description": "Dewbow Team agent organization service and authenticated Core API integration",
@@ -10,5 +10,5 @@
     "start": "node dist/cli.js",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
-  "dependencies": { "@dewbow-team/protocol": "0.1.0" }
+  "dependencies": { "@dewbow/team-protocol": "0.1.0" }
 }

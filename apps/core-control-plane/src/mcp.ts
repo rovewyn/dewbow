@@ -1,4 +1,4 @@
-import { ManagementError, tools } from "@dewbow-core/protocol";
+import { ManagementError, tools } from "@dewbow/core-protocol";
 import type { Caller, Management } from "./management.js";
 
 export async function mcp(message: unknown, management: Management, caller: Caller): Promise<unknown> {

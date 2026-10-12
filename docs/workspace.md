@@ -1,19 +1,19 @@
 # Workspace layout
 
-See [Dewbow boundaries and projects](README.md) for Core and Team ownership. Core workspace names use `@dewbow-core/*` and `core-` directories; Team uses `@dewbow-team/*` and `team-` directories. The root remains the private `dewbow-workspace` coordinator.
+See [Dewbow boundaries and projects](README.md) for Core and Team ownership. All npm packages share the `@dewbow` scope: Core workspace names use `@dewbow/core-*` and `core-` directories; Team uses `@dewbow/team-*` and `team-` directories. The root remains the private `@dewbow/workspace` coordinator.
 
 The repository uses npm workspaces with one root lockfile and shared compiler settings in `tsconfig.base.json`.
 
 | Directory | Package | Responsibility |
 | --- | --- | --- |
-| `packages/core-protocol/` | `@dewbow-core/protocol` | Private management records, schemas, and SQLite service journal |
-| `packages/core-sdk/` | `@dewbow-core/sdk` | Local Codex discovery, saved history, and explicit execution |
-| `packages/team-protocol/` | `@dewbow-team/protocol` | Team domain contract and type-only public Core projections |
-| `apps/core-host-daemon/` | `@dewbow-core/host-daemon` | Owned Codex runtime, command journal, and outbound Control Plane transport |
-| `apps/core-control-plane/` | `@dewbow-core/control-plane` | Authenticated management API, MCP, host gateway, and persistent records |
-| `apps/core-web/` | `@dewbow-core/web` | React/TypeScript operator client with Vite development and static builds |
-| `apps/team-backend/` | `@dewbow-team/backend` | Definitions, teams, members, bindings, and authenticated Core HTTP client |
-| `apps/team-web/` | `@dewbow-team/web` | Independent React/TypeScript Team operator client |
+| `packages/core-protocol/` | `@dewbow/core-protocol` | Private management records, schemas, and SQLite service journal |
+| `packages/core-sdk/` | `@dewbow/core-sdk` | Local Codex discovery, saved history, and explicit execution |
+| `packages/team-protocol/` | `@dewbow/team-protocol` | Team domain contract and type-only public Core projections |
+| `apps/core-host-daemon/` | `@dewbow/core-host-daemon` | Owned Codex runtime, command journal, and outbound Control Plane transport |
+| `apps/core-control-plane/` | `@dewbow/core-control-plane` | Authenticated management API, MCP, host gateway, and persistent records |
+| `apps/core-web/` | `@dewbow/core-web` | React/TypeScript operator client with Vite development and static builds |
+| `apps/team-backend/` | `@dewbow/team-backend` | Definitions, teams, members, bindings, and authenticated Core HTTP client |
+| `apps/team-web/` | `@dewbow/team-web` | Independent React/TypeScript Team operator client |
 | `docs/` | None | Repository setup, API, and architecture documentation |
 
 Each workspace owns its source and compiled `dist/` output. The SDK owns its tests and examples; protocol and service workspaces own their critical persistence and integration tests. Build outputs and dependencies are ignored. The root is a private workspace coordinator, not an SDK package.
@@ -33,7 +33,7 @@ npm ci
 npm run build
 npm run typecheck
 npm test
-npm pack --workspace @dewbow-core/sdk --dry-run
+npm pack --workspace @dewbow/core-sdk --dry-run
 ```
 
 npm 12 uses the root `allowScripts` field for dependency lifecycle scripts. The reviewed Koffi version may run its native setup; optional `fsevents` uses its shipped binary without install scripts. Follow [CONTRIBUTING.md](../CONTRIBUTING.md) when reviewing script permissions during upgrades.
@@ -44,7 +44,7 @@ The Web workspace uses browser-specific TypeScript settings and a separate typec
 
 Team keeps its own backend, Web build, operator login, and SQLite database. `npm run team:backend` builds its prerequisite protocols and backend, then starts it without starting Core or a daemon. `npm run team:web` and `npm run team:web:preview` select its independent development and static preview servers. Root build, typecheck, and test commands cover both applications. See [Team documentation](team/) for its data model and operations. The imported Team workspaces originate from Dewbow Team commit `f93f120481f3c14113d38de620846db4ac1d0587`; repository configuration and local state are managed here.
 
-The SDK package is `@dewbow-core/sdk`. Its discovery and history reads remain read-only. `CodexRuntime` supplies explicit connection and execution. Use the current Core names in consuming imports and packing commands. See [Install and operate the MVP](operations.md), [MVP interfaces](interfaces.md), [SDK guide](sdk.md), [Host daemon](host-daemon.md), [Control Plane](control-plane.md), and [Web](web.md). Follow [CONTRIBUTING.md](../CONTRIBUTING.md) for commit hooks and local-data handling.
+The SDK package is `@dewbow/core-sdk`. Its discovery and history reads remain read-only. `CodexRuntime` supplies explicit connection and execution. Use the current Core names in consuming imports and packing commands. See [Install and operate the MVP](operations.md), [MVP interfaces](interfaces.md), [SDK guide](sdk.md), [Host daemon](host-daemon.md), [Control Plane](control-plane.md), and [Web](web.md). Follow [CONTRIBUTING.md](../CONTRIBUTING.md) for commit hooks and local-data handling.
 
 ## Continuous integration
 
@@ -57,7 +57,7 @@ Both jobs install the pinned Node.js and npm versions and run `npm ci`. Each job
 | Linux | All workspaces | SDK, journal, daemon, Core and Team service/Web tests; Team-to-Core HTTP integration; SDK package contents; service configuration checks |
 | macOS | All workspaces | Journal and SDK tests, including the native writer lock test that Linux skips; Team backend and Web tests; Team-to-Core HTTP integration |
 
-The TypeScript builds perform the server workspaces' type checks, and the Web build includes type checks for browser code and the Vite configuration. CI does not repeat the separate `typecheck` command. SDK tests run with `node --test tests/*.test.mjs` from `packages/core-sdk/` to reuse the build output. Linux checks package contents with `npm pack --workspace @dewbow-core/sdk --dry-run --ignore-scripts`; `--ignore-scripts` avoids repeating the SDK's `prepack` build. The local `typecheck`, `test`, and packing commands retain their existing behavior when run independently.
+The TypeScript builds perform the server workspaces' type checks, and the Web build includes type checks for browser code and the Vite configuration. CI does not repeat the separate `typecheck` command. SDK tests run with `node --test tests/*.test.mjs` from `packages/core-sdk/` to reuse the build output. Linux checks package contents with `npm pack --workspace @dewbow/core-sdk --dry-run --ignore-scripts`; `--ignore-scripts` avoids repeating the SDK's `prepack` build. The local `typecheck`, `test`, and packing commands retain their existing behavior when run independently.
 
 The Linux job validates the host daemon and Control Plane configuration using the compiled CLIs and synthetic configuration:
 

@@ -4,11 +4,11 @@ import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { WebSocket } from "ws";
-import { discoverSessions, readSessionHistory, SessionHistoryError } from "@dewbow-core/sdk";
-import type { DiscoverOptions, DiscoverySnapshot, ReadSessionHistoryOptions } from "@dewbow-core/sdk";
-import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow-core/protocol";
-import type { AgentRef, Approval, Command, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow-core/protocol";
-import { Store } from "@dewbow-core/protocol/store";
+import { discoverSessions, readSessionHistory, SessionHistoryError } from "@dewbow/core-sdk";
+import type { DiscoverOptions, DiscoverySnapshot, ReadSessionHistoryOptions } from "@dewbow/core-sdk";
+import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow/core-protocol";
+import type { AgentRef, Approval, Command, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
+import { Store } from "@dewbow/core-protocol/store";
 import type { HostDaemonConfig } from "./config.js";
 import { Runtime } from "./runtime.js";
 import type { RpcMessage } from "./runtime.js";
@@ -285,7 +285,7 @@ export class HostDaemon {
       } else fail("INVALID_INPUT", "Unknown host command.");
     }
   }
-  private threadOptions(session: Session): import("@dewbow-core/sdk").ConnectSessionOptions {
+  private threadOptions(session: Session): import("@dewbow/core-sdk").ConnectSessionOptions {
     if (session.sessionConfig === undefined || (session.sessionConfig !== null && !session.sessionConfig.resolved)) fail("RECOVERY_REQUIRED", "Session configuration snapshot is missing. Start with fresh Dewbow state.");
     if (session.sessionConfig) return sessionThreadOptions(session.workDir, session.sessionConfig.resolved!);
     // Native adoption has no Team definition. Preserve its native model and instructions.

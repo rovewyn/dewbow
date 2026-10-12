@@ -1,6 +1,6 @@
 # Dewbow Core API and MCP interfaces
 
-[Core MVP specification](mvp.md) defines Core's scope. The private `@dewbow-core/protocol` workspace owns wire records, management input schemas, and the SQLite journal used by the Core Control Plane and host daemon. The daemon uses the SDK for native discovery, saved messages, and explicit conversation connection. Management records track execution ownership. Team uses the authenticated HTTP API and retains ownership of definitions, members, and session bindings.
+[Core MVP specification](mvp.md) defines Core's scope. The private `@dewbow/core-protocol` workspace owns wire records, management input schemas, and the SQLite journal used by the Core Control Plane and host daemon. The daemon uses the SDK for native discovery, saved messages, and explicit conversation connection. Management records track execution ownership. Team uses the authenticated HTTP API and retains ownership of definitions, members, and session bindings.
 
 ## Management operations
 

@@ -1,4 +1,4 @@
-import { fail, TeamError, type ApiError } from "@dewbow-team/protocol";
+import { fail, TeamError, type ApiError } from "@dewbow/team-protocol";
 
 export type CoreOperationName = "listHosts" | "createSession" | "getSession" | "connectSession" | "sendMessage" | "interruptTurn" | "readSessionHistory";
 

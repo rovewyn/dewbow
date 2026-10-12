@@ -1,4 +1,4 @@
-import type { Event, NativeMessage } from "@dewbow-core/protocol";
+import type { Event, NativeMessage } from "@dewbow/core-protocol";
 export interface Entry { id: string; timestamp: string; kind: "user" | "assistant" | "activity"; title: string; text: string }
 /** Join native saved messages and transient replies with management metadata. */
 export function historyEntries(events: Event[], messages: NativeMessage[], live: NativeMessage[] = []): Entry[] {

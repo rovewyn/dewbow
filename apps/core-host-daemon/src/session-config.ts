@@ -1,6 +1,6 @@
-import { canonicalJson, fail } from "@dewbow-core/protocol";
-import type { ResolvedSessionConfig, SessionOptions, WorkspaceSandbox } from "@dewbow-core/protocol";
-import type { ConnectSessionOptions } from "@dewbow-core/sdk";
+import { canonicalJson, fail } from "@dewbow/core-protocol";
+import type { ResolvedSessionConfig, SessionOptions, WorkspaceSandbox } from "@dewbow/core-protocol";
+import type { ConnectSessionOptions } from "@dewbow/core-sdk";
 import type { Runtime } from "./runtime.js";
 
 interface Model {

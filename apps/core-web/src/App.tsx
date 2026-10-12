@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
-import type { Event, Host, SessionSummary, NativeMessage } from "@dewbow-core/protocol";
+import type { Event, Host, SessionSummary, NativeMessage } from "@dewbow/core-protocol";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";

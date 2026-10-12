@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow-core/protocol";
-import type { AgentRef, Approval, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, Turn } from "@dewbow-core/protocol";
-import { Store } from "@dewbow-core/protocol/store";
+import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow/core-protocol";
+import type { AgentRef, Approval, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, Turn } from "@dewbow/core-protocol";
+import { Store } from "@dewbow/core-protocol/store";
 
 export interface Caller { id: string; operator: boolean }
 export class Management {

@@ -1,4 +1,4 @@
-import type { AgentDefinition, SessionBinding, Team, TeamMember } from "@dewbow-team/protocol";
+import type { AgentDefinition, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
 
 export interface Catalog {
   definitions: AgentDefinition[];
