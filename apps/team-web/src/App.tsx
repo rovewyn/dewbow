@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { AgentDefinition, ApiError, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
-import { call, errorDetail, readAuth, signIn, signOut } from "./api.js";
+import { call, errorDetail, onAuthFailure, readAuth, signIn, signOut } from "./api.js";
 import { DefinitionsPage } from "./DefinitionsPage.js";
 import { readRoute, type Catalog, type Route } from "./model.js";
-import { SessionPage } from "./SessionPage.js";
+import { SessionPage, createTeamChatMemory } from "./SessionPage.js";
 import { BindingList, TeamsPage } from "./TeamsPage.js";
 import { Badge, Empty, ErrorNotice, PageHeading } from "./ui.js";
 
@@ -32,6 +32,13 @@ export function App() {
   const [route, setRoute] = useState(readRoute);
   const activeRead = useRef<AbortController | null>(null);
   const authGeneration = useRef(0);
+  const chatMemory = useRef(createTeamChatMemory());
+  useEffect(() => { if (authenticated === false) { chatMemory.current.drafts.clear(); chatMemory.current.inputs.clear(); } }, [authenticated]);
+  useEffect(() => onAuthFailure(() => {
+    authGeneration.current++; activeRead.current?.abort();
+    chatMemory.current.drafts.clear(); chatMemory.current.inputs.clear();
+    setCatalog(null); setAuthenticated(false);
+  }), []);
   useEffect(() => {
     let active = true;
     void readAuth().then(result => { if (active) setAuthenticated(result.authenticated); })
@@ -87,5 +94,5 @@ export function App() {
   if (!authenticated) return <Login onSignedIn={() => { authGeneration.current++; setError(null); setAuthenticated(true); }} />;
   return <div className="app-shell"><a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a><aside className="sidebar"><a className="brand" href="#page=teams"><span className="brand-mark" aria-hidden="true">D</span><span>Dewbow <strong>Team</strong><small>Agent workspace</small></span></a><span className="sidebar-label">WORKSPACE</span><nav aria-label="Workspace">{([{ page: "teams", label: "Teams", icon: "◇" }, { page: "definitions", label: "Definitions", icon: "◈" }, { page: "sessions", label: "Sessions", icon: "↗" }] as const).map(item => <a key={item.page} className={route.page === item.page ? "active" : ""} href={`#page=${item.page}`} aria-current={route.page === item.page ? "page" : undefined}><span aria-hidden="true">{item.icon}</span>{item.label}{item.page === "sessions" && catalog && <span className="nav-count">{catalog.bindings.length}</span>}</a>)}</nav>
     <div className="sidebar-bottom"><div className="core-connection"><span className="sidebar-label">DEWBOW CORE</span><Badge tone={catalog?.service.coreConfigured ? "good" : "warning"}>{catalog?.service.coreConfigured ? "Configured" : "Not configured"}</Badge><p>Hosts and execution live in Core.</p>{catalog?.service.coreUrl && <a href={catalog.service.coreUrl} target="_blank" rel="noreferrer">Open Core ↗</a>}</div><button className="sidebar-signout" onClick={() => void logout()}>Sign out <span aria-hidden="true">→</span></button></div></aside>
-    <div className="workspace"><header className="topbar"><span>Workspace <span className="breadcrumb-separator">/</span> <strong>{route.page === "teams" ? "Teams" : route.page === "definitions" ? "Definitions" : "Sessions"}</strong></span><button className="text-button" disabled={loading} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button></header><main className="main-content" id="main-content" tabIndex={-1}><ErrorNotice error={error} onRetry={() => void refresh()} />{!catalog ? <Empty title={loading ? "Loading workspace" : "Workspace unavailable"}>Your definitions, teams, and sessions will appear here.</Empty> : route.page === "definitions" ? <DefinitionsPage definitions={catalog.definitions} refresh={refresh} /> : route.page === "sessions" ? route.bindingId ? <SessionPage key={route.bindingId} bindingId={route.bindingId} catalog={catalog} navigate={navigate} onBindingChanged={binding => setCatalog(current => current ? { ...current, bindings: current.bindings.map(item => item.bindingId === binding.bindingId ? binding : item) } : current)} /> : <><PageHeading eyebrow="WORKSPACE" title="Sessions" description="Return to the work of any team member." /><BindingList bindings={catalog.bindings} catalog={catalog} navigate={navigate} /></> : <TeamsPage key={route.teamId ?? "all"} catalog={catalog} teamId={route.teamId} refresh={refresh} navigate={navigate} />}</main><footer className="workspace-footer">Dewbow Team <span>Built on your Codex baseline</span></footer></div></div>;
+    <div className="workspace"><header className="topbar"><span>Workspace <span className="breadcrumb-separator">/</span> <strong>{route.page === "teams" ? "Teams" : route.page === "definitions" ? "Definitions" : "Sessions"}</strong></span><button className="text-button" disabled={loading} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button></header><main className="main-content" id="main-content" tabIndex={-1}><ErrorNotice error={error} onRetry={() => void refresh()} />{!catalog ? <Empty title={loading ? "Loading workspace" : "Workspace unavailable"}>Your definitions, teams, and sessions will appear here.</Empty> : route.page === "definitions" ? <DefinitionsPage definitions={catalog.definitions} refresh={refresh} /> : route.page === "sessions" ? route.bindingId ? <SessionPage key={route.bindingId} memory={chatMemory.current} bindingId={route.bindingId} catalog={catalog} navigate={navigate} onBindingChanged={binding => setCatalog(current => current ? { ...current, bindings: current.bindings.map(item => item.bindingId === binding.bindingId ? binding : item) } : current)} /> : <><PageHeading eyebrow="WORKSPACE" title="Sessions" description="Return to the work of any team member." /><BindingList bindings={catalog.bindings} catalog={catalog} navigate={navigate} /></> : <TeamsPage key={route.teamId ?? "all"} catalog={catalog} teamId={route.teamId} refresh={refresh} navigate={navigate} />}</main><footer className="workspace-footer">Dewbow Team <span>Built on your Codex baseline</span></footer></div></div>;
 }

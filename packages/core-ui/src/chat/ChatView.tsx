@@ -31,7 +31,7 @@ export function ChatView(view: ChatViewProps) {
   const [atBottom, setAtBottom] = useState(true);
   function pauseFollow() { follow.current = false; setAtBottom(false); }
   useLayoutEffect(() => {
-    const element = list.current; if (!element) return;
+    const element = list.current; if (!element || !element.getClientRects().length) return;
     if (previousSession.current !== view.model.sessionKey) {
       previousSession.current = view.model.sessionKey; follow.current = true; prepend.current = null;
     }
