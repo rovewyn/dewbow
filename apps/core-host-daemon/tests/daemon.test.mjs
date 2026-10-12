@@ -227,7 +227,8 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     savedHistory.prepare("INSERT INTO thread_turns VALUES(?,?,?)").run(nativeId,ownedNativeTurn,"interrupted");
     savedHistory.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?,?)").run(nativeId,ownedNativeTurn,"observed-user-item",2,1700000000010,JSON.stringify({type:"userMessage",id:"observed-user-item",clientId:observedCommand.commandId,content:[{type:"text",text:"Previously delivered synthetic steer"}]}),"userMessage",2,1700000000010,1700000000011);savedHistory.close();
     const content=new SessionContent(`${config.statePath}.contents.sqlite`),secondThread=event("session-2","session_created").payload.session.codexThreadId;
-    const scope=createHash("sha256").update(JSON.stringify([process.platform === "win32" ? dir.toLowerCase() : dir,secondThread])).digest("hex");
+    const secondHome=journal.get("session","session-2").codexHome;
+    const scope=createHash("sha256").update(JSON.stringify([process.platform === "win32" ? secondHome.toLowerCase() : secondHome,secondThread])).digest("hex");
     for(let index=0;index<40;index++) {
       const id=`large-history-${index}`,details={questions:[{questionId:"choice",header:"Choice",prompt:"Choose",options:null,allowCustom:true,secret:false}],answers:[{questionId:"choice",answers:["x".repeat(250000)]}]};
       journal.put("interaction",id,{interactionId:id,sessionId:"session-2",turnId:"other-turn",itemId:id,kind:"questions",authority:"agent",blocking:true,sensitive:false,status:"resolved",createdAt:new Date().toISOString(),observedAt:new Date().toISOString(),decision:null,requestId:id,codexRequestId:index,runtimeId:"previous-runtime",nativeMethod:"item/tool/requestUserInput",content:content.put(scope,id,"output","Interaction details",JSON.stringify(details),"complete")});
@@ -236,7 +237,9 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     journal.close();
     writeFileSync(nativeConfig, JSON.stringify({ model: "synthetic-editor", model_reasoning_effort: "high", developer_instructions: "Changed host instructions.", sandbox_workspace_write: { network_access: true, exclude_slash_tmp: true } }));
     daemon = new HostDaemon({ ...config, model: "synthetic-editor" }); await daemon.start(); await until(() => ready === 2);
-    const interactionPage=(await query("readInteractions",{sessionId:"session-2"})).result;
+    const interactionRead=await query("readInteractions",{sessionId:"session-2"});
+    assert.equal(interactionRead.error,undefined,JSON.stringify(interactionRead.error));
+    const interactionPage=interactionRead.result;
     assert.equal(interactionPage.interactions.length,40);
     assert.ok(Buffer.byteLength(JSON.stringify(interactionPage))<8*1024*1024);
     assert.ok(interactionPage.interactions.some(item=>item.details) && interactionPage.interactions.some(item=>!item.details));
