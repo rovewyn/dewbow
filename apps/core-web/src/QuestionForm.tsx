@@ -1,7 +1,7 @@
 import {useId,useState} from "react";
 import type {UserQuestion,QuestionAnswer} from "@dewbow/core-protocol";
-import {Input} from "./components/ui/input";
-import {Button} from "./components/ui/button";
+import {Input} from "@dewbow/core-ui/ui";
+import {Button} from "@dewbow/core-ui/ui";
 
 export function QuestionForm({questions,disabled,onAnswer}:{questions:UserQuestion[];disabled:boolean;onAnswer:(answers:QuestionAnswer[])=>void}) {
   const [values,setValues]=useState(new Map<string,string>());
@@ -11,6 +11,6 @@ export function QuestionForm({questions,disabled,onAnswer}:{questions:UserQuesti
     {questions.map(question=><fieldset key={question.questionId} disabled={disabled}><legend>{question.header}</legend><label htmlFor={`${formId}-${question.questionId}`}>{question.prompt}</label>
       {question.options?.map(option=><label key={option.label}><input type="radio" name={question.questionId} value={option.label} checked={values.get(question.questionId)===option.label} onChange={()=>setValue(question.questionId,option.label)}/>{option.label} — {option.description}</label>)}
       {question.allowCustom && <Input id={`${formId}-${question.questionId}`} type={question.secret ? "password" : "text"} autoComplete="off" aria-label={`${question.header}: custom answer`} value={values.get(question.questionId)??""} onChange={event=>setValue(question.questionId,event.target.value)}/>}</fieldset>)}
-    <Button disabled={disabled || questions.some(question=>!values.get(question.questionId)?.trim())}>Submit answers</Button>
+    <Button type="submit" disabled={disabled || questions.some(question=>!values.get(question.questionId)?.trim())}>Submit answers</Button>
   </form>;
 }

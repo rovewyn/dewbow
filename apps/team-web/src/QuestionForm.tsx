@@ -1,3 +1,4 @@
+import {Button,Input} from "@dewbow/core-ui/ui";
 import {useState} from "react";
 import type {UserQuestion,QuestionAnswer} from "@dewbow/team-protocol";
 
@@ -7,7 +8,7 @@ export function QuestionForm({questions,disabled,onAnswer}:{questions:UserQuesti
   return <form onSubmit={event=>{event.preventDefault();onAnswer(questions.map(question=>({questionId:question.questionId,answers:[values.get(question.questionId)??""]})));}}>
     {questions.map(question=><fieldset key={question.questionId} disabled={disabled}><legend>{question.header}</legend><p>{question.prompt}</p>
       {question.options?.map(option=><label key={option.label}><input type="radio" name={question.questionId} value={option.label} checked={values.get(question.questionId)===option.label} onChange={()=>setValue(question.questionId,option.label)}/>{option.label} — {option.description}</label>)}
-      {question.allowCustom && <input className="input" type="text" autoComplete="off" aria-label={`${question.header}: custom answer`} value={values.get(question.questionId)??""} onChange={event=>setValue(question.questionId,event.target.value)}/>}</fieldset>)}
-    <button className="button primary" disabled={disabled || questions.some(question=>!values.get(question.questionId)?.trim())}>Submit answers</button>
+      {question.allowCustom && <Input type="text" autoComplete="off" aria-label={`${question.header}: custom answer`} value={values.get(question.questionId)??""} onChange={event=>setValue(question.questionId,event.target.value)}/>}</fieldset>)}
+    <Button type="submit" disabled={disabled || questions.some(question=>!values.get(question.questionId)?.trim())}>Submit answers</Button>
   </form>;
 }

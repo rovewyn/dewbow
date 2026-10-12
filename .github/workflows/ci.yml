@@ -50,6 +50,9 @@ jobs:
       - name: Test conversation projection
         working-directory: apps/core-web
         run: node --test tests/*.test.mjs
+      - name: Test shared chat model
+        working-directory: packages/core-ui
+        run: node --test tests/*.test.mjs
       - name: Test host daemon
         working-directory: apps/core-host-daemon
         run: node --test tests/*.test.mjs

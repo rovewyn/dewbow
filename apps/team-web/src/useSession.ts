@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
-import { emptyHistory, mergeHistory, type HistoryState } from "./history.js";
+import { emptyHistory, mergeHistory, restrictHistory, type HistoryState } from "./history.js";
 
 export function useSession(bindingId: string) {
   const [details, setDetails] = useState<SessionBindingDetails | null>(null);
@@ -26,6 +26,9 @@ export function useSession(bindingId: string) {
         if (controller.signal.aborted) return;
         setDetails(current); setError(null);
         if (current.core) setLastCore(current.core);
+        if (current.core?.contextAuthority === "operator") {
+          savedRef.current = restrictHistory(savedRef.current); saved = savedRef.current; setHistory(saved);
+        }
         if (current.binding.sessionId && !current.coreError) {
           try {
             for (let pages = 0; pages < 25; pages++) {

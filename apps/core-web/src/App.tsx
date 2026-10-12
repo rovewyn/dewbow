@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import type { Event, Host, SessionSummary, NativeMessage,InteractionDetails } from "@dewbow/core-protocol";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardHeader } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@dewbow/core-ui/ui";
+import { Badge } from "@dewbow/core-ui/ui";
+import { Card, CardHeader } from "@dewbow/core-ui/ui";
+import { Input } from "@dewbow/core-ui/ui";
+import { Textarea } from "@dewbow/core-ui/ui";
 import {
   NativeSelect,
   NativeSelectOption,
-} from "@/components/ui/native-select";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+} from "@dewbow/core-ui/ui";
+import { Alert, AlertDescription } from "@dewbow/core-ui/ui";
 import { api, ApiError, request,readInteractionDetails } from "./api";
 import type { Detail, History, OperationSummary } from "./api";
 import { historyEntries, mergeNativeMessages } from "./history";
