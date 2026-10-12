@@ -3,19 +3,23 @@ import test from "node:test";
 import { emptyHistory, mergeHistory, visibleMessages } from "../src/history.ts";
 
 const message = (id, text, extra = {}) => ({ id, text, turnId: "turn-example", role: "assistant", phase: null, createdAt: "2026-01-01T00:00:00.000Z", turnStatus: "running", ...extra });
-const page = extra => ({ events: [], nextCursor: 0, hasMore: false, messages: [], nextMessageCursor: null, liveMessages: [], historyError: null, ...extra });
+const page = extra => ({ events:[],nextCursor:0,hasMore:false,messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,liveMessages:[],historyError:null,...extra });
 
 test("native pagination and event cursors remain independent across a final page and failed reads", () => {
-  let state = mergeHistory(emptyHistory(), page({ nextCursor: 8, messages: [message("one", "First")], nextMessageCursor: "native-page-two" }), undefined);
-  state = mergeHistory(state, page({ nextCursor: 10, messages: [message("two", "Second")], liveMessages: [message("stream", "Live")] }), state.messageCursor);
-  assert.equal(state.messageCursor, "native-page-two");
+  let state = mergeHistory(emptyHistory(),page({nextCursor:8,messages:[message("one","First")],updateCursor:"updates-one",beforeCursor:"older-one"}));
+  state = mergeHistory(state,page({nextCursor:10,messages:[message("two","Second")],liveMessages:[message("stream","Live")]}),"newer");
+  assert.equal(state.updateCursor,"updates-one"); assert.equal(state.beforeCursor,"older-one");
   assert.equal(state.eventCursor, 10);
-  state = mergeHistory(state, page({ nextCursor: 11, messages: [message("two", "Updated")], liveMessages: [], nextMessageCursor: "native-page-three" }), state.messageCursor);
+  state = mergeHistory(state,page({nextCursor:11,messages:[message("two","Updated")],liveMessages:[],updateCursor:"updates-two"}),"newer");
   assert.deepEqual(visibleMessages(state).map(item => item.text), ["First", "Updated"]);
-  const failed = mergeHistory(state, page({ nextCursor: 0, historyError: { code: "UNAVAILABLE", message: "Unavailable", retryable: true }, eventsError: { code: "UNAVAILABLE", message: "Unavailable", retryable: true } }), state.messageCursor);
-  assert.equal(failed.messageCursor, "native-page-three");
+  const failed = mergeHistory(state,page({nextCursor:0,historyError:{code:"UNAVAILABLE",message:"Unavailable",retryable:true},eventsError:{code:"UNAVAILABLE",message:"Unavailable",retryable:true}}),"newer");
+  assert.equal(failed.updateCursor,"updates-two");
   assert.equal(failed.eventCursor, 11);
   assert.deepEqual(visibleMessages(failed), visibleMessages(state));
+  const recent = mergeHistory(state,page({nextCursor:20,liveMessages:[message("live","New live")]}),"newer");
+  const lateOlder = mergeHistory(recent,page({nextCursor:12,liveMessages:[message("live","Stale live")],beforeCursor:"older-two"}),"older");
+  assert.equal(lateOlder.eventCursor,20);
+  assert.equal(lateOlder.live.live.text,"New live");
 });
 
 test("live updates merge by native ID without replacing final saved answers", () => {

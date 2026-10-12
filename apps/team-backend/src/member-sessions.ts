@@ -33,12 +33,15 @@ export class MemberSessions {
         return this.mutate("createMemberSession", { memberId: binding.memberId, hostId: binding.hostId,
           workDir: binding.workDir, requestId: binding.createRequestId }, caller);
       }
-      case "readMemberSessionHistory": {
+      case "readMemberSessionHistory":
+      case "getMemberSessionActivity":
+      case "readMemberSessionContent": {
         const binding = this.store.getBinding(input.bindingId as string);
         this.assertTarget(binding, caller);
         if (!binding.sessionId) fail("SESSION_NOT_READY", "Session creation has not returned an ID. Retry its original request.", true);
         const { bindingId: _bindingId, ...cursors } = input;
-        return this.core.call("readSessionHistory", { sessionId: binding.sessionId, ...cursors });
+        const coreOperation = operation === "readMemberSessionHistory" ? "readSessionHistory" : operation === "getMemberSessionActivity" ? "getSessionActivity" : "readSessionContent";
+        return this.core.call(coreOperation, { sessionId:binding.sessionId,...cursors });
       }
       default: return this.mutate(operation, input, caller);
     }

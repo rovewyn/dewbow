@@ -13,7 +13,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { api, ApiError, request } from "./api";
 import type { Detail, History, OperationSummary } from "./api";
-import { historyEntries } from "./history";
+import { historyEntries, mergeNativeMessages } from "./history";
 import { SessionTreeView } from "@/components/session-tree/SessionTreeView";
 import { buildSessionTree, projectSessionTree } from "@/components/session-tree/model";
 
@@ -38,10 +38,15 @@ export function App() {
     [liveMessages, setLiveMessages] = useState<NativeMessage[]>([]);
   const [historyError, setHistoryError] = useState(""),
     [discoveryError, setDiscoveryError] = useState("");
+  const [beforeCursor,setBeforeCursor] = useState<string|null>(null);
+  const [loadingOlder,setLoadingOlder] = useState(false);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(selection),
     [detail, setDetail] = useState<Detail | null>(null),
     [events, setEvents] = useState<Event[]>([]);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const historyController = useRef<AbortController|null>(null);
   const [connectionError, setConnectionError] = useState("");
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
@@ -70,9 +75,12 @@ export function App() {
   useEffect(() => {
     if (authenticated === false) return;
     const controller = new AbortController();
+    historyController.current = controller;
     let timer: ReturnType<typeof setTimeout>;
     let cursor = 0;
-    let messageCursor: string | null = null;
+    let updateCursor: string | null = null;
+    selectedRef.current = selected;
+    setBeforeCursor(null); setLoadingOlder(false);
     // Keep the page tall enough for its scroll position while the new panel loads.
     setLoadingHeight(conversation.current?.getBoundingClientRect().height ?? 0);
     setDetail(null);
@@ -92,6 +100,7 @@ export function App() {
         let live: NativeMessage[] = [],
           nativeError = "";
         let nextCursor = cursor;
+        let nextUpdateCursor = updateCursor;
         if (selected) {
           current = await api<Detail>(
             "getSession",
@@ -102,7 +111,7 @@ export function App() {
           do {
             const page = await api<History>(
               "readSessionHistory",
-              { sessionId: selected, cursor: nextCursor, limit: 500, ...(messageCursor ? { messageCursor } : {}) },
+              { sessionId:selected,cursor:nextCursor,limit:50,...(nextUpdateCursor ? { updateCursor:nextUpdateCursor } : {}) },
               controller.signal,
             );
             added.push(...page.events);
@@ -110,12 +119,14 @@ export function App() {
             nativeMessages.push(...page.messages);
             live = page.liveMessages;
             nativeError = [page.historyError, page.eventsError].filter(Boolean).map(error => `${error!.code}: ${error!.message}`).join(" · ");
-            if (page.nextMessageCursor) messageCursor = page.nextMessageCursor;
-            more = page.hasMore || page.nextMessageCursor !== null;
+            if (!nextUpdateCursor && !page.historyError) setBeforeCursor(page.beforeCursor);
+            nextUpdateCursor = page.updateCursor ?? nextUpdateCursor;
+            more = page.hasMore || page.hasMoreUpdates;
           } while (more && !controller.signal.aborted);
         }
         if (controller.signal.aborted) return;
         cursor = nextCursor;
+        updateCursor = nextUpdateCursor;
         setHosts(hostData.hosts);
         setSessions(sessionData.sessions);
         setDiscoveryError(sessionData.discovery.filter(d => d.error).map(d => `${d.hostId}: ${d.error!.message}`).join(" "));
@@ -127,9 +138,7 @@ export function App() {
             !list ||
             list.scrollHeight - list.scrollTop - list.clientHeight < 80;
           setEvents((previous) => [...previous, ...added]);
-          setMessages(previous => [
-            ...new Map([...previous, ...nativeMessages].map(m => [m.id, m])).values(),
-          ]);
+          setMessages(previous => mergeNativeMessages(previous,nativeMessages));
           setLiveMessages(live);
         }
         setAuthenticated(true);
@@ -545,6 +554,18 @@ export function App() {
                     aria-label="Conversation history"
                     tabIndex={0}
                   >
+                    {beforeCursor && <li><Button disabled={loadingOlder} onClick={() => {
+                      const sessionId = selected, cursor = beforeCursor, list = history.current, controller = historyController.current;
+                      const height = list?.scrollHeight ?? 0, top = list?.scrollTop ?? 0;
+                      followHistory.current = false; setLoadingOlder(true);
+                      void api<History>("readSessionHistory",{sessionId,beforeCursor:cursor,limit:50},controller?.signal).then(page => {
+                        if (selectedRef.current !== sessionId || controller?.signal.aborted) return;
+                        if (page.historyError) throw new ApiError(page.historyError);
+                        setBeforeCursor(page.beforeCursor);
+                        setMessages(previous => mergeNativeMessages(previous,page.messages));
+                        requestAnimationFrame(() => { if (list && selectedRef.current === sessionId) list.scrollTop = top+list.scrollHeight-height; });
+                      }).catch(cause => { if (selectedRef.current === sessionId) setHistoryError(describe(cause)); }).finally(() => { if (selectedRef.current === sessionId) setLoadingOlder(false); });
+                    }}>{loadingOlder ? "Loading older history…" : "Load older history"}</Button></li>}
                     {historyEntries(events, messages, liveMessages).map((entry) => (
                       <li className={`entry ${entry.kind}`} key={entry.id}>
                         <div className="row">

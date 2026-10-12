@@ -17,7 +17,7 @@ class SyntheticCore {
   async call(operation, input) {
     this.calls.push({ operation, input: structuredClone(input) });
     if (operation === "getSession") return structuredClone(this.sessions.get(input.sessionId));
-    if (operation === "readSessionHistory") return { messages: [], liveMessages: [], events: [], nextCursor: input.cursor ?? 0, nextMessageCursor: null, hasMore: false, historyError: null };
+    if (operation === "readSessionHistory") return { messages:[],activities:[],liveMessages:[],events:[],nextCursor:input.cursor ?? 0,beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,hasMore:false,historyError:null };
     const key = `${operation}:${input.requestId}`;
     let result = this.operations.get(key);
     if (!result) {

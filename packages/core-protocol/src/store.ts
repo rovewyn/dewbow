@@ -54,6 +54,13 @@ export class Store {
   append(event: Event): boolean {
     if (!this.eventHistory) throw new Error("Event history belongs to the host daemon.");
     const { text: _text, ...payload } = event.payload;
+    if (event.type === "tool_activity") {
+      delete payload.command; delete payload.cwd; delete payload.paths;
+      if (payload.activity) {
+        const { command: _command, paths: _paths, ...references } = payload.activity as Record<string,unknown>;
+        payload.activity = references;
+      }
+    }
     if (event.type === "progress") { delete payload.plan; delete payload.explanation; }
     const saved = { ...event, payload };
     return Number(this.db.prepare("INSERT OR IGNORE INTO events VALUES (?,?,?)").run(event.sessionId, event.cursor, JSON.stringify(saved)).changes) === 1;

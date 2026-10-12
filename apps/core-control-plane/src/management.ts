@@ -26,6 +26,9 @@ export class Management {
     if (name === "listSessions") return this.list(input.hostId as string | undefined);
     if (name === "getSession") return this.get(String(input.sessionId));
     if (name === "readSessionHistory") return this.history(input);
+    if (name === "getSessionActivity" || name === "readSessionContent") {
+      return this.readContent(name,input);
+    }
     if (name === "connectSession") return this.connect(input, caller);
     return this.mutate(name, input, caller);
   }
@@ -175,23 +178,31 @@ export class Management {
       operations: this.store.list<Operation>("operation").filter(o => o.sessionId === id).map(publicOperation) };
   }
   private async history(input: Record<string, unknown>) {
-    const session = await this.view(String(input.sessionId)), cursor = Number(input.cursor ?? 0), limit = Number(input.limit ?? 100);
+    if ([input.beforeCursor,input.afterCursor,input.updateCursor].filter(value=>value !== undefined).length > 1) fail("INVALID_INPUT","Choose one history cursor.");
+    const session = await this.view(String(input.sessionId)), cursor = Number(input.cursor ?? 0), limit = Number(input.limit ?? 50);
     const empty: EventHistory = { events: [], nextCursor: cursor, hasMore: false, liveMessages: [] };
     const [eventRead, nativeRead] = await Promise.allSettled([
       Promise.resolve().then(() => session.managed ? this.query(session.hostId, "readEvents", { sessionId: session.sessionId, cursor, limit }) : empty),
       Promise.resolve().then(() => session.codexThreadId ? this.query(session.hostId, "readSessionHistory", { codexThreadId: session.codexThreadId,
         ...(session.native || session.codexHome ? { codexHome: session.native?.codexHome ?? session.codexHome! } : {}), limit,
-        ...(input.messageCursor ? { messageCursor: String(input.messageCursor) } : {}) }) : { messages: [], nextCursor: null, observedAt: now() }),
+        ...(input.beforeCursor ? { beforeCursor:String(input.beforeCursor) } : {}),...(input.afterCursor ? { afterCursor:String(input.afterCursor) } : {}),...(input.updateCursor ? { updateCursor:String(input.updateCursor) } : {}) }) : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() }),
     ]);
     const error = (cause: unknown, message: string) => cause instanceof ManagementError ? cause.detail : { code: "READ_FAILED", message, retryable: true };
     const events = eventRead.status === "fulfilled" ? eventRead.value as EventHistory : empty;
-    const native = nativeRead.status === "fulfilled" ? nativeRead.value as NativeHistory : { messages: [], nextCursor: null, observedAt: now() };
+    const native = nativeRead.status === "fulfilled" ? nativeRead.value as NativeHistory : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() };
     if (eventRead.status === "fulfilled") this.liveReplies.replace(session.sessionId, events.liveMessages);
     this.liveReplies.saved(session.sessionId, native.messages);
     return { events: events.events, nextCursor: events.nextCursor, hasMore: events.hasMore,
-      messages: native.messages, nextMessageCursor: native.nextCursor, liveMessages: this.liveReplies.get(session.sessionId),
+      messages:native.messages,activities:native.activities,beforeCursor:native.beforeCursor,afterCursor:native.afterCursor,updateCursor:native.updateCursor,hasMoreUpdates:native.hasMoreUpdates,liveMessages:this.liveReplies.get(session.sessionId),
       historyError: nativeRead.status === "rejected" ? error(nativeRead.reason, "Native saved messages could not be read.") : null,
       eventsError: eventRead.status === "rejected" ? error(eventRead.reason, "Host event history could not be read.") : null };
+  }
+  private async readContent(operation: "getSessionActivity" | "readSessionContent", input: Record<string,unknown>) {
+    const session = await this.view(String(input.sessionId));
+    if (!session.codexThreadId) fail("SESSION_NOT_READY","Native conversation is not ready.");
+    const { sessionId: _sessionId, ...options } = input;
+    return this.query(session.hostId,operation,{ ...options,codexThreadId:session.codexThreadId,
+      ...(session.native || session.codexHome ? { codexHome:session.native?.codexHome ?? session.codexHome! } : {}) });
   }
   uncertain(operation: Operation): void {
     operation.status = "unknown";

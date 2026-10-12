@@ -64,7 +64,7 @@ For a Windows smoke run, pass `(Resolve-Path state/local/workdir).Path` as the w
 
 ## Connect an external MCP client
 
-Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <management-credential>`. The ignored `state/local/mcp.json` is an example; adapt its `mcpServers` wrapper to your client's settings format. Keep the real header out of browser storage and version control. Eight tools are exposed; approval decisions are operator-only.
+Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <management-credential>`. The ignored `state/local/mcp.json` is an example; adapt its `mcpServers` wrapper to your client's settings format. Keep the real header out of browser storage and version control. Ten tools are exposed; approval decisions are operator-only.
 
 For a Codex CLI client, configure the URL with its documented command:
 
@@ -141,6 +141,12 @@ npm run local:core:host-daemon > logs/host-daemon.log 2>&1
 ```
 
 Raw native stderr is not forwarded. Keep shell diagnostics and acceptance traces private too. Stop each foreground service with Ctrl+C or send SIGTERM to its verified process. The daemon waits for its app-server to stop; the Control Plane closes sockets and storage. Stopping the Control Plane alone does not stop host execution. Verify the listener port is released before restarting on the same address. No system service, automatic boot startup, container, or cloud deployment is installed by this path.
+
+## Tool content acceptance
+
+Use a fresh synthetic work directory and new conversation to test an actual command producing Unicode output larger than 64 KiB, plus a native file edit. Read the activity's content in default and maximum-size chunks, confirm byte-preserving UTF-8 reconstruction, and inspect the recorded diff. Check older/newer history boundaries and update polling separately. Restart the daemon, wait for authenticated host reconciliation, then request the exact activity and content again. Confirm another conversation cannot reuse the content ID. Inspect only synthetic journals to verify output and diff bodies are absent. Keep private content databases, traces and screenshots in ignored directories.
+
+When launching a standalone native executable, retain its companion binaries and resource layout. Packaged desktop environments can remap the executable path and prevent companion discovery; use an independent installation or an isolated copy of the complete standalone distribution for acceptance. Verify its version before execution and preserve Desktop's installation, configuration and credentials.
 
 ## Acceptance record
 

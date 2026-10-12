@@ -40,8 +40,27 @@ export interface SessionSummary extends Omit<Session, "workDir" | "createdAt"> {
 export interface NativeMessage {
   id: string; turnId: string; role: "user" | "assistant"; text: string;
   phase: string | null; createdAt: string; turnStatus: string | null;
+  ordinal?: number;
+  itemComplete?: boolean;
+  updatedOrdinal?: number;
 }
-export interface NativeHistory { messages: NativeMessage[]; nextCursor: string | null; observedAt: string }
+export interface ContentRef {
+  contentId: string | null; kind: "output" | "diff"; label: string; byteLength: number | null;
+  availability: "available" | "partial" | "unavailable"; completeness: "complete" | "partial" | "unknown";
+}
+export interface SessionActivity {
+  id: string; turnId: string; ordinal: number | null; createdAt: string; type: string; title: string;
+  status: string | null; command?: string; paths?: string[]; contents: ContentRef[];
+  updatedOrdinal: number | null; itemComplete: boolean;
+}
+export interface ContentPage {
+  contentId: string; text: string; byteOffset: number; nextCursor: string | null; byteLength: number;
+  completeness: ContentRef["completeness"]; availability: ContentRef["availability"];
+}
+export interface NativeHistory {
+  messages: NativeMessage[]; activities: SessionActivity[]; beforeCursor: string | null; afterCursor: string | null;
+  updateCursor: string | null; hasMoreUpdates: boolean; observedAt: string;
+}
 export interface NativeInventory {
   sessions: NativeSession[]; observedAt: string;
   sources: { source: string; state: string; error: string | null }[];
@@ -49,10 +68,10 @@ export interface NativeInventory {
 }
 export interface EventHistory { events: Event[]; nextCursor: number; hasMore: boolean; liveMessages: NativeMessage[] }
 export interface HostQuery {
-  queryId: string; operation: "discoverSessions" | "readSessionHistory" | "readEvents";
-  input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; messageCursor?: string; limit?: number };
+  queryId: string; operation: "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent";
+  input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
 }
-export interface HostQueryResult { queryId: string; result?: NativeInventory | NativeHistory | EventHistory; error?: ManagementErrorData }
+export interface HostQueryResult { queryId: string; result?: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage; error?: ManagementErrorData }
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;
@@ -109,12 +128,14 @@ export const tools = [
   tool("createSession", "Create a session with optional agent overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, requestId: request, agentRef, sessionOptions }, ["hostId", "workDir", "requestId"]),
   tool("connectSession", "Connect an SDK-discovered native conversation without creating a new thread. Poll getSession for readiness.", { sessionId: text, requestId: request }, ["sessionId", "requestId"]),
   tool("getSession", "Read current and last known state, turns, operations, and pending approvals.", { sessionId: text }, ["sessionId"]),
-  tool("readSessionHistory", "Read native saved messages and management events. Page each stream using its own cursor.", { sessionId: text, cursor: { type: "integer", minimum: 0 }, messageCursor: text, limit: { type: "integer", minimum: 1, maximum: 500 } }, ["sessionId"]),
+  tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
+  tool("getSessionActivity", "Read activity metadata and private content references for an exact conversation item.", { sessionId: text, itemId: text }, ["sessionId", "itemId"]),
+  tool("readSessionContent", "Read a UTF-8 chunk from host-private output or diff content. The default chunk is 64 KiB.", { sessionId: text, contentId: text, contentCursor: text, limitBytes: { type: "integer", minimum: 4, maximum: 262144 } }, ["sessionId", "contentId"]),
   tool("sendMessage", "Record a new turn in the existing conversation. Acceptance does not mean execution has started.", { sessionId: text, message: { ...text, maxLength: 100000 }, requestId: request }, ["sessionId", "message", "requestId"]),
   tool("interruptTurn", "Request interruption of the exact active turn. Poll final state separately.", { sessionId: text, turnId: text, requestId: request }, ["sessionId", "turnId", "requestId"]),
 ] as const;
 const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId: text, turnId: text, approvalId: text, decision: { type: "string", enum: ["allow", "deny"] } }, ["sessionId", "turnId", "approvalId", "decision"]);
-export type ToolName = "listHosts" | "listSessions" | "createSession" | "connectSession" | "getSession" | "readSessionHistory" | "sendMessage" | "interruptTurn" | "decideApproval";
+export type ToolName = "listHosts" | "listSessions" | "createSession" | "connectSession" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent" | "sendMessage" | "interruptTurn" | "decideApproval";
 export function validateInput(name: string, input: unknown): Record<string, unknown> {
   const schema = [...tools, approvalTool].find(t => t.name === name)?.inputSchema;
   if (!schema) fail("INVALID_INPUT", "Unknown operation.");

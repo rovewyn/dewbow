@@ -46,7 +46,9 @@ export const inputSchemas: Record<string, Field> = {
   connectMemberSession: object({ bindingId: id, requestId: id }, ["bindingId", "requestId"]),
   sendMemberMessage: object({ bindingId: id, message: { type: "string", minLength: 1, maxLength: 100000 }, requestId: id }, ["bindingId", "message", "requestId"]),
   interruptMemberTurn: object({ bindingId: id, turnId: id, requestId: id }, ["bindingId", "turnId", "requestId"]),
-  readMemberSessionHistory: object({ bindingId: id, cursor: { type: "integer", minimum: 0 }, messageCursor: workDir, limit: { type: "integer", minimum: 1, maximum: 500 } }, ["bindingId"]),
+  readMemberSessionHistory: object({ bindingId:id,cursor:{ type:"integer",minimum:0 },beforeCursor:workDir,afterCursor:workDir,updateCursor:workDir,limit:{ type:"integer",minimum:1,maximum:500 } },["bindingId"]),
+  getMemberSessionActivity: object({ bindingId:id,itemId:workDir },["bindingId","itemId"]),
+  readMemberSessionContent: object({ bindingId:id,contentId:workDir,contentCursor:workDir,limitBytes:{ type:"integer",minimum:4,maximum:262144 } },["bindingId","contentId"]),
 };
 
 function validate(field: Field, value: unknown, path: string): unknown {

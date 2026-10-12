@@ -1,7 +1,7 @@
-import type { ManagementErrorData, Operation, SessionSummary, NativeMessage, Turn, Approval, Event } from "@dewbow/core-protocol";
+import type { ManagementErrorData, Operation, SessionSummary, NativeMessage, SessionActivity, Turn, Approval, Event } from "@dewbow/core-protocol";
 export type OperationSummary = Omit<Operation, "caller" | "fingerprint" | "input">;
 export interface Detail { session: SessionSummary; turns: Turn[]; approvals: Approval[]; operations: OperationSummary[] }
-export interface History { events: Event[]; nextCursor: number; hasMore: boolean; messages: NativeMessage[]; nextMessageCursor: string | null; liveMessages: NativeMessage[]; historyError: ManagementErrorData | null; eventsError: ManagementErrorData | null }
+export interface History { events:Event[]; nextCursor:number; hasMore:boolean; messages:NativeMessage[]; activities:SessionActivity[]; beforeCursor:string|null; afterCursor:string|null; updateCursor:string|null; hasMoreUpdates:boolean; liveMessages:NativeMessage[]; historyError:ManagementErrorData|null; eventsError:ManagementErrorData|null }
 export class ApiError extends Error {
   constructor(readonly detail: ManagementErrorData) { super(`${detail.code}: ${detail.message}`); }
 }

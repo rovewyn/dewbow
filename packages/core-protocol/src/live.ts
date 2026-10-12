@@ -11,10 +11,11 @@ export class LiveReplies {
     if (!["assistant_delta", "assistant_message"].includes(event.type) || typeof event.payload.text !== "string") return;
     const entry = this.sessions.get(event.sessionId) ?? { messages: new Map<string, NativeMessage>(), updated: Date.now() };
     const id = String(event.payload.itemId), previous = entry.messages.get(id);
+    if (event.type === "assistant_delta" && previous?.itemComplete) return;
     const turn = event.payload.turn as { codexTurnId?: string | null } | undefined;
     entry.messages.set(id, { id, turnId: turn?.codexTurnId ?? "", role: "assistant", phase: String(event.payload.phase ?? previous?.phase ?? "commentary"),
       text: event.type === "assistant_delta" ? (previous?.text ?? "") + event.payload.text : event.payload.stage === "completed" ? event.payload.text : previous?.text ?? event.payload.text,
-      createdAt: previous?.createdAt ?? event.timestamp, turnStatus: "inProgress" });
+      createdAt:previous?.createdAt ?? event.timestamp,turnStatus:"inProgress",itemComplete:event.type === "assistant_message" && event.payload.stage === "completed" });
     entry.updated = Date.now(); this.sessions.set(event.sessionId, entry);
   }
   replace(sessionId: string, messages: NativeMessage[]): void {
@@ -24,7 +25,7 @@ export class LiveReplies {
   }
   saved(sessionId: string, messages: NativeMessage[]): void {
     const entry = this.sessions.get(sessionId);
-    for (const message of messages) if (["completed", "interrupted", "failed"].includes(message.turnStatus ?? "")) entry?.messages.delete(message.id);
+    for (const message of messages) if (message.itemComplete || ["completed","interrupted","failed"].includes(message.turnStatus ?? "")) entry?.messages.delete(message.id);
     if (entry && !entry.messages.size) this.sessions.delete(sessionId);
   }
   get(sessionId: string): NativeMessage[] { this.sweep(); return [...(this.sessions.get(sessionId)?.messages.values() ?? [])]; }

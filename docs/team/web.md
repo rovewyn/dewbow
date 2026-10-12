@@ -14,7 +14,7 @@ Choose New session on a member, select a connected Core host, and enter an absol
 
 Opening a session polls binding details and history without connecting it. Connection state and runtime state appear separately. Select Connect session explicitly to resume the original Core session. Interruption targets the observed active turn. Approval decisions remain in Core; the interface provides a link to Core when a turn needs approval.
 
-The conversation combines saved native messages and current streamed messages by native message ID. Native pagination and host-event cursors are independent. The final native page is refreshed for new messages. Failed reads retain saved history and label Core state unknown. A cached configuration is marked as the last observed snapshot.
+The conversation combines saved native messages and current streamed messages by native message ID, source version and completion state. The initial page contains the latest 50 native items; Load older history preserves the conversation scroll position. Native update polling observes both new items and changes to existing IDs, without replacing its watermark on older-page reads. Host-event cursors remain independent and monotonic, so a delayed page cannot replace newer streamed content. Failed reads retain saved history and label Core state unknown. A cached configuration is marked as the last observed snapshot. The shared chat view will expand the activity and private-content metadata already available through Team's binding APIs.
 
 ## Uncertain requests
 

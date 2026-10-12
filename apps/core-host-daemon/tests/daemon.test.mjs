@@ -39,10 +39,10 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
   const historyDb = new DatabaseSync(join(dir, "thread_history_1.sqlite"));
   historyDb.exec(`CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY);
     CREATE TABLE thread_turns(thread_id TEXT, turn_id TEXT, status TEXT);
-    CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_json TEXT,item_type TEXT);`);
+    CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,item_json TEXT,item_type TEXT,updated_at_ordinal INTEGER,started_at_ms INTEGER,completed_at_ms INTEGER);`);
   historyDb.prepare("INSERT INTO thread_turns VALUES(?,?,?)").run(nativeId, "native-turn", "completed");
-  historyDb.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?)").run(nativeId, "native-turn", "native-message", 1, 1700000000000,
-    JSON.stringify({ type: "agentMessage", id: "native-message", text: "Native saved reply", phase: "final_answer" }), "agentMessage"); historyDb.close();
+  historyDb.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?,?)").run(nativeId,"native-turn","native-message",1,1700000000000,
+    JSON.stringify({type:"agentMessage",id:"native-message",text:"Native saved reply",phase:"final_answer"}),"agentMessage",1,1700000000000,1700000000001); historyDb.close();
   server.on("connection", connection => {
     socket = connection;
     connection.on("message", raw => {
@@ -94,7 +94,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     const beforeHistory = rpc().length;
     const empty = await history("new-history", { codexThreadId: thread, codexHome: dir });
     assert.equal(empty.error, undefined);
-    assert.deepEqual(empty.result.messages, []); assert.equal(empty.result.nextCursor, null);
+    assert.deepEqual(empty.result.messages,[]); assert.equal(empty.result.beforeCursor,null); assert.equal(empty.result.afterCursor,null);
     if (process.platform === "win32") {
       const alias = await history("new-history-case-alias", { codexThreadId: thread, codexHome: dir.toUpperCase() });
       assert.deepEqual(alias.result.messages, []); assert.equal(alias.error, undefined);
@@ -134,7 +134,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal(defaultSnapshot.resolved.model, "synthetic-host"); assert.equal(defaultSnapshot.resolved.reasoningEffort, "medium");
     assert.equal(defaultSnapshot.resolved.developerInstructions, "Host baseline instructions.");
     const defaultHistory = await history("default-empty-history", { codexThreadId: event("session-2", "session_created").payload.session.codexThreadId });
-    assert.deepEqual(defaultHistory.result.messages, []); assert.equal(defaultHistory.result.nextCursor, null);
+    assert.deepEqual(defaultHistory.result.messages,[]); assert.equal(defaultHistory.result.beforeCursor,null); assert.equal(defaultHistory.result.afterCursor,null);
     for (const [id, options] of [["invalid-model", { model: "unavailable" }], ["invalid-effort", { reasoningEffort: "unsupported" }], ["invalid-tools", { mcpServers: {} }]]) {
       assert.equal((await issue(command(id, "createSession", id, { hostId: config.hostId, workDir: dir, requestId: id, sessionOptions: options }))).error.code, "INVALID_INPUT");
     }
