@@ -221,11 +221,6 @@ footer {
   background: #fae8e6;
   color: #9a3e35;
 }
-.operation-history ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
 .mono {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
@@ -251,8 +246,7 @@ summary:focus-visible {
   outline: 2px solid #16736b;
   outline-offset: 3px;
 }
-.create-session summary,
-.operation-history summary {
+.create-session summary {
   cursor: pointer;
   padding: 16px 22px;
   font-size: 13px;
@@ -286,36 +280,6 @@ summary:focus-visible {
 .session-meta p {
   margin: 4px 0;
 }
-.history {
-  margin: 0;
-  padding: 20px 24px;
-  list-style: none;
-  display: grid;
-  gap: 16px;
-}
-.entry {
-  padding: 14px 16px;
-  border: 1px solid #e2e8e4;
-  border-radius: 8px;
-  min-width: 0;
-}
-.entry.user {
-  background: #edf4f0;
-  border-color: #dbe9df;
-}
-.entry.activity {
-  padding: 8px 0;
-  border: none;
-  color: #68756e;
-  font-size: 12px;
-}
-.entry strong {
-  font-size: 12px;
-}
-.entry time {
-  font-size: 10px;
-  color: #758179;
-}
 pre {
   margin: 10px 0 0;
   white-space: pre-wrap;
@@ -323,55 +287,11 @@ pre {
   font: inherit;
   font-size: 13px;
 }
-.entry.activity pre {
-  margin-top: 4px;
-  font-size: 12px;
-}
-.approval {
-  gap: 0;
-  margin: 18px 24px 0;
-  padding: 18px;
-  border: 1px solid #e5c879;
-  border-radius: 8px;
-  background: #fff9e9;
-}
-.approval h3 {
-  margin: 0;
-}
-.approval p {
-  margin: 8px 0;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.approval pre {
-  padding: 10px;
-  border-radius: 5px;
-  background: #fff;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-}
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 14px;
-}
-.operation-history {
-  border-top: 1px solid #edf0ee;
-}
-.operation-history li {
-  padding: 10px 24px;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.operation-history p {
-  margin: 4px 0;
-}
-.composer {
-  padding: 20px 24px;
-  border-top: 1px solid #edf0ee;
-}
-.composer textarea {
-  margin-top: 8px;
 }
 @media (max-width: 850px) {
   .workspace {
@@ -388,24 +308,10 @@ pre {
   .header > button {
     margin-left: 0;
   }
-  .entry .row {
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .history,
-  .session-meta,
-  .composer {
+  .session-meta {
     padding: 16px;
-  }
-  .approval {
-    gap: 0;
-    margin: 16px 16px 0;
   }
 }
 .conversation {
   min-width: 0;
-}
-.history {
-  max-height: 560px;
-  overflow-y: auto;
 }
