@@ -1,6 +1,6 @@
-# Web operator interface
+# Dewbow Core operator Web interface
 
-`@dewbow/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports only shared record types, never server implementations or the SDK. All assets are local.
+`@dewbow-core/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports only shared record types, never server implementations or the SDK. All assets are local.
 
 ## Workflow
 
@@ -27,7 +27,7 @@ From the repository root:
 ```sh
 npm ci
 npm run build
-npm run control-plane
+npm run core:control-plane
 ```
 
 Configure the Control Plane and daemon using their guides. The built Web is served at the Control Plane origin, normally `http://127.0.0.1:3000`. It requires no separate Web service or browser-visible environment secrets. Same-origin service hosting is the reproducible local deployment path.
@@ -35,12 +35,12 @@ Configure the Control Plane and daemon using their guides. The built Web is serv
 For UI development against the default local Control Plane:
 
 ```sh
-npm run web
+npm run core:web
 ```
 
-Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward that service's Host and Origin. These proxies are not included in production assets. `npm run web -- --port 5174` selects another free development port. Production service origin checks remain unchanged.
+Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward that service's Host and Origin. These proxies are not included in production assets. `npm run core:web -- --port 5174` selects another free development port. Production service origin checks remain unchanged.
 
-`npm run web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is only useful for static inspection. Use the Control Plane for full integration. Stop development/preview with Ctrl+C. The built service is stopped through the Control Plane command.
+`npm run core:web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is only useful for static inspection. Use the Control Plane for full integration. Stop development/preview with Ctrl+C. The built service is stopped through the Control Plane command.
 
 ## UI foundation
 

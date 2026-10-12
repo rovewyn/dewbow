@@ -1,6 +1,6 @@
-# Control Plane
+# Dewbow Core Control Plane
 
-`@dewbow/control-plane` is a Node.js service with an authenticated management API, stateless MCP adapter, outbound-daemon WebSocket gateway, and private SQLite storage for management metadata. All clients call the same management operations. It has no SDK dependency and does not access native Codex storage or credentials.
+`@dewbow-core/control-plane` is a Node.js service with an authenticated management API, stateless MCP adapter, outbound-daemon WebSocket gateway, and private SQLite storage for management metadata. All clients call the same management operations. It has no SDK dependency and does not access native Codex storage or credentials.
 
 See [MVP interfaces](interfaces.md) for schemas, state, retry semantics, event cursors, and the approval authority boundary. See [MVP specification](mvp.md) for product acceptance. See [Installation and operation](operations.md) for the complete setup path.
 
@@ -16,7 +16,7 @@ See [MVP interfaces](interfaces.md) for schemas, state, retry semantics, event c
 | `DEWBOW_MANAGEMENT_TOKEN` | Required at startup | External API/MCP bearer credential |
 | `DEWBOW_OPERATOR_PASSWORD` | Required at startup | Separate human login credential |
 | `DEWBOW_TLS_CERT`, `DEWBOW_TLS_KEY` | Unset | PEM files for HTTPS/WSS; required as a pair for non-loopback binding |
-| `DEWBOW_WEB_ROOT` | Built `apps/web/dist/` | Local static Web assets |
+| `DEWBOW_WEB_ROOT` | Built `apps/core-web/dist/` | Local static Web assets |
 
 The host file is a private JSON array:
 
@@ -34,13 +34,13 @@ Use the runtime and installation steps in [Workspace development](workspace.md).
 
 ```sh
 npm ci
-npm run control-plane -- --check
-npm run control-plane
+npm run core:control-plane -- --check
+npm run core:control-plane
 ```
 
 Configure credentials and the permitted-host file before normal startup. `--check` checks listener configuration only. It does not validate credentials, open storage, connect to hosts, or prove service readiness. Normal startup opens storage and the listener. `GET /health` reports listener availability. Service logs contain component/status messages, not raw requests or native Codex diagnostics. Ctrl+C or SIGTERM closes sockets and storage.
 
-`npm run build --workspace @dewbow/web` creates the static interface. The Control Plane serves it at its root; no additional Web process is needed for the local built deployment.
+`npm run build --workspace @dewbow-core/web` creates the static interface. The Control Plane serves it at its root; no additional Web process is needed for the local built deployment.
 
 For cross-machine use, configure HTTPS/WSS with a certificate trusted by both clients and hosts. Keep certificate verification enabled. A loopback listener may sit behind an authenticated TLS reverse proxy which preserves the configured Host header. Plain HTTP/WS is restricted to local use. No production CORS exception is included.
 
@@ -64,7 +64,7 @@ A restart restores hosts, managed session metadata, approval decisions, and requ
 npm run build
 npm run typecheck
 npm test
-node apps/control-plane/dist/cli.js --check
+node apps/core-control-plane/dist/cli.js --check
 git diff --check
 ```
 

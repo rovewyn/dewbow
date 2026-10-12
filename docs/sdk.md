@@ -1,6 +1,6 @@
-# SDK guide
+# Dewbow Core SDK guide
 
-`@dewbow/sdk` is a TypeScript SDK for local Codex session discovery, saved history, and conversation execution in Node.js. Its source, tests, and examples are in `packages/sdk/`. A session is a saved conversation. It is distinct from a Codex process or an agent.
+`@dewbow-core/sdk` is a TypeScript SDK for local Codex session discovery, saved history, and conversation execution in Node.js. Its source, tests, and examples are in `packages/core-sdk/`. A session is a saved conversation. It is distinct from a Codex process or an agent.
 
 The SDK returns session metadata, archive state, parent and fork relationships, runtime observations, and writer lock observations. Each discovery source has an explicit outcome. Missing information stays unknown. A separate history API reads saved chat messages for one session.
 
@@ -10,8 +10,8 @@ Requires Node.js 24.15 or newer. Development uses Node.js 24.21.0, npm 12.2.0, a
 
 ```sh
 npm ci
-npm run build --workspace @dewbow/sdk
-npm run demo
+npm run build --workspace @dewbow-core/sdk
+npm run core:demo
 ```
 
 The demo prints summary counts and source outcomes. It starts no HTTP server. The SDK does not require Python. `node:sqlite` reads the database; Koffi supplies the native macOS lock query. Koffi is loaded only when writer inspection is used.
@@ -19,17 +19,17 @@ The demo prints summary counts and source outcomes. It starts no HTTP server. Th
 This package is currently private and unpublished. To use it in another local project:
 
 ```sh
-npm pack --workspace @dewbow/sdk --pack-destination /path/to/packages
+npm pack --workspace @dewbow-core/sdk --pack-destination /path/to/packages
 # In the consuming project:
-npm install /path/to/packages/dewbow-sdk-0.1.0.tgz
+npm install /path/to/packages/dewbow-core-sdk-0.1.0.tgz
 ```
 
-Packing builds the SDK and includes compiled JavaScript, TypeScript declarations, and the package README. Repository documentation remains in the root `docs/` directory. The tarball excludes the host daemon, tests, examples, and local Codex data. Consumers must now import `@dewbow/sdk`; the previous `dewbow` package name is no longer used.
+Packing builds the SDK and includes compiled JavaScript, TypeScript declarations, and the package README. Repository documentation remains in the root `docs/` directory. The tarball excludes the host daemon, tests, examples, and local Codex data. Consumers import `@dewbow-core/sdk`.
 
 ## API
 
 ```ts
-import { discoverSessions, getParentSession, getForkSourceSession } from "@dewbow/sdk";
+import { discoverSessions, getParentSession, getForkSourceSession } from "@dewbow-core/sdk";
 
 const snapshot = await discoverSessions();
 for (const session of snapshot.sessions) {
@@ -74,7 +74,7 @@ Invalid options, combined inventory overflow, and cancellation reject the promis
 ## Read a session's chat history
 
 ```ts
-import { readSessionHistory } from "@dewbow/sdk";
+import { readSessionHistory } from "@dewbow-core/sdk";
 
 const sessionId = "00000000-0000-4000-8000-000000000001";
 let cursor: string | undefined;
@@ -111,12 +111,12 @@ Pages are limited to 8 MiB of saved message JSON. Oversized or malformed pages r
 
 An indexed session with no chat messages returns an empty page. An absent session rejects; it is not presented as an empty conversation. This API returns what the selected history database has persisted. It does not claim to reconstruct missing, deleted, or unindexed history.
 
-After building, run `node packages/sdk/examples/history.mjs <session-id> [limit] [asc|desc]` from the repository root, or `npm run demo:history -- <session-id> 20 desc`. This command explicitly prints conversation content. Keep its output local and out of commits or shared logs. Discovery remains metadata-only.
+After building, run `node packages/core-sdk/examples/history.mjs <session-id> [limit] [asc|desc]` from the repository root, or `npm run core:demo:history -- <session-id> 20 desc`. This command explicitly prints conversation content. Keep its output local and out of commits or shared logs. Discovery remains metadata-only.
 
 ## Connect and continue an existing conversation
 
 ```ts
-import { CodexRuntime } from "@dewbow/sdk";
+import { CodexRuntime } from "@dewbow-core/sdk";
 
 const runtime = new CodexRuntime();
 const completed = new Promise<void>(resolve => {
@@ -172,7 +172,7 @@ Local database schema, rollout headers, writer locks, and the CLI inspection for
 ```sh
 npm run typecheck
 npm test
-npm pack --workspace @dewbow/sdk --dry-run
+npm pack --workspace @dewbow-core/sdk --dry-run
 git diff --check
 ```
 

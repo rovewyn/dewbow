@@ -1,8 +1,10 @@
-# Agent First Codex Management MVP
+# Dewbow Core MVP
 
 Implementation handoff
 
 Build a self-hosted service that lets an existing AI agent manage Codex sessions across multiple machines through MCP and an API. A small Web interface gives the human operator visibility, approval controls, and a way to intervene.
+
+This specification covers Dewbow Core. Agent definitions, teams, members, and session bindings belong to Dewbow Team, which uses Core's authenticated HTTP API. See [Dewbow boundaries and projects](README.md).
 
 ## 1 Product goal and working flow
 
@@ -146,7 +148,7 @@ For an unresolved turn, the operator verifies or stops the affected local execut
 
 ### Installation and operation
 
-Provide one reproducible setup path for the Control Plane, persistent storage, MCP connection, and Host Daemon. Manual configuration is enough. The README must cover:
+Provide one reproducible setup path for the Control Plane, persistent storage, MCP connection, and Host Daemon. Manual configuration is enough. Documentation under `docs/` must cover:
 
 - Required runtime and Codex versions, and the target operating systems actually validated by the implementing team.
 

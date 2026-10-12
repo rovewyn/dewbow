@@ -1,12 +1,12 @@
-# MVP interfaces
+# Dewbow Core API and MCP interfaces
 
-[MVP specification](mvp.md) defines the product scope. The private `@dewbow/protocol` workspace owns wire records, management input schemas, and the SQLite journal used by both services. The daemon uses the SDK for native discovery, saved messages, and explicit conversation connection. Management records track execution ownership.
+[Core MVP specification](mvp.md) defines Core's scope. The private `@dewbow-core/protocol` workspace owns wire records, management input schemas, and the SQLite journal used by the Core Control Plane and host daemon. The daemon uses the SDK for native discovery, saved messages, and explicit conversation connection. Management records track execution ownership. Team uses the authenticated HTTP API and retains ownership of definitions, members, and session bindings.
 
 ## Management operations
 
 All Dewbow-owned request, response, TypeScript object, configuration and persisted JSON fields use `camelCase`, such as `hostId`, `sessionId`, `workDir` and `requestId`. Operation and MCP tool names use verb-first `camelCase`. The HTTP path uses the same operation name, for example `POST /api/createSession`. SQLite tables and columns retain lowercase `snake_case`; the event journal maps JSON `sessionId` to SQL `session_id`. Native Codex protocol and storage names stay unchanged at their adapter boundaries.
 
-Identifiers are opaque strings; times are ISO 8601 UTC. `POST /api/<operation>` accepts a JSON object matching the schemas in `packages/protocol/src/index.ts`. Responses are `{ result: ... }` or `{ error: { code, message, retryable, sessionId?, turnId? } }`. Bearer authentication identifies the external agent. The Web operator uses an HttpOnly, SameSite=Strict cookie issued by `POST /auth/login`; `POST /auth/logout` clears it. Only the operator can call `decideApproval`.
+Identifiers are opaque strings; times are ISO 8601 UTC. `POST /api/<operation>` accepts a JSON object matching the schemas in `packages/core-protocol/src/index.ts`. Responses are `{ result: ... }` or `{ error: { code, message, retryable, sessionId?, turnId? } }`. Bearer authentication identifies the external agent. The Web operator uses an HttpOnly, SameSite=Strict cookie issued by `POST /auth/login`; `POST /auth/logout` clears it. Only the operator can call `decideApproval`.
 
 | Operation | Input | Result |
 | --- | --- | --- |

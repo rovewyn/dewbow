@@ -41,22 +41,22 @@ jobs:
       - name: Build workspaces
         run: npm run build
       - name: Test service journal
-        working-directory: packages/protocol
+        working-directory: packages/core-protocol
         run: node --test tests/*.test.mjs
       - name: Test SDK
-        working-directory: packages/sdk
+        working-directory: packages/core-sdk
         run: node --test tests/*.test.mjs
       - name: Test conversation projection
         if: runner.os == 'Linux'
-        working-directory: apps/web
+        working-directory: apps/core-web
         run: node --test tests/*.test.mjs
       - name: Test host daemon
         if: runner.os == 'Linux'
-        working-directory: apps/host-daemon
+        working-directory: apps/core-host-daemon
         run: node --test tests/*.test.mjs
       - name: Test Control Plane
         if: runner.os == 'Linux'
-        working-directory: apps/control-plane
+        working-directory: apps/core-control-plane
         run: node --test tests/*.test.mjs
       - name: Test Team backend
         working-directory: apps/team-backend
@@ -68,14 +68,14 @@ jobs:
         run: node --test scripts/tests/team-core.test.mjs
       - name: Check SDK package contents
         if: runner.os == 'Linux'
-        run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts
+        run: npm pack --workspace @dewbow-core/sdk --dry-run --ignore-scripts
       - name: Check service configuration
         if: runner.os == 'Linux'
         env:
           DEWBOW_HOST_ID: example-host
         run: |
-          node apps/host-daemon/dist/cli.js --check
-          node apps/control-plane/dist/cli.js --check
+          node apps/core-host-daemon/dist/cli.js --check
+          node apps/core-control-plane/dist/cli.js --check
           DEWBOW_TEAM_OPERATOR_TOKEN=synthetic-team-operator-credential node apps/team-backend/dist/cli.js --check
       - name: Check local operation scripts
         if: runner.os == 'Linux'

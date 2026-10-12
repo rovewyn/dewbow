@@ -2,6 +2,7 @@
   "name": "@dewbow-team/backend",
   "version": "0.1.0",
   "private": true,
+  "description": "Dewbow Team agent organization service and authenticated Core API integration",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
