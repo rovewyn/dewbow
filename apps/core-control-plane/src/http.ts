@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fail } from "@dewbow-core/protocol";
+import { fail } from "@dewbow/core-protocol";
 
 export function sameSecret(a: string, b: string): boolean {
   return Boolean(a && b) && timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());

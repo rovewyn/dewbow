@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
-import { contractVersion, fail, TeamError } from "@dewbow-team/protocol";
+import { contractVersion, fail, TeamError } from "@dewbow/team-protocol";
 import type { Config } from "./config.js";
 
 export type Handler = (operation: string, input: unknown, caller: string) => Promise<unknown> | unknown;

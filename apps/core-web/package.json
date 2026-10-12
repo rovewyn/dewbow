@@ -1,5 +1,5 @@
 {
-  "name": "@dewbow-core/web",
+  "name": "@dewbow/core-web",
   "version": "0.1.0",
   "private": true,
   "description": "Dewbow Core operator interface for hosts, conversations, execution, and approvals",
@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",
-    "@dewbow-core/protocol": "0.1.0",
+    "@dewbow/core-protocol": "0.1.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.2.6",
     "lucide-react": "1.55.0",

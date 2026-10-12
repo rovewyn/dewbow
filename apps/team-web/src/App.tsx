@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { AgentDefinition, ApiError, SessionBinding, Team, TeamMember } from "@dewbow-team/protocol";
+import type { AgentDefinition, ApiError, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
 import { call, errorDetail, readAuth, signIn, signOut } from "./api.js";
 import { DefinitionsPage } from "./DefinitionsPage.js";
 import { readRoute, type Catalog, type Route } from "./model.js";

@@ -68,7 +68,7 @@ jobs:
         run: node --test scripts/tests/team-core.test.mjs
       - name: Check SDK package contents
         if: runner.os == 'Linux'
-        run: npm pack --workspace @dewbow-core/sdk --dry-run --ignore-scripts
+        run: npm pack --workspace @dewbow/core-sdk --dry-run --ignore-scripts
       - name: Check service configuration
         if: runner.os == 'Linux'
         env:

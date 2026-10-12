@@ -36,7 +36,7 @@ For retained generated assets, preserve source outputs and record exact prompts,
 
 ### Naming conventions
 
-Use `@dewbow-core/*` for Core workspace packages and `@dewbow-team/*` for Team workspace packages. Prefix application commands with `core:` or `team:` and their local-environment variants with `local:core:` or `local:team:`. The root workspace coordinates both applications. Keep the ownership and project map in `docs/README.md` current.
+Use the shared `@dewbow` npm scope: `@dewbow/core-*` for Core workspace packages and `@dewbow/team-*` for Team workspace packages. The private root coordinator is `@dewbow/workspace`. Prefix application commands with `core:` or `team:` and their local-environment variants with `local:core:` or `local:team:`. The root workspace coordinates both applications. Keep the ownership and project map in `docs/README.md` current.
 
 Use `camelCase` for Dewbow-owned TypeScript and JavaScript variables, functions, methods, object properties, and configuration keys. Use the same field names in HTTP requests and responses, MCP inputs and results, SDK types, and Web application objects. For example, use `hostId`, `sessionId`, `requestId`, `sessionOptions`, and `instructionsAppend`.
 

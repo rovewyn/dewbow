@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
-import { Store } from "@dewbow-core/protocol/store";
+import { Store } from "@dewbow/core-protocol/store";
 import { createHash } from "node:crypto";
 import { HostDaemon } from "../dist/index.js";
 import { DatabaseSync } from "node:sqlite";
-import { canonicalJson } from "@dewbow-core/protocol";
+import { canonicalJson } from "@dewbow/core-protocol";
 
 async function until(predicate) {
   const end = Date.now() + 3000;

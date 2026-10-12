@@ -1,4 +1,4 @@
-import type { CoreHistory, NativeMessage } from "@dewbow-team/protocol";
+import type { CoreHistory, NativeMessage } from "@dewbow/team-protocol";
 
 export interface HistoryState {
   saved: Record<string, NativeMessage>;

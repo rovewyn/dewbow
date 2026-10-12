@@ -1,6 +1,6 @@
 # Dewbow documentation
 
-Dewbow has two applications: Core is the Codex execution platform, and Team is the agent organization workspace. The root `dewbow-workspace` package coordinates their builds and dependencies.
+Dewbow has two applications: Core is the Codex execution platform, and Team is the agent organization workspace. The root `@dewbow/workspace` package coordinates their builds and dependencies.
 
 ## Ownership and integration
 
@@ -23,18 +23,18 @@ Core can be used directly by an external API or MCP client without Team. Team ca
 
 ## Projects and names
 
-Core directories use the `core-` prefix and packages use `@dewbow-core/*`. Team directories use `team-` and packages use `@dewbow-team/*`. Root application commands use `core:*` or `team:*`; commands that load local environment files use `local:core:*` or `local:team:*`. Contract versions remain `v1`.
+All npm packages share the `@dewbow` scope. Core directories and package names use the `core-` prefix; Team directories and package names use `team-`. The private root coordinator is `@dewbow/workspace`. Root application commands use `core:*` or `team:*`; commands that load local environment files use `local:core:*` or `local:team:*`. Contract versions remain `v1`.
 
 | Project | Package | Responsibility |
 | --- | --- | --- |
-| `packages/core-protocol` | `@dewbow-core/protocol` | Core management contracts and service journal |
-| `packages/core-sdk` | `@dewbow-core/sdk` | Local Codex discovery, saved history, and runtime integration |
-| `apps/core-host-daemon` | `@dewbow-core/host-daemon` | Host-side Codex runtime ownership and Core connection |
-| `apps/core-control-plane` | `@dewbow-core/control-plane` | Core API, MCP, host gateway, and management state |
-| `apps/core-web` | `@dewbow-core/web` | Core operator interface for hosts, conversations, and approvals |
-| `packages/team-protocol` | `@dewbow-team/protocol` | Team domain contracts and public Core type projections |
-| `apps/team-backend` | `@dewbow-team/backend` | Definitions, teams, members, bindings, and Core API integration |
-| `apps/team-web` | `@dewbow-team/web` | Team operator workspace for agents and member sessions |
+| `packages/core-protocol` | `@dewbow/core-protocol` | Core management contracts and service journal |
+| `packages/core-sdk` | `@dewbow/core-sdk` | Local Codex discovery, saved history, and runtime integration |
+| `apps/core-host-daemon` | `@dewbow/core-host-daemon` | Host-side Codex runtime ownership and Core connection |
+| `apps/core-control-plane` | `@dewbow/core-control-plane` | Core API, MCP, host gateway, and management state |
+| `apps/core-web` | `@dewbow/core-web` | Core operator interface for hosts, conversations, and approvals |
+| `packages/team-protocol` | `@dewbow/team-protocol` | Team domain contracts and public Core type projections |
+| `apps/team-backend` | `@dewbow/team-backend` | Definitions, teams, members, bindings, and Core API integration |
+| `apps/team-web` | `@dewbow/team-web` | Team operator workspace for agents and member sessions |
 
 ## Guides
 

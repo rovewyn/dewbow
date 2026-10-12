@@ -1,5 +1,5 @@
 {
-  "name": "@dewbow-core/host-daemon",
+  "name": "@dewbow/core-host-daemon",
   "version": "0.1.0",
   "private": true,
   "description": "Dewbow Core host-side Codex runtime and durable Control Plane connection",
@@ -22,8 +22,8 @@
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@dewbow-core/protocol": "0.1.0",
-    "@dewbow-core/sdk": "0.1.0",
+    "@dewbow/core-protocol": "0.1.0",
+    "@dewbow/core-sdk": "0.1.0",
     "ws": "8.22.0"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
-import { CodexRuntime, CodexRuntimeError } from "@dewbow-core/sdk";
-import { ManagementError } from "@dewbow-core/protocol";
-export type { RpcMessage } from "@dewbow-core/sdk";
+import { CodexRuntime, CodexRuntimeError } from "@dewbow/core-sdk";
+import { ManagementError } from "@dewbow/core-protocol";
+export type { RpcMessage } from "@dewbow/core-sdk";
 
 /** Map SDK errors to the management wire format without exposing native diagnostics. */
 export class Runtime extends CodexRuntime {

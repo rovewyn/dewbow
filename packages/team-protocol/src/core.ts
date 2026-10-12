@@ -1,7 +1,7 @@
-import type { Approval, Event, NativeMessage, Operation, Session, Turn } from "@dewbow-core/protocol";
+import type { Approval, Event, NativeMessage, Operation, Session, Turn } from "@dewbow/core-protocol";
 import type { ApiError, SessionBinding, SessionOptions } from "./index.js";
 
-export type { Host as CoreHost, NativeMessage, SessionState as RuntimeState } from "@dewbow-core/protocol";
+export type { Host as CoreHost, NativeMessage, SessionState as RuntimeState } from "@dewbow/core-protocol";
 
 /** Public Core v1 projections derive from its contract; execution stays behind HTTP. */
 export type CoreOperation = Pick<Operation, "commandId" | "operation" | "sessionId" | "turnId" | "requestId" | "status" | "createdAt" | "error">;

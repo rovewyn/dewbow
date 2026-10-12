@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow-team/protocol";
+import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 import { emptyHistory, mergeHistory, type HistoryState } from "./history.js";
 

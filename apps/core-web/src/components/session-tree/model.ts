@@ -1,4 +1,4 @@
-import type { Host, SessionSummary } from "@dewbow-core/protocol";
+import type { Host, SessionSummary } from "@dewbow/core-protocol";
 
 export interface SessionTreeNode {
   id: string;

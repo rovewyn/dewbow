@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import type { AgentDefinition, ApiError, SessionOptions } from "@dewbow-team/protocol";
+import type { AgentDefinition, ApiError, SessionOptions } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 import { Badge, ConfirmAction, Empty, ErrorNotice, Modal, PageHeading, field } from "./ui.js";
 import { useMutation } from "./useMutation.js";

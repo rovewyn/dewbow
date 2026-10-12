@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AgentDefinition, CoreHost, MemberSessionResult, SessionBinding, Team, TeamMember } from "@dewbow-team/protocol";
+import type { AgentDefinition, CoreHost, MemberSessionResult, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 import type { Catalog, Route } from "./model.js";
 import { Badge, ConfirmAction, Empty, ErrorNotice, Modal, PageHeading, field, shortId } from "./ui.js";

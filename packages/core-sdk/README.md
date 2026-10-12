@@ -1,4 +1,4 @@
-# @dewbow-core/sdk
+# @dewbow/core-sdk
 
 The Dewbow Core TypeScript SDK for local Codex session discovery, saved chat history, and conversation execution in Node.js.
 

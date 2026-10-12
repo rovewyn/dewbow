@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { ApiError } from "@dewbow-team/protocol";
+import type { ApiError } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 
 export function useMutation<T>(onSuccess: (result: T) => void | Promise<void>) {

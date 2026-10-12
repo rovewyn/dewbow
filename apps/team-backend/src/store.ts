@@ -2,7 +2,7 @@ import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { canonicalJson, defaultDefinition, fail, type AgentDefinition, type ApiError, type SessionBinding, type Team, type TeamMember } from "@dewbow-team/protocol";
+import { canonicalJson, defaultDefinition, fail, type AgentDefinition, type ApiError, type SessionBinding, type Team, type TeamMember } from "@dewbow/team-protocol";
 
 type Row = Record<string, string | number | bigint | Uint8Array | null>;
 

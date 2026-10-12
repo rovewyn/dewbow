@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { defaultDefinition, fail, normalizeDefinitionId, validateInput, type AgentDefinition, type SessionOptions, type Team, type TeamMember } from "@dewbow-team/protocol";
+import { defaultDefinition, fail, normalizeDefinitionId, validateInput, type AgentDefinition, type SessionOptions, type Team, type TeamMember } from "@dewbow/team-protocol";
 import { TeamStore } from "./store.js";
 
 export class TeamManagement {

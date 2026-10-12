@@ -1,4 +1,4 @@
-import { contractVersion, validateInput } from "@dewbow-team/protocol";
+import { contractVersion, validateInput } from "@dewbow/team-protocol";
 import type { CoreApi } from "./core-client.js";
 import { TeamManagement } from "./management.js";
 import { MemberSessions } from "./member-sessions.js";
