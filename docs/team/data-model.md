@@ -1,4 +1,4 @@
-# Team data model and management API
+# Dewbow Team data model and management API
 
 The v1 contract uses camelCase JSON and verb-first operations at `POST /api/<operation>`. Responses are `{ result: ... }` or `{ error: { code, message, retryable } }`. IDs are opaque strings; timestamps are ISO 8601 UTC. Every new write requires `requestId`, scoped to caller and operation. Explicit creation retries use the ID already recorded for their binding. Identical input returns the original result across restarts; changed input returns `REQUEST_CONFLICT`.
 

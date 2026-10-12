@@ -1,4 +1,4 @@
-# Operator Web interface
+# Dewbow Team operator Web interface
 
 Build the workspace and start the Team backend as described in [Workspace development](workspace.md). The backend serves the built Web interface and API from the same origin. Sign in with `DEWBOW_TEAM_OPERATOR_TOKEN`. The token is used for authentication; browser persistence contains an HttpOnly session cookie, not the token. The Core credential stays on the backend.
 

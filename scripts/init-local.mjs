@@ -26,7 +26,7 @@ create("control-plane.env", environment({
   DEWBOW_CONTROL_PLANE_HOST: "127.0.0.1", DEWBOW_CONTROL_PLANE_PORT: "3000", DEWBOW_PUBLIC_ORIGIN: origin,
   DEWBOW_CONTROL_PLANE_STATE: resolve(directory, "control.sqlite"), DEWBOW_HOSTS_FILE: resolve(directory, "hosts.json"),
   DEWBOW_MANAGEMENT_TOKEN: credentials.agent, DEWBOW_OPERATOR_PASSWORD: credentials.operator,
-  DEWBOW_WEB_ROOT: resolve("apps/web/dist"),
+  DEWBOW_WEB_ROOT: resolve("apps/core-web/dist"),
 }));
 create("host-daemon.env", environment({
   DEWBOW_HOST_ID: "local-host", DEWBOW_HOST_TOKEN: credentials.host, DEWBOW_CONTROL_PLANE_URL: origin,
@@ -41,6 +41,6 @@ create("team.env", environment({
   DEWBOW_CORE_URL: coreEnvironment.DEWBOW_PUBLIC_ORIGIN ?? origin,
   DEWBOW_CORE_TOKEN: coreEnvironment.DEWBOW_MANAGEMENT_TOKEN ?? credentials.agent,
 }));
-create("mcp.json", JSON.stringify({ mcpServers: { dewbow: { url: `${origin}/mcp`, headers: { Authorization: `Bearer ${credentials.agent}` } } } }, null, 2) + "\n");
+create("mcp.json", JSON.stringify({ mcpServers: { "dewbow-core": { url: `${origin}/mcp`, headers: { Authorization: `Bearer ${credentials.agent}` } } } }, null, 2) + "\n");
 console.log(`Local configuration: ${directory}`);
-console.log("Existing Core configuration was preserved. Start built services with npm run local:control-plane, npm run local:host-daemon and npm run local:team.");
+console.log("Existing Core configuration was preserved. Start built services with npm run local:core:control-plane, npm run local:core:host-daemon and npm run local:team:backend.");

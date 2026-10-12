@@ -10,7 +10,7 @@ Keep the root `README.md` as simple as possible: a brief project introduction an
 
 Keep related code and resources together. Follow established directory boundaries and naming patterns. Update operating instructions when a change affects setup, configuration, commands, or expected behavior.
 
-Core owns hosts, native conversations, configuration snapshots, execution, recovery, and approvals. Team owns agent definitions, teams, members, and session bindings. Keep Team in `apps/team-backend`, `apps/team-web`, and `packages/team-protocol`, with its documentation in `docs/team/`. Team calls Core through its authenticated HTTP API; keep the Core credential on the Team backend and preserve independent service startup and operator authentication.
+Core owns hosts, native conversations, configuration snapshots, execution, recovery, and approvals. Keep Core in `apps/core-control-plane`, `apps/core-host-daemon`, `apps/core-web`, `packages/core-protocol`, and `packages/core-sdk`. Team owns agent definitions, teams, members, and session bindings. Keep Team in `apps/team-backend`, `apps/team-web`, and `packages/team-protocol`, with its documentation in `docs/team/`. Team calls Core through its authenticated HTTP API; keep the Core credential on the Team backend and preserve independent service startup and operator authentication.
 
 Keep generated files, caches, dependency installations, and temporary outputs out of version control unless the repository explicitly tracks them. Preserve user-created files and local results during cleanup.
 
@@ -35,6 +35,8 @@ For user interfaces, preserve semantic content, accessibility, and responsive be
 For retained generated assets, preserve source outputs and record exact prompts, exposed tool parameters, and integration notes. Do not invent model names, versions, seeds, or other unavailable metadata. Remove unused assets and temporary design files created by the task.
 
 ### Naming conventions
+
+Use `@dewbow-core/*` for Core workspace packages and `@dewbow-team/*` for Team workspace packages. Prefix application commands with `core:` or `team:` and their local-environment variants with `local:core:` or `local:team:`. The root workspace coordinates both applications. Keep the ownership and project map in `docs/README.md` current.
 
 Use `camelCase` for Dewbow-owned TypeScript and JavaScript variables, functions, methods, object properties, and configuration keys. Use the same field names in HTTP requests and responses, MCP inputs and results, SDK types, and Web application objects. For example, use `hostId`, `sessionId`, `requestId`, `sessionOptions`, and `instructionsAppend`.
 

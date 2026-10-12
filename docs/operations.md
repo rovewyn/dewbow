@@ -18,17 +18,19 @@ npm run local:init
 
 The initializer creates ignored, owner-only files in `state/local/`. Existing configuration values are preserved, so rerunning it does not rotate credentials or erase history. It creates distinct Core management, host, Core operator, and Team operator credentials, a permitted `local-host`, environment files, a private MCP configuration, and an empty work directory. For an existing Core setup, it adds `teamOperator` to the credential file and creates `team.env` only when absent, taking the Core origin and management credential from the existing `control-plane.env`. Do not delete only one of these configuration files to rotate a credential; update its associated service/client configuration together.
 
+After a project-directory rename, check any explicit `DEWBOW_WEB_ROOT` in existing local configuration and point it at the current `apps/core-web/dist` build. The initializer preserves existing files and does not rewrite that path. Project naming changes require no database reset or credential rotation.
+
 Start services in separate terminals, from the same checkout root:
 
 ```sh
 # Terminal 1: Control Plane and built Web
-npm run local:control-plane
+npm run local:core:control-plane
 
 # Terminal 2: local Codex runtime and host connection
-npm run local:host-daemon
+npm run local:core:host-daemon
 
 # Terminal 3: independent Team backend and built Team Web
-npm run local:team
+npm run local:team:backend
 ```
 
 Open `http://127.0.0.1:3000`. Use the `operator` value in the private `state/local/credentials.json` for Web login. The Web has no separate production listener. `/health` only establishes listener availability; a connected machine plus a completed native turn establishes the execution path.
@@ -57,7 +59,7 @@ Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <
 For a Codex CLI client, configure the URL with its documented command:
 
 ```sh
-codex mcp add dewbow --url http://127.0.0.1:3000/mcp --bearer-token-env-var DEWBOW_MANAGEMENT_TOKEN
+codex mcp add dewbow-core --url http://127.0.0.1:3000/mcp --bearer-token-env-var DEWBOW_MANAGEMENT_TOKEN
 ```
 
 Start that client with the management environment loaded. For example, Node can load the private file and start the interactive client without putting the credential on the command line:
@@ -90,7 +92,7 @@ Before crossing machines, configure a reachable HTTPS/WSS origin. Set `DEWBOW_CO
 On the second machine, copy [host-daemon.env.example](examples/host-daemon.env.example) to a private ignored file such as `state/second-host.env`. Set its host ID, credential, HTTPS URL, and local journal path. Create the selected work directory there, then run:
 
 ```sh
-node --env-file=state/second-host.env apps/host-daemon/dist/cli.js
+node --env-file=state/second-host.env apps/core-host-daemon/dist/cli.js
 ```
 
 Wait until Web/MCP lists two distinct connected hosts. From a client with the updated HTTPS management environment, run:
@@ -124,8 +126,8 @@ Service stdout contains sanitized component/status messages. To retain it locall
 
 ```sh
 mkdir -p logs
-npm run local:control-plane > logs/control-plane.log 2>&1
-npm run local:host-daemon > logs/host-daemon.log 2>&1
+npm run local:core:control-plane > logs/control-plane.log 2>&1
+npm run local:core:host-daemon > logs/host-daemon.log 2>&1
 ```
 
 Raw native stderr is not forwarded. Keep shell diagnostics and acceptance traces private too. Stop each foreground service with Ctrl+C or send SIGTERM to its verified process. The daemon waits for its app-server to stop; the Control Plane closes sockets and storage. Stopping the Control Plane alone does not stop host execution. Verify the listener port is released before restarting on the same address. No system service, automatic boot startup, container, or cloud deployment is installed by this path.

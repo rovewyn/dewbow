@@ -1,6 +1,6 @@
-# Host daemon
+# Dewbow Core host daemon
 
-`@dewbow/host-daemon` owns a local Codex app-server over stdio. It initiates an authenticated WebSocket connection to the Control Plane and journals managed session metadata, command fingerprints, approvals and management events in SQLite. Browser lifetime does not affect its runtime. One app-server can run independent turns for separate conversations; each conversation permits one active or unresolved turn.
+`@dewbow-core/host-daemon` owns a local Codex app-server over stdio. It initiates an authenticated WebSocket connection to the Control Plane and journals managed session metadata, command fingerprints, approvals and management events in SQLite. Browser lifetime does not affect its runtime. One app-server can run independent turns for separate conversations; each conversation permits one active or unresolved turn.
 
 The public `discoverSessions` and `readSessionHistory` methods call the read-only SDK. The authenticated host connection also exposes these reads to Control Plane clients. All discovered conversations, including archived and child conversations, can be listed and read without importing their catalog or messages into Dewbow SQLite. New sessions create native conversations. Explicit `connectSession` requests use SDK `CodexRuntime.connectSession` to resume an existing native ID without a fork or a new model turn. The daemon controls it after Codex confirms an idle connection. Native writer locks reject conflicting ownership; the daemon does not stop Desktop or CLI processes. Connected conversations use the existing send, approval, interrupt, and restart recovery flow. `runtimeState` reports observed Codex execution separately from `connectionState`. Failed connection requests leave runtime observations unchanged. Only confirmed connections, or unresolved owned turns, qualify for automatic recovery; an unsuccessful first connection is not retried by a restart.
 
@@ -24,8 +24,8 @@ Run from the repository root with credentials configured outside Git:
 
 ```sh
 npm ci
-DEWBOW_HOST_ID=example-host npm run host-daemon -- --check
-npm run host-daemon
+DEWBOW_HOST_ID=example-host npm run core:host-daemon -- --check
+npm run core:host-daemon
 ```
 
 `--check` validates identity and URL configuration without opening storage, reading Codex, starting a process, or connecting to the service. Normal startup creates the journal, checks previous process ownership, initializes app-server, recovers saved conversations, and connects to the Control Plane. Ctrl+C or SIGTERM stops the owned runtime and closes storage and transport. Sanitized logs contain only component and connection/runtime status. Raw native stderr and RPC diagnostics are not forwarded.
@@ -60,7 +60,7 @@ Missing or incompatible snapshots also require recovery rather than fallback. Jo
 npm run build
 npm run typecheck
 npm test
-DEWBOW_HOST_ID=example-host node apps/host-daemon/dist/cli.js --check
+DEWBOW_HOST_ID=example-host node apps/core-host-daemon/dist/cli.js --check
 git diff --check
 ```
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { WebSocket } from "ws";
-import { ControlPlane } from "../../apps/control-plane/dist/index.js";
+import { ControlPlane } from "../../apps/core-control-plane/dist/index.js";
 import { TeamApi } from "../../apps/team-backend/dist/api.js";
 import { CoreClient } from "../../apps/team-backend/dist/core-client.js";
 import { createTeamServer } from "../../apps/team-backend/dist/server.js";
