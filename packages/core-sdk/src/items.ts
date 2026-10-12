@@ -67,7 +67,7 @@ async function readItems(sessionId: string, options: ReadSessionItemsOptions & {
     const maximumBytes = 8 * 1024 * 1024;
     // Completion gives a final reply its authoritative position after intervening
     // activity, while ordinary progress and tools retain their original position.
-    const order = "CASE WHEN i.item_type='agentMessage' AND i.completed_at_ms IS NOT NULL AND json_valid(i.item_json) THEN CASE WHEN json_extract(i.item_json,'$.phase')='final_answer' THEN i.updated_at_ordinal ELSE i.rollout_ordinal END ELSE i.rollout_ordinal END";
+    const order = "CASE WHEN i.completed_at_ms IS NOT NULL THEN CASE WHEN i.item_type='plan' THEN i.updated_at_ordinal WHEN i.item_type='agentMessage' AND json_valid(i.item_json) THEN CASE WHEN json_extract(i.item_json,'$.phase')='final_answer' THEN i.updated_at_ordinal ELSE i.rollout_ordinal END ELSE i.rollout_ordinal END ELSE i.rollout_ordinal END";
     const latest = db.prepare("SELECT updated_at_ordinal,item_id FROM thread_items WHERE thread_id=? AND item_type <> 'reasoning' ORDER BY updated_at_ordinal DESC,item_id DESC LIMIT 1").get(id);
     const pageOrder = direction === "updates" ? "i.updated_at_ordinal" : order, comparison = direction === "before" ? "<" : ">";
     const rows = db.prepare(`SELECT i.item_id,i.turn_id,${order} AS order_ordinal,i.updated_at_ordinal,i.completed_at_ms,i.created_at_ms,i.item_type,

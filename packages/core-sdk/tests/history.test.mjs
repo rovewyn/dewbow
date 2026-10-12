@@ -126,6 +126,10 @@ test("recent native items page in both directions and update old IDs without los
   assert.equal(secondUpdate.items[0].id,"item-002"); assert.equal(secondUpdate.hasMoreUpdates,false);
   assert.equal((await readSessionItems(session,{codexHome:path})).items.at(-1).item.text,"Short final");
   assert.equal((await readSessionItem(session,"item-001",{codexHome:path})).item.text,"Short final");
+  db.prepare("UPDATE thread_items SET item_type='plan',item_json=?,updated_at_ordinal=110,completed_at_ms=? WHERE item_id='item-002'").run(JSON.stringify({type:"plan",id:"item-002",text:"Completed plan"}),1700000000110);
+  const plan = await readSessionItems(session,{codexHome:path,limit:1});
+  assert.equal(plan.items[0].item.type,"plan"); assert.equal(plan.items[0].ordinal,110);
+  assert.equal((await readSessionItems(session,{codexHome:path,beforeCursor:plan.beforeCursor,limit:1})).items[0].ordinal,100);
   await assert.rejects(readSessionItem(other,"item-001",{codexHome:path}),error=>error.code === "SESSION_NOT_FOUND");
   assert.equal(JSON.stringify(latest).includes("PRIVATE_REASONING_MARKER"),false);
 });
