@@ -18,7 +18,7 @@ Use the workspace's pinned Node.js/npm and a Codex CLI supporting the app-server
 | `DEWBOW_CODEX_EXECUTABLE` | `codex` | Installed executable |
 | `DEWBOW_CODEX_MODEL` | Native Codex configuration | Creation-time model default; session overrides take precedence and recovery uses the saved snapshot |
 
-Create the work directory before `createSession`. The daemon checks that it is an absolute, existing directory with read, write, and traversal access, then stores its canonical path. Invalid directories return `INVALID_WORKDIR` without creating a Codex thread. Every turn uses the selected saved conversation and work directory.
+For explicit `workDir`, create the work directory before `createSession`. Alternatively, set `DEWBOW_HOST_WORKSPACE_CONFIG` to a private profile file and create with `workspaceProfileId`; the daemon prepares a separate directory or Git worktree using the stable Core session ID. The daemon checks that it is an absolute, existing directory with read, write, and traversal access, then stores its canonical path. Invalid directories return `INVALID_WORKDIR` without creating a Codex thread. Every turn uses the selected saved conversation and work directory. Managed workspaces are verified before creation, continuation and recovery and never recreated to replace missing resources. See [Channels workspace configuration](team/channels.md#configure-host-workspaces).
 
 Run from the repository root with credentials configured outside Git:
 

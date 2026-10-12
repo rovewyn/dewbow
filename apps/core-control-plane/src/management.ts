@@ -23,6 +23,7 @@ export class Management {
   call(name: string, raw: unknown, caller: Caller): unknown {
     const input = validateInput(name, raw);
     if (name === "listHosts") return { hosts: this.store.list<Host>("host") };
+    if (name === "listWorkspaceProfiles") { this.available(String(input.hostId)); return this.query(String(input.hostId), "listWorkspaceProfiles", {}); }
     if (name === "listSessions") return this.list(input.hostId as string | undefined);
     if (name === "getSession") return this.get(String(input.sessionId),caller);
     if (name === "readSessionHistory") return this.history(input,caller);
@@ -66,7 +67,7 @@ export class Management {
     } else if (name === "createSession") {
       this.available(String(input.hostId));
       const timestamp = now();
-      session = { sessionId: randomUUID(), hostId: String(input.hostId), workDir: String(input.workDir), codexThreadId: null,
+      session = { sessionId: randomUUID(), hostId: String(input.hostId), workDir: typeof input.workDir === "string" ? input.workDir : null, codexThreadId: null,
         sessionConfig: { overrides: (input.sessionOptions ?? {}) as SessionOptions, resolved: null, ...(input.agentRef ? { agentRef: input.agentRef as AgentRef } : {}) },
         connectionState: "connecting", createdAt: timestamp, runtimeState: "unknown", observedAt: timestamp, lastKnownState: "unknown", lastKnownAt: timestamp, activeTurnId: null, latestCursor: 0 };
     } else {
@@ -150,7 +151,7 @@ export class Management {
       const observation = source && s.connectionState !== "connected" && !s.activeTurnId
         ? { runtimeState: connected && source.runtimeStatus === "active" ? "running" as const : connected && source.runtimeStatus === "idle" ? "idle" as const : "unknown" as const,
             observedAt: this.inventories.get(hostId)!.observedAt } : {};
-      return { ...s, ...observation, managed: true, name: source?.name ?? s.workDir.split(/[\\/]/).filter(Boolean).at(-1) ?? s.sessionId, native: source };
+      return { ...s, ...observation, managed: true, name: source?.name ?? s.workDir?.split(/[\\/]/).filter(Boolean).at(-1) ?? s.sessionId, native: source };
     });
     for (const n of native) if (!rows.some(s => s.managed && s.native === n)) {
       const state = connected && n.runtimeStatus === "active" ? "running" : connected && n.runtimeStatus === "idle" ? "idle" : "unknown";
@@ -282,6 +283,7 @@ export class Management {
     const existing = this.session(session.sessionId);
     if (existing.hostId !== hostId || session.hostId !== hostId) fail("INVALID_INPUT", "Session does not belong to this host.");
     if (!Object.hasOwn(session, "sessionConfig")) fail("RECOVERY_REQUIRED", "Session configuration record is unsupported. Start with fresh Dewbow state.");
+    if (existing.workspace?.status === "ready" && (canonicalJson(existing.workspace) !== canonicalJson(session.workspace) || existing.workDir !== session.workDir)) fail("INVALID_INPUT", "Resolved workspace ownership cannot change.");
     if (existing.sessionConfig) {
       if (!session.sessionConfig || canonicalJson([existing.sessionConfig.agentRef ?? null, existing.sessionConfig.overrides]) !== canonicalJson([session.sessionConfig.agentRef ?? null, session.sessionConfig.overrides]) ||
           (existing.sessionConfig.resolved && canonicalJson(existing.sessionConfig.resolved) !== canonicalJson(session.sessionConfig.resolved))) fail("INVALID_INPUT", "Session configuration snapshot cannot change after resolution.");

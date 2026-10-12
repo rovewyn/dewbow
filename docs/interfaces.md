@@ -12,7 +12,8 @@ Identifiers are opaque strings; times are ISO 8601 UTC. `POST /api/<operation>` 
 | --- | --- | --- |
 | `listHosts` | `{}` | `{ hosts: Host[] }` |
 | `listSessions` | optional `hostId` | `{ sessions: SessionSummary[], discovery }` |
-| `createSession` | `hostId`, absolute `workDir`, `requestId`, optional `agentRef`, `sessionOptions` | `Operation` with stable `sessionId` |
+| `listWorkspaceProfiles` | `hostId` | `{ profiles }` with profile IDs, names and kinds |
+| `createSession` | `hostId`, `requestId`, one of absolute `workDir` or `workspaceProfileId`, optional `agentRef`, `sessionOptions` | `Operation` with stable `sessionId` |
 | `connectSession` | SDK-discovered `sessionId`, `requestId` | `Operation`; resume the same native conversation, then poll readiness |
 | `getSession` | `sessionId` | `{ session, contextAuthority, turns, interactions, interactionsError, operations }` |
 | `readSessionHistory` | `sessionId`, optional exclusive event `cursor` (default 0), one of `beforeCursor`, `afterCursor`, `updateCursor`, `limit` (1–500, default 50) | `{ events, nextCursor, hasMore, messages, activities, beforeCursor, afterCursor, updateCursor, hasMoreUpdates, liveMessages, historyError, eventsError }` |
@@ -99,7 +100,7 @@ The daemon opens an authenticated WebSocket at `/hosts/connect`, using a bearer 
 
 ## MCP
 
-`/mcp` provides stateless Streamable HTTP with JSON responses and polling. Authenticated callers use JSON-RPC `initialize`, `notifications/initialized`, `tools/list`, and `tools/call`. The twelve management tools excluding `decideApproval` use the same service as Web. Initialization negotiates `2025-03-26` and advertises `tools` and `serverInfo`. No MCP session ID is needed. GET and DELETE return 405; SSE and stateful MCP sessions are not implemented. Success includes structured content and JSON text. Tool failures return `isError: true` and a structured error in text. Unknown RPC methods use `-32601`; invalid requests use `-32600`/`-32602`.
+`/mcp` provides stateless Streamable HTTP with JSON responses and polling. Authenticated callers use JSON-RPC `initialize`, `notifications/initialized`, `tools/list`, and `tools/call`. The thirteen management tools excluding `decideApproval` use the same service as Web. Initialization negotiates `2025-03-26` and advertises `tools` and `serverInfo`. No MCP session ID is needed. GET and DELETE return 405; SSE and stateful MCP sessions are not implemented. Success includes structured content and JSON text. Tool failures return `isError: true` and a structured error in text. Unknown RPC methods use `-32601`; invalid requests use `-32600`/`-32602`.
 
 See the [MCP transport specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) and [Codex app-server reference](https://learn.chatgpt.com/docs/app-server). Check bindings against the installed Codex version when changing integration.
 
@@ -110,3 +111,5 @@ No scheduler, desktop wrapper, automatic host enrollment, package publication, o
 ## Early development contracts
 
 Dewbow-owned contracts remain pinned to `v1`. Breaking changes update the current contract and all callers together, without version negotiation or legacy support. Old operation names and snake_case JSON fields are rejected; there are no aliases or naming migrations. Existing journals containing the old JSON contract must be replaced with fresh Dewbow state using the [state reset procedure](operations.md#resetting-dewbow-state-after-contract-changes). SQL schema names are unchanged. Session execution is exposed as `runtimeState`; turn and operation state fields retain their own meanings. Obsolete Dewbow-owned tables are recreated rather than migrated. Codex native data and credentials are outside this reset.
+
+For managed workspace creation, `Session.workDir` is null until host provisioning resolves its canonical path. `Session.workspace` records profile, source, branch and preparation state; ready ownership is immutable. Existing explicit-directory calls remain supported. Provisioning does not fetch, reset or clean up user work.

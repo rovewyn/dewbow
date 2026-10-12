@@ -18,8 +18,10 @@ export interface ResolvedSessionConfig {
 export interface SessionConfig {
   agentRef?: AgentRef; overrides: SessionOptions; resolved: ResolvedSessionConfig | null;
 }
+export interface WorkspaceProfile { profileId: string; name: string; kind: "emptyDirectory" | "gitWorktree" }
+export interface SessionWorkspace { profileId: string; kind: WorkspaceProfile["kind"]; workDir: string; directoryIdentity: string | null; repository: string | null; baseCommit: string | null; branch: string | null; status: "preparing" | "ready" | "error" }
 export interface Session {
-  sessionId: string; hostId: string; workDir: string; codexThreadId: string | null;
+  sessionId: string; hostId: string; workDir: string | null; workspace?: SessionWorkspace; codexThreadId: string | null;
   /** Null for native conversations connected without an agent definition. */
   sessionConfig: SessionConfig | null;
   codexHome?: string; connectionState: "disconnected" | "connecting" | "connected" | "error";
@@ -92,12 +94,12 @@ export interface NativeInventory {
 }
 export interface EventHistory { events: Event[]; nextCursor: number; hasMore: boolean; liveMessages: NativeMessage[] }
 export interface HostQuery {
-  queryId: string; operation: "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
+  queryId: string; operation: "listWorkspaceProfiles" | "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
   input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
   authority: "agent" | "operator";
 }
 export interface InteractionPage { interactions: Interaction[] }
-export interface HostQueryResult { queryId: string; result?: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | InteractionPage; error?: ManagementErrorData }
+export interface HostQueryResult { queryId: string; result?: { profiles: WorkspaceProfile[] } | NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | InteractionPage; error?: ManagementErrorData }
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;
@@ -161,8 +163,9 @@ function tool(name: string, description: string, properties: Record<string, unkn
 }
 export const tools = [
   tool("listHosts", "List configured hosts and observed connection state.", {}, []),
+  tool("listWorkspaceProfiles", "List host-owned workspace profiles without local source paths.", { hostId: text }, ["hostId"]),
   tool("listSessions", "List SDK-discovered Codex conversations with optional managed execution metadata.", { hostId: text }, []),
-  tool("createSession", "Create a session with optional agent overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, requestId: request, agentRef, sessionOptions }, ["hostId", "workDir", "requestId"]),
+  tool("createSession", "Create a session with optional agent overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, workspaceProfileId: request, requestId: request, agentRef, sessionOptions }, ["hostId", "requestId"]),
   tool("connectSession", "Connect an SDK-discovered native conversation without creating a new thread. Poll getSession for readiness.", { sessionId: text, requestId: request }, ["sessionId", "requestId"]),
   tool("getSession", "Read state, turns, requests, and unified interactions. Delivery is separate from turn completion.", { sessionId: text }, ["sessionId"]),
   tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
@@ -174,11 +177,12 @@ export const tools = [
   tool("interruptTurn", "Request interruption of the exact active turn. Poll final state separately.", { sessionId: text, turnId: text, requestId: request }, ["sessionId", "turnId", "requestId"]),
 ] as const;
 const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId:text,turnId:text,interactionId:text,requestId:request,decision:{type:"string",enum:["allow","deny"]} },["sessionId","turnId","interactionId","requestId","decision"]);
-export type ToolName = Command["operation"] | "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
+export type ToolName = Command["operation"] | "listHosts" | "listWorkspaceProfiles" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
 export function validateInput(name: string, input: unknown): Record<string, unknown> {
   const schema = [...tools, approvalTool].find(t => t.name === name)?.inputSchema;
   if (!schema) fail("INVALID_INPUT", "Unknown operation.");
   const validated = validateField(schema, input, "input") as Record<string, unknown>;
+  if (name === "createSession" && Boolean(validated.workDir) === Boolean(validated.workspaceProfileId)) fail("INVALID_INPUT", "Choose exactly one workDir or workspaceProfileId.");
   if (name === "sendMessage") validated.mode ??= "default";
   return validated;
 }

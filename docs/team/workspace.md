@@ -21,3 +21,5 @@ Install scripts are denied unless explicitly reviewed and allowed in `package.js
 Windows can run Core native execution, the independent Core and Team HTTP services, and both built Web clients. Follow the standalone CLI, mise and private ACL setup in [Local operations](../operations.md). Team tests retain POSIX database-mode assertions on those platforms; Windows mode bits do not establish ACL ownership or private access. Keep Windows local state in a directory with appropriate account permissions.
 
 Team Web consumes shared shadcn primitives and history merging from `core-ui`. Build Core protocol, Team protocol and shared UI before building Team Web on a clean checkout. Tailwind scans the shared package output; its styles preserve Team's application-wide layout. See [Shared chat UI](../chat-ui.md) for presentation boundaries.
+
+Set optional `DEWBOW_TEAM_CHANNEL_CREDENTIALS` to a private JSON credential file to configure DingTalk applications. Host workspace profiles use `DEWBOW_HOST_WORKSPACE_CONFIG` on the daemon. See [Channels](channels.md). Team database schema revision 2 requires fresh state, not a migration.

@@ -34,7 +34,7 @@ export function useSession(bindingId: string) {
             for (let pages = 0; pages < 25; pages++) {
               saved = savedRef.current;
               const cursor = saved.updateCursor;
-              const page = await call<CoreHistory>("readMemberSessionHistory",{bindingId,cursor:saved.eventCursor,limit:50,...(cursor ? { updateCursor:cursor } : {})},controller.signal);
+              const page = await call<CoreHistory>("readBindingHistory",{bindingId,cursor:saved.eventCursor,limit:50,...(cursor ? { updateCursor:cursor } : {})},controller.signal);
               if (controller.signal.aborted) return;
               saved = mergeHistory(savedRef.current,page,cursor ? "newer" : "initial"); savedRef.current = saved;
               setHistory(saved); setHistoryError(page.historyError ?? page.eventsError ?? null);
@@ -53,7 +53,7 @@ export function useSession(bindingId: string) {
     if (!controller || !cursor || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const page = await call<CoreHistory>("readMemberSessionHistory",{bindingId,beforeCursor:cursor,cursor:savedRef.current.eventCursor,limit:50},controller.signal);
+      const page = await call<CoreHistory>("readBindingHistory",{bindingId,beforeCursor:cursor,cursor:savedRef.current.eventCursor,limit:50},controller.signal);
       if (controller.signal.aborted) return;
       savedRef.current = mergeHistory(savedRef.current,page,"older"); setHistory(savedRef.current); setHistoryError(page.historyError ?? page.eventsError ?? null);
     } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }

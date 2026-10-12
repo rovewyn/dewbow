@@ -1,0 +1,53 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, writeFile, realpath, rm, rename } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { Workspaces } from "../dist/workspaces.js";
+import { validateInput } from "@dewbow/core-protocol";
+import { resolveSessionConfig } from "../dist/session-config.js";
+
+test("managed directories reject collisions and recover the original path without recreating missing files", async t => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "dewbow-workspace-")));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const workspaces = new Workspaces({ root: join(dir, "sessions"), profiles: [{ profileId: "empty", name: "Empty", kind: "emptyDirectory" }] });
+  const session = { sessionId: "session-a", workDir: null }; let saves = 0;
+  const path = await workspaces.prepare(session, "empty", () => saves++);
+  await writeFile(join(path, "result.txt"), "Retained result");
+  assert.equal(await workspaces.prepare(session, "empty", () => saves++), path);
+  assert.equal(saves, 2); assert.equal(await readFile(join(path, "result.txt"), "utf8"), "Retained result");
+  const other = { sessionId: "session-b", workDir: null }; assert.notEqual(await workspaces.prepare(other, "empty", () => {}), path);
+  await assert.rejects(workspaces.prepare({ sessionId: "session-a", workDir: null }, "empty", () => {}), error => error.detail.code === "RECOVERY_REQUIRED");
+  await rename(path, join(dir, "retained"));
+  await assert.rejects(workspaces.verify(session), error => error.detail.code === "RECOVERY_REQUIRED");
+  await mkdir(path);
+  await assert.rejects(workspaces.verify(session), error => error.detail.code === "RECOVERY_REQUIRED");
+  await assert.rejects(workspaces.prepare({ sessionId: "../outside", workDir: null }, "empty", () => {}), error => error.detail.code === "INVALID_INPUT");
+  assert.throws(() => validateInput("createSession", { hostId: "host", requestId: "request", workDir: dir, workspaceProfileId: "empty" }), error => error.detail.code === "INVALID_INPUT");
+  const runtime = { request: async method => method === "model/list" ? { data: [{ model: "synthetic", isDefault: true, defaultReasoningEffort: null, supportedReasoningEfforts: [] }], nextCursor: null } : { config: { model: "synthetic", sandbox_workspace_write: { writable_roots: ["/synthetic/shared"], network_access: false } } } };
+  const snapshot = await resolveSessionConfig(runtime, other.workDir, {}, undefined, true);
+  assert.deepEqual(snapshot.sandbox.writableRoots, []); assert.equal(snapshot.sandbox.excludeTmpdirEnvVar, true); assert.equal(snapshot.sandbox.excludeSlashTmp, true);
+});
+
+test("Git worktrees freeze a commit and branch, preserve dirty source files and never replace a changed checkout", async t => {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "dewbow-worktree-")));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const repo = join(dir, "source"); await mkdir(repo);
+  const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", windowsHide: true }).trim();
+  git("init", "-b", "main"); await writeFile(join(repo, "source.txt"), "Base content"); git("add", "source.txt");
+  git("-c", "user.name=Synthetic Test", "-c", "user.email=test@example.invalid", "commit", "-m", "test: seed synthetic repository");
+  const baseCommit = git("rev-parse", "HEAD"); await writeFile(join(repo, "source.txt"), "Uncommitted content");
+  const workspace = new Workspaces({ root: join(dir, "sessions"), profiles: [{ profileId: "code", name: "Code", kind: "gitWorktree", repository: repo, baseRef: "main" }] });
+  const session = { sessionId: "session-code", workDir: null }; await workspace.prepare(session, "code", () => {});
+  assert.equal(session.workspace.baseCommit, baseCommit); assert.equal(session.workspace.branch, "dewbow/session-session-code");
+  assert.equal(await readFile(join(session.workDir, "source.txt"), "utf8"), "Base content");
+  assert.equal(await readFile(join(repo, "source.txt"), "utf8"), "Uncommitted content");
+  git("-c", "user.name=Synthetic Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "test: advance source ref");
+  await workspace.prepare(session, "code", () => {});
+  assert.equal(session.workspace.baseCommit, baseCommit);
+  await writeFile(join(session.workDir, "source.txt"), "Agent result"); await workspace.verify(session);
+  assert.equal(await readFile(join(repo, "source.txt"), "utf8"), "Uncommitted content");
+  execFileSync("git", ["-C", session.workDir, "checkout", "--detach", baseCommit], { windowsHide: true });
+  await assert.rejects(workspace.verify(session), error => error.detail.code === "RECOVERY_REQUIRED");
+});

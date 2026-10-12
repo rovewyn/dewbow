@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import type { AgentDefinition, CoreHost, MemberSessionResult, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
-import { call, errorDetail } from "./api.js";
+import { useState } from "react";
+import type { AgentDefinition, SessionBindingResult, SessionBinding, Team, TeamMember } from "@dewbow/team-protocol";
 import type { Catalog, Route } from "./model.js";
 import { Badge, ConfirmAction, Empty, ErrorNotice, Modal, PageHeading, field, shortId } from "./ui.js";
+import { WorkspaceTarget } from "./AgentSessionForm.js";
 import { useMutation } from "./useMutation.js";
 
 function TeamForm({ team, onClose, onSaved }: { team: Team | null; onClose: () => void; onSaved: (team: Team) => Promise<void> }) {
@@ -29,33 +29,19 @@ function MemberForm({ teamId, member, definitions, onClose, onSaved }: { teamId:
 }
 
 function CreateSessionForm({ member, onClose, onCreated }: { member: TeamMember; onClose: () => void; onCreated: (binding: SessionBinding) => Promise<void> }) {
-  const [hosts, setHosts] = useState<CoreHost[]>([]);
-  const [loadError, setLoadError] = useState<ReturnType<typeof errorDetail> | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const mutation = useMutation<MemberSessionResult>(async result => { onClose(); await onCreated(result.binding); });
-  useEffect(() => {
-    const controller = new AbortController();
-    void call<{ hosts: CoreHost[] }>("listHosts", {}, controller.signal).then(result => { setHosts(result.hosts); setLoaded(true); })
-      .catch(error => { if (!controller.signal.aborted) { setLoadError(errorDetail(error)); setLoaded(true); } });
-    return () => controller.abort();
-  }, []);
+  const mutation = useMutation<SessionBindingResult>(async result => { onClose(); await onCreated(result.binding); });
   return <Modal title={`New session · ${member.name}`} onClose={onClose} busy={mutation.busy}><form onSubmit={event => {
-    event.preventDefault();
-    void mutation.send("createMemberSession", { memberId: member.memberId, hostId: field(event.currentTarget, "hostId"), workDir: field(event.currentTarget, "workDir") });
-  }}><div className="form-body"><fieldset disabled={mutation.busy || mutation.retryRequired || !loaded}>
-    <label>Host<select name="hostId" required defaultValue=""><option value="" disabled>Select a connected host</option>{hosts.map(host => <option key={host.hostId} value={host.hostId} disabled={host.status !== "connected"}>{host.name} · {host.status}</option>)}</select></label>
-    <label>Working directory<input name="workDir" required maxLength={4096} placeholder="/workspace/project" /></label>
-    <p className="field-hint">Use an absolute directory on the selected host. This creates a new conversation with the member's current definition. To return to earlier work, open an existing session.</p>
-  </fieldset>{loaded && !hosts.length && !loadError && <p className="muted">No hosts are available. Connect a host in Dewbow Core first.</p>}<ErrorNotice error={loadError} /><ErrorNotice error={mutation.error} onRetry={mutation.retryRequired ? mutation.retry : undefined} /></div><footer className="form-footer"><button type="button" className="button secondary" disabled={mutation.busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={mutation.busy || mutation.retryRequired || !hosts.some(host => host.status === "connected")}>{mutation.busy ? "Creating…" : "Create session"}</button></footer></form></Modal>;
+    event.preventDefault(); void mutation.send("createMemberSession", { memberId: member.memberId, hostId: field(event.currentTarget, "hostId"), workspaceProfileId: field(event.currentTarget, "workspaceProfileId") });
+  }}><div className="form-body"><fieldset disabled={mutation.busy || mutation.retryRequired}><WorkspaceTarget /><p className="field-hint">Core prepares an isolated workspace and freezes this member's current definition.</p></fieldset><ErrorNotice error={mutation.error} onRetry={mutation.retryRequired ? mutation.retry : undefined} /></div><footer className="form-footer"><button type="button" className="button secondary" disabled={mutation.busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={mutation.busy || mutation.retryRequired}>Create session</button></footer></form></Modal>;
 }
 
 export function BindingList({ bindings, catalog, navigate }: { bindings: SessionBinding[]; catalog: Catalog; navigate: (route: Route) => void }) {
-  if (!bindings.length) return <Empty title="No sessions yet">Create a session from a team member to start working.</Empty>;
+  if (!bindings.length) return <Empty title="No sessions yet">Create an agent session or start one from a team member.</Empty>;
   return <div className="session-list">{bindings.map(binding => {
     const member = catalog.members.find(item => item.memberId === binding.memberId);
     const definition = catalog.definitions.find(item => item.definitionId === binding.agentRef.id);
     return <button className="session-row" key={binding.bindingId} onClick={() => navigate({ page: "sessions", bindingId: binding.bindingId, ...(member ? { teamId: member.teamId } : {}) })}>
-      <span className="session-icon" aria-hidden="true">↗</span><span className="session-row-main"><strong>{member?.name ?? "Member session"}</strong><span>{binding.workDir}</span></span>
+      <span className="session-icon" aria-hidden="true">↗</span><span className="session-row-main"><strong>{member?.name ?? definition?.name ?? "Agent session"}</strong><span>{binding.workDir ?? "Preparing workspace"}</span></span>
       <span className="session-row-meta"><span>{definition?.name ?? "Historical definition"} · r{binding.agentRef.revision}</span><span>{binding.hostId} · {shortId(binding.sessionId)}</span></span><span className="row-arrow" aria-hidden="true">→</span>
     </button>;
   })}</div>;

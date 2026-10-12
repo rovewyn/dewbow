@@ -10,5 +10,6 @@
     "start": "node dist/cli.js",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
+  "devDependencies": { "ws": "8.22.0" },
   "dependencies": { "@dewbow/core-protocol": "0.1.0", "@dewbow/team-protocol": "0.1.0" }
 }

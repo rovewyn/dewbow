@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { ApiError, MemberOperation, MemberSessionResult, SessionBinding,InteractionDetails } from "@dewbow/team-protocol";
+import type { ApiError, BindingOperation, SessionBindingResult, SessionBinding,InteractionDetails } from "@dewbow/team-protocol";
 import { call, errorDetail,readInteractionDetails } from "./api.js";
 import { visibleMessages } from "./history.js";
 import type { Catalog, Route } from "./model.js";
@@ -7,12 +7,12 @@ import { Badge, Empty, ErrorNotice, PageHeading, shortId } from "./ui.js";
 import { useSession } from "./useSession.js";
 import {QuestionForm} from "./QuestionForm.js";
 
-function pending(request: MemberOperation): boolean {
+function pending(request: BindingOperation): boolean {
   return request.result ? ["accepted", "unknown"].includes(request.result.status) : !request.error || request.error.retryable;
 }
 
-const operationLabels: Record<string, string> = { createMemberSession: "Create session", connectMemberSession: "Connect session", sendMemberMessage: "Send message", steerMemberTurn:"Add instruction",answerMemberQuestions:"Answer questions",interruptMemberTurn: "Interrupt turn" };
-const isMessage=(operation:string)=>["sendMemberMessage","steerMemberTurn"].includes(operation);
+const operationLabels: Record<string, string> = { createMemberSession: "Create session", createAgentSession: "Create agent session", connectSessionBinding: "Connect session", sendBindingMessage: "Send message", steerBindingTurn:"Add instruction",answerBindingQuestions:"Answer questions",interruptBindingTurn: "Interrupt turn" };
+const isMessage=(operation:string)=>["sendBindingMessage","steerBindingTurn"].includes(operation);
 
 export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: { bindingId: string; catalog: Catalog; navigate: (route: Route) => void; onBindingChanged: (binding: SessionBinding) => void }) {
   const observed = useSession(bindingId);
@@ -57,8 +57,8 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
     } else if (request && !pending(request)) { messageBodies.current.delete(retryRequestId); setRetryRequestId(null); }
   }, [details, retryRequestId]);
   useEffect(() => {
-    const request = requests.find(item => uncertainCommand?.operation === "retryMemberSessionCreation"
-      ? item.operation === "createMemberSession" && item.requestId === binding?.createRequestId
+    const request = requests.find(item => uncertainCommand?.operation === "retrySessionBindingCreation"
+      ? ["createMemberSession", "createAgentSession"].includes(item.operation) && item.requestId === binding?.createRequestId
       : item.requestId === uncertainCommand?.input.requestId && item.operation === uncertainCommand?.operation);
     if (request && !pending(request)) { setUncertainCommand(null); setCommandError(request.error); }
   }, [details, uncertainCommand]);
@@ -69,7 +69,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
     inFlight.current = true; setBusy(true); setCommandError(null);
     if(typeof input.requestId === "string"){requestInputs.current.set(input.requestId,input);requestNames.current.set(input.requestId,operation);}
     try {
-      const result = await call<MemberSessionResult>(operation, input);
+      const result = await call<SessionBindingResult>(operation, input);
       onBindingChanged(result.binding);
       setUncertainCommand(null);
       if (result.error) {
@@ -87,12 +87,12 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
     finally { inFlight.current = false; setBusy(false); }
   }
 
-  function retry(request: MemberOperation) {
-    if (request.operation === "createMemberSession") void command("retryMemberSessionCreation", { bindingId });
+  function retry(request: BindingOperation) {
+    if (["createMemberSession", "createAgentSession"].includes(request.operation)) void command("retrySessionBindingCreation", { bindingId });
     else if (isMessage(request.operation)) {
       requestNames.current.set(request.requestId,request.operation);
       setRetryRequestId(request.requestId); setMessage(messageBodies.current.get(request.requestId) ?? ""); setTab("conversation");
-    } else if(request.operation === "answerMemberQuestions") {
+    } else if(request.operation === "answerBindingQuestions") {
       const input=requestInputs.current.get(request.requestId),answers=details?.core?.interactions.find(item=>item.interactionId===request.interactionId)?.details?.answers;
       if(input)void command(request.operation,input);
       else if(answers)void command(request.operation,{bindingId,requestId:request.requestId,turnId:request.turnId,interactionId:request.interactionId,answers});
@@ -106,21 +106,21 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
     const requestId = retryRequestId ?? crypto.randomUUID();
     const text = messageBodies.current.get(requestId) ?? message;
     messageBodies.current.set(requestId, text); setRetryRequestId(requestId);
-    const operation=requestNames.current.get(requestId) ?? originalSend?.operation ?? (canSteer ? "steerMemberTurn" : "sendMemberMessage");
-    const input=requestInputs.current.get(requestId) ?? {bindingId,message:text,requestId,...(operation === "steerMemberTurn" ? {turnId:originalSend?.turnId??activeTurn!.turnId} : {mode:originalSend?.mode??mode})};
+    const operation=requestNames.current.get(requestId) ?? originalSend?.operation ?? (canSteer ? "steerBindingTurn" : "sendBindingMessage");
+    const input=requestInputs.current.get(requestId) ?? {bindingId,message:text,requestId,...(operation === "steerBindingTurn" ? {turnId:originalSend?.turnId??activeTurn!.turnId} : {mode:originalSend?.mode??mode})};
     void command(operation,input);
   }
 
-  const connectRequest = requests.find(request => request.operation === "connectMemberSession" && pending(request));
-  const interruptRequest = requests.find(request => request.operation === "interruptMemberTurn" && request.turnId === session?.activeTurnId && pending(request));
-  const creation = requests.find(request => request.operation === "createMemberSession");
+  const connectRequest = requests.find(request => request.operation === "connectSessionBinding" && pending(request));
+  const interruptRequest = requests.find(request => request.operation === "interruptBindingTurn" && request.turnId === session?.activeTurnId && pending(request));
+  const creation = requests.find(request => ["createMemberSession", "createAgentSession"].includes(request.operation));
   const needsCreationRetry = Boolean(creation && pending(creation) && (!binding?.sessionId || creation.result?.status === "unknown" || creation.error));
   return <>
-    <PageHeading eyebrow="MEMBER SESSION" title={member?.name ?? "Member session"} description={binding?.workDir ?? "Loading session…"} actions={<button className="button secondary" onClick={() => navigate(member ? { page: "teams", teamId: member.teamId } : { page: "sessions" })}>← Back</button>} />
+    <PageHeading eyebrow="CORE SESSION" title={member?.name ?? catalog.definitions.find(value => value.definitionId === binding?.agentRef.id)?.name ?? "Agent session"} description={binding?.workDir ?? "Loading session…"} actions={<button className="button secondary" onClick={() => navigate(member ? { page: "teams", teamId: member.teamId } : { page: "sessions" })}>← Back</button>} />
     <div className="session-toolbar"><div className="status-group"><Badge tone={!unavailable && session?.connectionState === "connected" ? "good" : "warning"}>{!unavailable && session ? session.connectionState : "Connection unknown"}</Badge><Badge tone={!unavailable && session?.runtimeState === "running" ? "purple" : "neutral"}>{!unavailable && session ? session.runtimeState.replaceAll("_", " ") : "Runtime unknown"}</Badge><span className="muted">{binding?.hostId} · {shortId(binding?.sessionId ?? null)}</span></div>
-      <div className="heading-actions">{needsCreationRetry && <button className="button secondary small" disabled={busy} onClick={() => void command("retryMemberSessionCreation", { bindingId })}>Retry creation</button>}
-        <button className="button secondary small" disabled={busy || unavailable || Boolean(uncertainCommand) || !details || !binding?.sessionId || Boolean(session?.activeTurnId) || session?.connectionState === "connected"} onClick={() => void command("connectMemberSession", { bindingId, requestId: connectRequest?.requestId ?? crypto.randomUUID() })}>{connectRequest ? "Retry connection" : "Connect session"}</button>
-        <button className="button secondary small" disabled={busy || unavailable || Boolean(uncertainCommand) || !session?.activeTurnId} onClick={() => void command("interruptMemberTurn", { bindingId, turnId: session!.activeTurnId, requestId: interruptRequest?.requestId ?? crypto.randomUUID() })}>Interrupt turn</button></div>
+      <div className="heading-actions">{needsCreationRetry && <button className="button secondary small" disabled={busy} onClick={() => void command("retrySessionBindingCreation", { bindingId })}>Retry creation</button>}
+        <button className="button secondary small" disabled={busy || unavailable || Boolean(uncertainCommand) || !details || !binding?.sessionId || Boolean(session?.activeTurnId) || session?.connectionState === "connected"} onClick={() => void command("connectSessionBinding", { bindingId, requestId: connectRequest?.requestId ?? crypto.randomUUID() })}>{connectRequest ? "Retry connection" : "Connect session"}</button>
+        <button className="button secondary small" disabled={busy || unavailable || Boolean(uncertainCommand) || !session?.activeTurnId} onClick={() => void command("interruptBindingTurn", { bindingId, turnId: session!.activeTurnId, requestId: interruptRequest?.requestId ?? crypto.randomUUID() })}>Interrupt turn</button></div>
     </div>
     <ErrorNotice error={observed.error ?? details?.coreError ?? null} />
     {!binding?.sessionId && !commandError && <ErrorNotice error={creation?.error ?? null} />}
@@ -141,7 +141,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
           const contentId=item.content.contentId!,controller=detailReads.current;setLoadingInteractions(previous=>new Set(previous).add(contentId));
           void readInteractionDetails(bindingId,contentId,controller?.signal).then(details=>{if(!controller?.signal.aborted)setLoadedInteractions(previous=>new Map(previous).set(contentId,details));}).catch(cause=>{if(!controller?.signal.aborted)setCommandError(errorDetail(cause));}).finally(()=>{if(!controller?.signal.aborted)setLoadingInteractions(previous=>{const next=new Set(previous);next.delete(contentId);return next;});});
         }}>{loadingInteractions.has(item.content.contentId) ? "Loading questions…" : "Load questions"}</button>}
-        {!privateContext && item.kind === "questions" && item.authority === "agent" && item.details?.questions ? <QuestionForm questions={item.details.questions} disabled={busy || unavailable || item.status!=="pending" || item.turnId!==session?.activeTurnId} onAnswer={answers=>void command("answerMemberQuestions",{bindingId,turnId:item.turnId,interactionId:item.interactionId,requestId:crypto.randomUUID(),answers})}/> : <p>Respond in Dewbow Core.</p>}
+        {!privateContext && item.kind === "questions" && item.authority === "agent" && item.details?.questions ? <QuestionForm questions={item.details.questions} disabled={busy || unavailable || item.status!=="pending" || item.turnId!==session?.activeTurnId} onAnswer={answers=>void command("answerBindingQuestions",{bindingId,turnId:item.turnId,interactionId:item.interactionId,requestId:crypto.randomUUID(),answers})}/> : <p>Respond in Dewbow Core.</p>}
       </div>{item.authority === "operator" && catalog.service.coreUrl && <a className="button secondary" href={`${catalog.service.coreUrl.replace(/\/$/,"")}/#${new URLSearchParams({session:binding?.sessionId??""})}`} target="_blank" rel="noreferrer">Open Core ↗</a>}</article>;})}
       <div className="conversation" ref={chatRef} role="log" aria-label="Conversation history" aria-live="polite" onScroll={() => { if (chatRef.current) stickToBottom.current = chatRef.current.scrollHeight - chatRef.current.scrollTop - chatRef.current.clientHeight < 64; }}>
         {observed.history.beforeCursor && <button className="button secondary small" disabled={observed.loadingOlder} onClick={() => {
@@ -159,6 +159,6 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
       <div className="info-grid"><div><span>Model</span><strong>{display?.session.sessionConfig?.resolved?.model ?? "Not resolved yet"}</strong></div><div><span>Reasoning effort</span><strong>{display?.session.sessionConfig?.resolved?.reasoningEffort ?? "Model default"}</strong></div><div><span>Approval policy</span><strong>{display?.session.sessionConfig?.resolved?.approvalPolicy ?? "From host"}</strong></div><div><span>Provider</span><strong>{display?.session.sessionConfig?.resolved?.modelProvider ?? "From host"}</strong></div></div>
       <h3>Requested overrides</h3><pre className="code-block">{details?.requestedOptions ? JSON.stringify(details.requestedOptions, null, 2) : "Creation record unavailable."}</pre><h3>Resolved additional developer instructions</h3><pre className="code-block">{display?.session.sessionConfig?.resolved?.developerInstructions ?? "Core has not resolved the configuration."}</pre>
     </section>}
-    {tab === "requests" && <section id="panel-requests" role="tabpanel" aria-labelledby="tab-requests"><p className="muted">Delivery describes the command. Turn completion is reported separately by Core.</p><div className="request-list">{requests.map(request => <article className="request-row card" key={`${request.operation}:${request.requestId}`}><div><strong>{operationLabels[request.operation] ?? request.operation}</strong><code>{request.requestId}</code>{request.error && <p className="danger-text">{request.error.message}</p>}</div><Badge tone={request.result?.status === "delivered" ? "good" : "warning"}>{request.result?.status ?? (request.error?.retryable ? "unknown" : request.error ? "error" : "pending")}</Badge>{pending(request) && <button className="button secondary small" disabled={busy} onClick={() => retry(request)}>{request.operation === "sendMemberMessage" ? "Restore message" : "Retry"}</button>}</article>)}</div></section>}
+    {tab === "requests" && <section id="panel-requests" role="tabpanel" aria-labelledby="tab-requests"><p className="muted">Delivery describes the command. Turn completion is reported separately by Core.</p><div className="request-list">{requests.map(request => <article className="request-row card" key={`${request.operation}:${request.requestId}`}><div><strong>{operationLabels[request.operation] ?? request.operation}</strong><code>{request.requestId}</code>{request.error && <p className="danger-text">{request.error.message}</p>}</div><Badge tone={request.result?.status === "delivered" ? "good" : "warning"}>{request.result?.status ?? (request.error?.retryable ? "unknown" : request.error ? "error" : "pending")}</Badge>{pending(request) && <button className="button secondary small" disabled={busy} onClick={() => retry(request)}>{request.operation === "sendBindingMessage" ? "Restore message" : "Retry"}</button>}</article>)}</div></section>}
   </>;
 }

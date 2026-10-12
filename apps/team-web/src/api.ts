@@ -26,7 +26,7 @@ export const call = <T>(operation: string, input: Record<string, unknown> = {}, 
 export async function readInteractionDetails(bindingId:string,contentId:string,signal?:AbortSignal):Promise<InteractionDetails> {
   let text="",cursor:string|null=null,offset=0;
   do {
-    const page:ContentPage=await call<ContentPage>("readMemberSessionContent",{bindingId,contentId,...(cursor ? {contentCursor:cursor} : {})},signal);
+    const page:ContentPage=await call<ContentPage>("readBindingContent",{bindingId,contentId,...(cursor ? {contentCursor:cursor} : {})},signal);
     if(page.contentId!==contentId || page.byteOffset!==offset || page.byteLength>1048576 || (page.nextCursor && !page.text))throw new Error("Invalid interaction details page.");
     text+=page.text;offset+=new TextEncoder().encode(page.text).length;cursor=page.nextCursor;
   }while(cursor);

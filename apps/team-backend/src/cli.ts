@@ -9,8 +9,9 @@ if (process.argv.includes("--check")) {
   console.log("Dewbow Team configuration is valid.");
 } else {
   const store = new TeamStore(config.databasePath);
-  const api = new TeamApi(store, new CoreClient(config.coreUrl, config.coreToken));
+  const api = new TeamApi(store, new CoreClient(config.coreUrl, config.coreToken), config.channelCredentials);
   const server = createTeamServer(config, (operation, input, caller) => api.execute(operation, input, caller));
+  api.channels.start();
   server.listen(config.port, config.host, () => console.log(`Dewbow Team listening at ${config.publicOrigin}`));
-  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => server.close(() => { store.close(); process.exit(0); }));
+  for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void api.channels.close().finally(() => server.close(() => { store.close(); process.exit(0); })); });
 }

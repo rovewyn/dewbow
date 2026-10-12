@@ -19,7 +19,7 @@ async function readModels(runtime: Runtime): Promise<Model[]> {
 }
 
 /** Read native configuration locally; persist only the session fields Dewbow manages. */
-export async function resolveSessionConfig(runtime: Runtime, cwd: string, options: SessionOptions, hostModel?: string): Promise<ResolvedSessionConfig> {
+export async function resolveSessionConfig(runtime: Runtime, cwd: string, options: SessionOptions, hostModel?: string, managedWorkspace = false): Promise<ResolvedSessionConfig> {
   const { config } = await runtime.request("config/read", { cwd, includeLayers: false });
   const models = await readModels(runtime);
   const modelName = options.model ?? hostModel ?? config.model ?? models.find(model => model.isDefault)?.model;
@@ -32,8 +32,8 @@ export async function resolveSessionConfig(runtime: Runtime, cwd: string, option
     model: model.model, modelProvider: config.model_provider ?? "openai", reasoningEffort,
     developerInstructions: [config.developer_instructions ?? "", options.instructionsAppend ?? ""].filter(Boolean).join("\n\n"),
     approvalPolicy: "on-request", approvalsReviewer: "user",
-    sandbox: { type: "workspaceWrite", writableRoots: workspace.writable_roots ?? [], networkAccess: workspace.network_access ?? false,
-      excludeTmpdirEnvVar: workspace.exclude_tmpdir_env_var ?? false, excludeSlashTmp: workspace.exclude_slash_tmp ?? false },
+    sandbox: { type: "workspaceWrite", writableRoots: managedWorkspace ? [] : workspace.writable_roots ?? [], networkAccess: workspace.network_access ?? false,
+      excludeTmpdirEnvVar: managedWorkspace || (workspace.exclude_tmpdir_env_var ?? false), excludeSlashTmp: managedWorkspace || (workspace.exclude_slash_tmp ?? false) },
   };
 }
 
