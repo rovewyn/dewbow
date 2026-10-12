@@ -38,5 +38,11 @@ test("private content preserves Unicode chunks, capture completeness, historical
     content.close(); content=new SessionContent(path);
     assert.equal(drain(content.getActivity(scope,"command").contents[0],262144),text);
     assert.equal(drain(content.getActivity(scope,"patch").contents[0],65536),diff);
+    content.restrictTurn(scope,"native-turn");
+    assert.throws(()=>content.read(scope,complete.contentId),error=>error.detail.code === "FORBIDDEN");
+    assert.throws(()=>content.read(scope,changed.contents[0].contentId),error=>error.detail.code === "FORBIDDEN");
+    assert.equal(content.read(scope,changed.contents[0].contentId,undefined,65536,"operator").text,diff);
+    content.close();content=new SessionContent(path);
+    assert.throws(()=>content.read(scope,complete.contentId),error=>error.detail.code === "FORBIDDEN");
   } finally { content.close(); rmSync(directory,{recursive:true,force:true}); }
 });

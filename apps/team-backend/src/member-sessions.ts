@@ -6,6 +6,7 @@ import { fingerprintInput, TeamStore, type RequestRecord } from "./store.js";
 const mutations: Record<string, CoreOperationName> = {
   createMemberSession: "createSession", connectMemberSession: "connectSession",
   sendMemberMessage: "sendMessage", interruptMemberTurn: "interruptTurn",
+  steerMemberTurn:"steerTurn",answerMemberQuestions:"answerQuestions",
 };
 
 function publicOperation(raw: CoreOperation): CoreOperation {
@@ -83,7 +84,8 @@ export class MemberSessions {
         this.assertTarget(binding, caller);
         if (!binding.sessionId) fail("SESSION_NOT_READY", "Session creation has not returned an ID.", true);
         coreInput = { sessionId: binding.sessionId, requestId: coreRequestId,
-          ...(operation === "interruptMemberTurn" ? { turnId: input.turnId } : {}) };
+          ...(operation === "sendMemberMessage" ? {mode:input.mode??"default"} : ["interruptMemberTurn","steerMemberTurn","answerMemberQuestions"].includes(operation) ? {turnId:input.turnId} : {}),
+          ...(operation === "answerMemberQuestions" ? {interactionId:input.interactionId} : {}) };
       }
       const record: RequestRecord = { caller, operation, requestId, fingerprint, coreRequestId, coreUrl: this.core.url,
         coreInput, bindingId: binding.bindingId, result: null, error: null, createdAt: timestamp, updatedAt: timestamp };
@@ -107,7 +109,7 @@ export class MemberSessions {
   private async dispatch(record: RequestRecord, operation: CoreOperationName, input: Record<string, unknown>): Promise<MemberSessionResult> {
     let binding = this.store.getBinding(record.bindingId!);
     try {
-      const payload = { ...record.coreInput, ...(operation === "sendMessage" ? { message: input.message } : {}) };
+      const payload={...record.coreInput,...(["sendMessage","steerTurn"].includes(operation) ? {message:input.message} : {}),...(operation === "answerQuestions" ? {answers:input.answers} : {})};
       const result = publicOperation(await this.core.call<CoreOperation>(operation, payload, true));
       if (result.requestId !== record.coreRequestId || result.operation !== operation || (binding.sessionId && result.sessionId !== binding.sessionId)) {
         fail("DELIVERY_UNCERTAIN", "Core returned an operation for a different request. Retry the original request.", true);
@@ -145,6 +147,8 @@ export class MemberSessions {
     const requests = this.store.bindingRequests(caller, binding.bindingId).map(record => ({
       operation: record.operation, requestId: record.requestId, result: record.result as CoreOperation | null,
       turnId: typeof record.coreInput?.turnId === "string" ? record.coreInput.turnId : null,
+      interactionId:typeof record.coreInput?.interactionId === "string" ? record.coreInput.interactionId : null,
+      mode:record.coreInput?.mode === "plan" ? "plan" as const : record.coreInput?.mode === "default" ? "default" as const : null,
       error: record.error, createdAt: record.createdAt, updatedAt: record.updatedAt,
     }));
     return { binding, requestedOptions, requests, core, coreError };

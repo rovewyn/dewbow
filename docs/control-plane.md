@@ -46,7 +46,7 @@ For cross-machine use, configure HTTPS/WSS with a certificate trusted by both cl
 
 ## Authentication and MCP
 
-External callers send `Authorization: Bearer <management-credential>` to `/api/<operation>` or `/mcp`. MCP provides the ten tools documented in [Interfaces](interfaces.md). It intentionally has no approval tool. Configure the external client's Streamable HTTP URL as `https://<control-plane-host>/mcp` and its authorization header outside browser storage.
+External callers send `Authorization: Bearer <management-credential>` to `/api/<operation>` or `/mcp`. MCP provides the twelve tools documented in [Interfaces](interfaces.md). It intentionally has no approval tool. Configure the external client's Streamable HTTP URL as `https://<control-plane-host>/mcp` and its authorization header outside browser storage.
 
 The operator sends `{ "password": "<operator-credential>" }` to `/auth/login`. A protected cookie lasts 12 hours and survives Control Plane restarts. `/auth/logout` removes the saved session and clears the cookie. Requests with an unrecognized Host or Origin are rejected. The Web browser receives no daemon, agent, or native Codex credentials.
 

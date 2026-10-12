@@ -9,18 +9,21 @@ export class SessionContent {
   constructor(path: string) {
     ensurePrivateFile(path); this.db = new DatabaseSync(path);
     try {
-      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS contents(content_id TEXT PRIMARY KEY,session_scope TEXT NOT NULL,body BLOB,byte_length INTEGER NOT NULL,completeness TEXT NOT NULL); CREATE TABLE IF NOT EXISTS content_chunks(content_id TEXT NOT NULL,byte_offset INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(content_id,byte_offset)); CREATE TABLE IF NOT EXISTS activities(session_scope TEXT NOT NULL,item_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_scope,item_id));");
+      this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS contents(content_id TEXT PRIMARY KEY,session_scope TEXT NOT NULL,body BLOB,byte_length INTEGER NOT NULL,completeness TEXT NOT NULL,required_authority TEXT NOT NULL); CREATE TABLE IF NOT EXISTS content_chunks(content_id TEXT NOT NULL,byte_offset INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(content_id,byte_offset)); CREATE TABLE IF NOT EXISTS activities(session_scope TEXT NOT NULL,item_id TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(session_scope,item_id));");
+      if(!this.db.prepare("SELECT name FROM pragma_table_info('contents') WHERE name='required_authority'").get())fail("RECOVERY_REQUIRED","Private content schema is unsupported. Preserve old state and start with fresh Dewbow state.");
     } catch (error) { this.db.close(); throw error; }
   }
-  put(scope: string, itemId: string, kind: ContentRef["kind"], label: string, text: string | null, completeness: ContentRef["completeness"] = "unknown"): ContentRef {
-    if (text === null) return { contentId:null,kind,label,byteLength:null,availability:"unavailable",completeness:"unknown" };
+  put(scope: string, itemId: string, kind: ContentRef["kind"], label: string, text: string | null, completeness: ContentRef["completeness"] = "unknown",authority:ContentRef["authority"]="agent"): ContentRef {
+    if (text === null) return { contentId:null,kind,label,byteLength:null,availability:"unavailable",completeness:"unknown",authority };
     const body = Buffer.from(text,"utf8"), contentId = createHash("sha256").update(JSON.stringify([scope,itemId,kind,label,completeness])).update(body).digest("hex");
-    this.db.prepare("INSERT OR IGNORE INTO contents VALUES(?,?,?,?,?)").run(contentId,scope,body,body.length,completeness);
-    return { contentId,kind,label,byteLength:body.length,availability:completeness === "partial" ? "partial" : "available",completeness };
+    this.db.prepare("INSERT OR IGNORE INTO contents VALUES(?,?,?,?,?,?)").run(contentId,scope,body,body.length,completeness,authority);
+    if(authority === "operator")this.restrict(scope,contentId);
+    const access=this.db.prepare("SELECT required_authority FROM contents WHERE content_id=?").get(contentId)!.required_authority as ContentRef["authority"];
+    return { contentId,kind,label,byteLength:body.length,availability:completeness === "partial" ? "partial" : "available",completeness,authority:access };
   }
   startCapture(scope: string, itemId: string): ContentRef {
     const id = createHash("sha256").update(JSON.stringify([scope,itemId,"capture"])).digest("hex");
-    this.db.prepare("INSERT OR IGNORE INTO contents VALUES(?,?,NULL,0,'partial')").run(id,scope);
+    this.db.prepare("INSERT OR IGNORE INTO contents VALUES(?,?,NULL,0,'partial','agent')").run(id,scope);
     return this.captureRef(scope,id);
   }
   appendCapture(scope: string, id: string, text: string): void {
@@ -39,10 +42,10 @@ export class SessionContent {
     return this.captureRef(scope,id);
   }
   captureRef(scope: string, id: string): ContentRef {
-    const row = this.db.prepare("SELECT byte_length,completeness FROM contents WHERE content_id=? AND session_scope=?").get(id,scope);
+    const row = this.db.prepare("SELECT byte_length,completeness,required_authority FROM contents WHERE content_id=? AND session_scope=?").get(id,scope);
     if (!row) fail("NOT_FOUND","Output capture is unavailable.");
     const completeness = String(row.completeness) as ContentRef["completeness"];
-    return { contentId:id,kind:"output",label:"Command output",byteLength:Number(row.byte_length),availability:completeness === "partial" ? "partial" : "available",completeness };
+    return { contentId:id,kind:"output",label:"Command output",byteLength:Number(row.byte_length),availability:completeness === "partial" ? "partial" : "available",completeness,authority:row.required_authority as ContentRef["authority"] };
   }
   isCapture(scope: string, id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM contents WHERE content_id=? AND session_scope=? AND body IS NULL").get(id,scope)); }
   saveActivity(scope: string, activity: SessionActivity): SessionActivity {
@@ -58,7 +61,20 @@ export class SessionContent {
     if (!row) fail("NOT_FOUND","Activity is unavailable in this conversation.");
     return JSON.parse(String(row.value)) as SessionActivity;
   }
-  read(scope: string, contentId: string, cursor?: string, limitBytes = 65536): ContentPage {
+  readDetails(scope: string, contentId: string): unknown {
+    const row = this.db.prepare("SELECT CASE WHEN byte_length<=1048576 THEN body ELSE NULL END AS body FROM contents WHERE content_id=? AND session_scope=?").get(contentId,scope);
+    if (!row?.body) fail("NOT_FOUND","Interaction details are unavailable.");
+    return JSON.parse(Buffer.from(row.body as Uint8Array).toString("utf8"));
+  }
+  restrict(scope:string,contentId:string):void {this.db.prepare("UPDATE contents SET required_authority='operator' WHERE content_id=? AND session_scope=?").run(contentId,scope);}
+  restrictScope(scope:string):void {this.db.prepare("UPDATE contents SET required_authority='operator' WHERE session_scope=?").run(scope);}
+  restrictTurn(scope:string,turnId:string):void {
+    for(const row of this.db.prepare("SELECT value FROM activities WHERE session_scope=?").all(scope)) {
+      const activity=JSON.parse(String(row.value)) as SessionActivity;
+      if(activity.turnId===turnId) for(const ref of activity.contents) if(ref.contentId)this.restrict(scope,ref.contentId);
+    }
+  }
+  read(scope: string, contentId: string, cursor?: string, limitBytes = 65536,authority:ContentRef["authority"]="agent"): ContentPage {
     if (!Number.isSafeInteger(limitBytes) || limitBytes < 4 || limitBytes > 262144) fail("INVALID_INPUT","Content chunks must be from 4 bytes to 256 KiB.");
     let offset = 0;
     if (cursor !== undefined) {
@@ -69,8 +85,9 @@ export class SessionContent {
         offset = value.offset;
       } catch { fail("INVALID_INPUT","Invalid content cursor for this conversation."); }
     }
-    const row = this.db.prepare("SELECT byte_length AS size,body IS NULL AS chunked,substr(body,?,?) AS data,completeness FROM contents WHERE content_id=? AND session_scope=?").get(offset+1,limitBytes+4,contentId,scope);
+    const row = this.db.prepare("SELECT byte_length AS size,body IS NULL AS chunked,substr(body,?,?) AS data,completeness,required_authority FROM contents WHERE content_id=? AND session_scope=?").get(offset+1,limitBytes+4,contentId,scope);
     if (!row) fail("NOT_FOUND","Content is unavailable in this conversation.");
+    if(row.required_authority === "operator" && authority !== "operator")fail("FORBIDDEN","This content requires the Core operator.");
     const total = Number(row.size);
     const data = row.chunked ? Buffer.concat(this.db.prepare("SELECT byte_offset,data FROM content_chunks WHERE content_id=? AND byte_offset<? AND byte_offset+length(data)>? ORDER BY byte_offset").all(contentId,offset+limitBytes+4,offset).map(chunk => Buffer.from(chunk.data as Uint8Array).subarray(Math.max(0,offset-Number(chunk.byte_offset)),Math.min(Number((chunk.data as Uint8Array).byteLength),offset+limitBytes+4-Number(chunk.byte_offset))))) : Buffer.from(row.data as Uint8Array);
     if (offset > total || (data.length && (data[0]! & 0xc0) === 0x80)) fail("INVALID_INPUT","Content cursor is not on a UTF-8 boundary.");

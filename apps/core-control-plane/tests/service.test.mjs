@@ -16,7 +16,7 @@ async function until(predicate) {
   throw new Error("Timed out waiting for synthetic service state");
 }
 
-test("API and MCP share durable IDs, enforce approval authority, and reconcile disconnects without duplicate history", async () => {
+test("API and MCP share durable IDs, enforce interaction authority, and reconcile disconnects without duplicate history", async () => {
   const directory = mkdtempSync(join(tmpdir(), "dewbow-control-"));
   const probe = createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
   const port = probe.address().port; await new Promise(r => probe.close(r));
@@ -28,7 +28,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     managementToken: "synthetic-management-credential", operatorPassword: "synthetic-operator-password", webRoot: directory };
   let service = new ControlPlane(config), socket;
   const received = [], events = [];
-  const sessions = new Map(), turns = new Map(), approvals = new Map(), results = [];
+  const sessions = new Map(), turns = new Map(), interactions = new Map(), results = [];
   const native = Array.from({ length: 501 }, (_, i) => ({ id: `native-${i}`, codexHome: "/synthetic/codex-home", name: `Saved conversation ${i}`,
     workDir: "/synthetic/workspace", createdAt: now(), updatedAt: now(), archived: i === 0, kind: "session", parentId: null,
     forkedFromId: null, runtimeStatus: i === 1 ? "idle" : "unknown", hasActiveWriter: false }));
@@ -54,7 +54,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
       const frame = JSON.parse(raw);
       if (frame.type === "sync") {
         for (const event of events) socket.send(JSON.stringify({ type: "event", event }));
-        socket.send(JSON.stringify({ type: "report", report: { sessions: [...sessions.values()], turns: [...turns.values()], approvals: [...approvals.values()], operations: results } }));
+        socket.send(JSON.stringify({ type: "report", report: { sessions: [...sessions.values()], turns: [...turns.values()], interactions: [...interactions.values()], operations: results } }));
       } else if (frame.type === "command") received.push(frame.command);
       else if (frame.type === "query") {
         const query = frame.query; queried.push(query);
@@ -63,7 +63,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
         const selectedEvents = events.filter(e => e.sessionId === query.input.sessionId && e.cursor > start);
         const page = selectedEvents.slice(0, query.input.limit ?? 100).map(e => { const { text, ...payload } = e.payload; return { ...e, payload }; });
         const result = query.operation === "readEvents" ? { events: page, nextCursor: page.at(-1)?.cursor ?? start, hasMore: selectedEvents.length > page.length, liveMessages: streamed.filter(m => m.sessionId === query.input.sessionId).map(({ sessionId, ...m }) => m) } : query.operation === "discoverSessions" ? { sessions: rows.slice(start, start + 500), observedAt: now(), sources: [{ source: "database", state: "success", error: null }], nextCursor: start + 500 < rows.length ? start + 500 : null }
-          : { messages:[message],activities:[],observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false };
+          : query.operation === "readInteractions" ? {interactions:[...interactions.values()].filter(item=>item.sessionId===query.input.sessionId)} : { messages:[message],activities:[],observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false };
         socket.send(JSON.stringify({ type: "query_result", response: { queryId: query.queryId, result } }));
       }
     });
@@ -74,7 +74,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     await service.start();
     assert.equal((await api("listHosts", {}, {})).error.code, "UNAUTHORIZED");
     const listed = (await mcp("tools/list")).result.tools;
-    assert.deepEqual(listed.map(tool=>tool.name),["listHosts","listSessions","createSession","connectSession","getSession","readSessionHistory","getSessionActivity","readSessionContent","sendMessage","interruptTurn"]);
+    assert.deepEqual(listed.map(tool=>tool.name),["listHosts","listSessions","createSession","connectSession","getSession","readSessionHistory","getSessionActivity","readSessionContent","sendMessage","steerTurn","answerQuestions","interruptTurn"]);
     assert.deepEqual(listed.find(tool => tool.name === "createSession").inputSchema.required, ["hostId", "workDir", "requestId"]);
     assert.equal(listed.find(tool => tool.name === "createSession").inputSchema.properties.sessionOptions.additionalProperties, false);
     assert.ok(listed.every(tool => Object.keys(tool.inputSchema.properties).every(key => /^[a-z][a-zA-Z0-9]*$/.test(key))));
@@ -162,11 +162,11 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     results.push({ commandId: sent.commandId, status: "delivered", error: null });
     socket.send(JSON.stringify({ type: "result", result: results.at(-1) }));
     turns.set(turn.turnId, turn); session.activeTurnId = turn.turnId; session.runtimeState = "awaiting_approval";
-    const approval = { approvalId: "approval-1", sessionId: session.sessionId, turnId: turn.turnId, codexRequestId: 42,
-      action: { command: "synthetic action" }, status: "pending", decision: null, decidedAt: null };
-    approvals.set(approval.approvalId, approval); sendEvent(session, "approval_requested", { approval }, turn);
-    await until(async () => (await api("getSession", { sessionId: session.sessionId })).result.approvals.length);
-    const decision = { sessionId: session.sessionId, turnId: turn.turnId, approvalId: approval.approvalId, decision: "allow" };
+    const interaction = { interactionId:"interaction-1",sessionId:session.sessionId,turnId:turn.turnId,itemId:"synthetic-item",kind:"approval",authority:"operator",blocking:true,sensitive:false,
+      details:{action:{command:"synthetic action"}},content:{contentId:"synthetic-content",kind:"output",label:"Interaction details",byteLength:100,availability:"available",completeness:"complete",authority:"agent"},status:"pending",decision:null,requestId:null,createdAt:now(),observedAt:now() };
+    interactions.set(interaction.interactionId, interaction); sendEvent(session, "approval_requested", { interaction }, turn);
+    await until(async () => (await api("getSession", { sessionId: session.sessionId })).result.interactions.length);
+    const decision = { sessionId: session.sessionId, turnId: turn.turnId, interactionId: interaction.interactionId, decision: "allow",requestId:"decision-1" };
     assert.equal((await api("decideApproval", decision)).error.code, "FORBIDDEN");
     const login = await fetch(`${origin}/auth/login`, { method: "POST", headers: { "content-type": "application/json", connection: "close" }, body: JSON.stringify({ password: config.operatorPassword }) });
     const operator = { "content-type": "application/json", connection: "close", cookie: login.headers.get("set-cookie").split(";")[0] };
@@ -174,7 +174,23 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     assert.equal((await api("decideApproval", { ...decision, turnId: "stale" }, operator)).error.code, "STALE_TURN");
     const decided = (await api("decideApproval", decision, operator)).result;
     assert.equal((await api("decideApproval", decision, operator)).result.commandId, decided.commandId);
+    await until(()=>received.filter(command=>command.commandId === decided.commandId).length===2);
+    socket.send(JSON.stringify({type:"result",result:{commandId:decided.commandId,status:"unknown",error:{code:"DELIVERY_UNCERTAIN",message:"Synthetic lost response",retryable:true}}}));
+    await until(async()=>(await api("getSession",{sessionId:session.sessionId})).result.operations.find(op=>op.commandId===decided.commandId)?.status === "unknown");
+    assert.equal((await api("decideApproval",decision,operator)).result.commandId,decided.commandId);
+    await until(()=>received.filter(command=>command.commandId === decided.commandId).length===3);
     assert.equal((await api("decideApproval", { ...decision, decision: "deny" }, operator)).error.code, "REQUEST_CONFLICT");
+    const ordinary={...interaction,interactionId:"ordinary-question",kind:"questions",authority:"agent",details:{questions:[{questionId:"constructor",header:"Choice",prompt:"Choose",options:null,allowCustom:true,secret:false}]} };
+    interactions.set(ordinary.interactionId,ordinary);sendEvent(session,"interaction_requested",{interaction:ordinary},turn);
+    await until(async()=>(await api("getSession",{sessionId:session.sessionId})).result.interactions.some(item=>item.interactionId===ordinary.interactionId));
+    const answering={sessionId:session.sessionId,turnId:turn.turnId,interactionId:ordinary.interactionId,requestId:"bad-answer",answers:[{questionId:"missing",answers:["synthetic-private-answer"]}]};
+    const badAnswer=(await api("answerQuestions",answering)).result;
+    socket.send(JSON.stringify({type:"result",result:{commandId:badAnswer.commandId,status:"error",error:{code:"INVALID_INPUT",message:"Synthetic invalid answer",retryable:false}}}));
+    await until(async()=>(await api("getSession",{sessionId:session.sessionId})).result.interactions.find(item=>item.interactionId===ordinary.interactionId)?.status === "pending");
+    const validAnswer=(await api("answerQuestions",{...answering,requestId:"correct-answer",answers:[{questionId:"constructor",answers:["synthetic-private-answer"]}]})).result;
+    assert.equal(validAnswer.status,"accepted");
+    const journalRead=new DatabaseSync(config.statePath,{readOnly:true});
+    assert.ok(!JSON.stringify(journalRead.prepare("SELECT * FROM records").all()).includes("synthetic-private-answer"));journalRead.close();
     assert.equal((await api("interruptTurn", { sessionId: session.sessionId, turnId: "stale", requestId: "interrupt-stale" })).error.code, "STALE_TURN");
     const interruption = (await api("interruptTurn", { sessionId: session.sessionId, turnId: turn.turnId, requestId: "interrupt-1" })).result;
     assert.equal(interruption.status, "accepted");
@@ -198,7 +214,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     assert.equal(firstPage.events.length, 1); assert.equal(firstPage.hasMore, true);
     const secondPage = (await api("readSessionHistory", { sessionId: session.sessionId, cursor: firstPage.nextCursor, limit: 1 })).result;
     assert.equal(secondPage.events[0].cursor, firstPage.nextCursor + 1);
-    assert.deepEqual(history.events.map(e => e.cursor), [1, 2, 3, 4, 5]);
+    assert.deepEqual(history.events.map(e => e.cursor), [1, 2, 3, 4, 5, 6]);
     const rpc = await mcp("tools/call", { name: "readSessionHistory", arguments: { sessionId: session.sessionId } });
     assert.deepEqual(rpc.result.structuredContent, history);
     await service.stop(); service = new ControlPlane(config); await service.start();
@@ -241,8 +257,21 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     assert.equal((await api("getSession", { sessionId: unavailableNative.sessionId })).result.session.runtimeState, beforeFailedConnection);
     assert.equal((await api("sendMessage", { sessionId: unavailableNative.sessionId, requestId: "after-failed-connect", message: "Must not execute" })).error.code, "SESSION_NOT_READY");
     assert.equal((await api("connectSession", { ...failedConnectInput, requestId: "retry-connect" })).result.status, "accepted");
+    const privateTurn={...turn,turnId:pendingOperation.turnId,codexTurnId:"private-native-turn",state:"awaiting_input"};
+    session.activeTurnId=privateTurn.turnId;turns.set(privateTurn.turnId,privateTurn);
+    const secret={...ordinary,interactionId:"secret-question",turnId:privateTurn.turnId,authority:"operator",sensitive:true,details:{questions:[{questionId:"secret",header:"Secret",prompt:"Private",options:null,allowCustom:true,secret:true}],answers:[{questionId:"secret",answers:["synthetic-secret-answer"]}]}};
+    interactions.set(secret.interactionId,secret);sendEvent(session,"interaction_requested",{interaction:secret},privateTurn);
+    await until(async()=>(await api("getSession",{sessionId:session.sessionId})).result.interactions.some(item=>item.interactionId===secret.interactionId));
+    assert.equal((await api("getSession",{sessionId:session.sessionId})).result.interactions.find(item=>item.interactionId===secret.interactionId).details,undefined);
+    const privateHistory=(await api("readSessionHistory",{sessionId:session.sessionId})).result;
+    assert.ok(privateHistory.messages.every(item=>item.text==="" && item.availability === "restricted"));
+    assert.ok(privateHistory.liveMessages.every(item=>item.text==="" && item.availability === "restricted"));
+    assert.equal((await api("readSessionContent",{sessionId:session.sessionId,contentId:secret.content.contentId})).error.code,"FORBIDDEN");
+    assert.equal((await api("sendMessage",{sessionId:session.sessionId,requestId:"repeat-secret",message:"Repeat previous input"})).error.code,"FORBIDDEN");
+    assert.equal((await api("sendMessage",pendingInput)).result.commandId,pendingOperation.commandId,"Private context still permits reconciliation of an existing request.");
+    assert.equal((await api("getSession",{sessionId:session.sessionId},operator)).result.interactions.find(item=>item.interactionId===secret.interactionId).details.answers[0].answers[0],"synthetic-secret-answer");
     permissions[0].revoked = true; writeFileSync(hostsFile, JSON.stringify(permissions));
-    assert.equal((await api("sendMessage", { ...input, requestId: "after-restart" })).error.code, "HOST_UNAVAILABLE");
+    assert.equal((await api("sendMessage", { ...input, requestId: "after-restart" })).error.code, "FORBIDDEN");
     assert.equal((await api("listHosts")).result.hosts[0].status, "revoked");
     const revoked = new WebSocket(`${origin.replace("http", "ws")}/hosts/connect`, { headers: { authorization: "Bearer synthetic-daemon-credential" } });
     const revokedStatus = await new Promise(resolve => { revoked.on("unexpected-response", (_req, res) => { resolve(res.statusCode); res.resume(); revoked.terminate(); }); revoked.on("error", () => {}); });

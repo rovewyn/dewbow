@@ -1,4 +1,4 @@
-import type { Approval, Event, NativeMessage, Operation, Session, Turn } from "@dewbow/core-protocol";
+import type { Interaction, Event, NativeMessage, Operation, Session, Turn } from "@dewbow/core-protocol";
 import type { SessionActivity } from "@dewbow/core-protocol";
 export type { SessionActivity, ContentRef, ContentPage } from "@dewbow/core-protocol";
 import type { ApiError, SessionBinding, SessionOptions } from "./index.js";
@@ -8,13 +8,16 @@ export type { Host as CoreHost, NativeMessage, SessionState as RuntimeState } fr
 /** Public Core v1 projections derive from its contract; execution stays behind HTTP. */
 export type CoreOperation = Pick<Operation, "commandId" | "operation" | "sessionId" | "turnId" | "requestId" | "status" | "createdAt" | "error">;
 export type CoreSession = Pick<Session, "sessionId" | "hostId" | "workDir" | "codexThreadId" | "connectionState" | "runtimeState" | "observedAt" | "lastKnownState" | "lastKnownAt" | "activeTurnId" | "sessionConfig">;
-export type CoreTurn = Pick<Turn, "turnId" | "sessionId" | "codexTurnId" | "requestId" | "state" | "createdAt" | "observedAt" | "error">;
-export type CoreApproval = Pick<Approval, "approvalId" | "sessionId" | "turnId" | "status" | "action">;
+export type CoreTurn = Turn;
+export type CoreInteraction = Interaction;
+export type { UserQuestion, QuestionAnswer, InteractionDetails, TurnMode } from "@dewbow/core-protocol";
 
 export interface CoreSessionDetails {
   session: CoreSession;
+  contextAuthority:"agent"|"operator";
   turns: CoreTurn[];
-  approvals: CoreApproval[];
+  interactions: CoreInteraction[];
+  interactionsError: ApiError | null;
   operations: CoreOperation[];
 }
 
@@ -37,6 +40,8 @@ export interface MemberOperation {
   operation: string;
   requestId: string;
   turnId: string | null;
+  interactionId: string | null;
+  mode: import("@dewbow/core-protocol").TurnMode | null;
   result: CoreOperation | null;
   error: ApiError | null;
   createdAt: string;

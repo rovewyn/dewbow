@@ -19,7 +19,7 @@ export function historyEntries(events: Event[], messages: NativeMessage[], live:
     let text = "";
     if (event.type === "tool_activity") text = [payload.itemType, payload.command ?? payload.tool, payload.status ?? payload.stage].filter(Boolean).join(" · ");
     else if (payload.error) text = (payload.error as { message: string }).message;
-    else if (payload.approval) { const approval = payload.approval as { status: string; decision: string | null }; text = [approval.status, approval.decision].filter(Boolean).join(" · "); }
+    else if (payload.interaction) { const interaction = payload.interaction as { status: string; decision: string | null }; text = [interaction.status, interaction.decision].filter(Boolean).join(" · "); }
     else if (payload.turn) text = (payload.turn as { state: string }).state;
     else if (event.type === "history_gap") text = `Unavailable events ${payload.fromCursor}–${payload.toCursor}`;
     else if (payload.reason) text = String(payload.reason);
@@ -29,7 +29,7 @@ export function historyEntries(events: Event[], messages: NativeMessage[], live:
   for (const message of live) if (!merged.has(message.id) || !final(merged.get(message.id)!)) merged.set(message.id,message);
   const ordered = [...merged.values()].sort((a,b)=>a.ordinal !== undefined && b.ordinal !== undefined ? a.ordinal-b.ordinal : a.createdAt.localeCompare(b.createdAt));
   const nativeEntries = ordered.map(message => ({ id: `native:${message.id}`, timestamp: events.find(event=>event.type === "assistant_message" && event.payload.itemId === message.id && event.payload.stage === "completed")?.timestamp ?? message.createdAt,
-    kind: message.role, title: message.role === "user" ? "You / agent" : "Codex", text: message.text }));
+    kind: message.role, title: message.role === "user" ? "You / agent" : "Codex", text: message.availability === "restricted" ? "This turn contains private operator input. View it in Core." : message.text }));
   entries.push(...nativeEntries);
   entries.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
   // Keep native source order even when a final reply was created before a

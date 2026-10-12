@@ -68,7 +68,7 @@ try {
   assert.equal(initialized.protocolVersion, "2025-03-26");
   const notification = await fetch(`${origin}/mcp`, { method: "POST", headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-03-26" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
   assert.equal(notification.status, 202);
-  assert.equal((await rpc("tools/list")).tools.length,10);
+  assert.equal((await rpc("tools/list")).tools.length,12);
   const unauthorized = await fetch(`${origin}/api/listHosts`, { method: "POST", headers: { Authorization: "Bearer invalid-smoke-credential", "Content-Type": "application/json" }, body: "{}" });
   assert.equal(unauthorized.status, 401);
   trace.checks.push("invalid_management_credential_rejected");

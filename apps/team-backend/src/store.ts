@@ -214,11 +214,13 @@ export class TeamStore {
   }
 
   putRequest(value: RequestRecord): void {
+    const coreInput=value.coreInput ? {...value.coreInput} : null;
+    if(coreInput){delete coreInput.message;delete coreInput.answers;}
     this.db.prepare(`INSERT INTO operation_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(caller, operation, request_id) DO UPDATE SET
       result_json=excluded.result_json, error_json=excluded.error_json, updated_at=excluded.updated_at`)
       .run(value.caller, value.operation, value.requestId, value.fingerprint, value.coreRequestId, value.coreUrl,
-        value.coreInput ? JSON.stringify(value.coreInput) : null, value.bindingId,
+        coreInput ? JSON.stringify(coreInput) : null, value.bindingId,
         value.result === null ? null : JSON.stringify(value.result), value.error ? JSON.stringify(value.error) : null,
         value.createdAt, value.updatedAt);
   }

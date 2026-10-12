@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow/core-protocol";
-import type { AgentRef, Approval, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, Turn } from "@dewbow/core-protocol";
+import { canonicalJson, fail, LiveReplies, ManagementError, maskPrivateMessages, maskPrivateActivity, maskPrivateEvents, now, terminal, validateInput } from "@dewbow/core-protocol";
+import type { AgentRef, Interaction, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, Turn } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
 
 export interface Caller { id: string; operator: boolean }
 export class Management {
   dispatch: (hostId: string, command: Command) => void = () => {};
-  query: (hostId: string, operation: HostQuery["operation"], input: HostQuery["input"]) => Promise<unknown> = async () => fail("HOST_UNAVAILABLE", "Host reads are unavailable.", true);
+  query: (hostId: string, operation: HostQuery["operation"], input: HostQuery["input"], authority?: HostQuery["authority"]) => Promise<unknown> = async () => fail("HOST_UNAVAILABLE", "Host reads are unavailable.", true);
   private readonly inventories = new Map<string, NativeInventory>();
   private readonly refreshes = new Map<string, Promise<void>>();
   private readonly discoveryErrors = new Map<string, ManagementErrorData>();
@@ -24,28 +24,28 @@ export class Management {
     const input = validateInput(name, raw);
     if (name === "listHosts") return { hosts: this.store.list<Host>("host") };
     if (name === "listSessions") return this.list(input.hostId as string | undefined);
-    if (name === "getSession") return this.get(String(input.sessionId));
-    if (name === "readSessionHistory") return this.history(input);
+    if (name === "getSession") return this.get(String(input.sessionId),caller);
+    if (name === "readSessionHistory") return this.history(input,caller);
     if (name === "getSessionActivity" || name === "readSessionContent") {
-      return this.readContent(name,input);
+      return this.readContent(name,input,caller);
     }
     if (name === "connectSession") return this.connect(input, caller);
     return this.mutate(name, input, caller);
   }
   private mutate(name: string, input: Record<string, unknown>, caller: Caller, source?: SessionSummary): unknown {
-    if (name === "decideApproval" && !caller.operator) fail("FORBIDDEN", "Only the Web operator can decide approvals.");
+    if (name === "decideApproval" && !caller.operator) fail("FORBIDDEN", "Only the Web operator can decide interactions.");
     if (name !== "connectSession" && typeof input.sessionId === "string" && input.sessionId.startsWith("native:") && !this.store.get("session", input.sessionId)) fail("SESSION_NOT_CONNECTED", "Connect this native conversation before sending commands.");
-    const requestId = String(input.requestId ?? input.approvalId);
+    const requestId = String(input.requestId ?? input.interactionId);
     const commandId = hash(JSON.stringify([caller.id, name, requestId]));
     const fingerprint = hash(canonicalJson(input));
     const existing = this.store.get<Operation>("operation", commandId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) fail("REQUEST_CONFLICT", "Request ID was already used with different input.", false, { sessionId: existing.sessionId, ...(existing.turnId ? { turnId: existing.turnId } : {}) });
-      if (existing.operation === "sendMessage" && (existing.status === "unknown" || existing.status === "accepted")) {
+      if (["sendMessage","steerTurn","answerQuestions","decideApproval"].includes(existing.operation) && (existing.status === "unknown" || existing.status === "accepted")) {
         const session = this.session(existing.sessionId);
         this.available(session.hostId);
         this.pendingInputs.set(commandId, input);
-        if (!session.activeTurnId && existing.turnId && !terminal(this.store.get<Turn>("turn", existing.turnId)!.state)) {
+        if (existing.operation === "sendMessage" && !session.activeTurnId && existing.turnId && !terminal(this.store.get<Turn>("turn", existing.turnId)!.state)) {
           session.activeTurnId = existing.turnId; session.runtimeState = "unknown";
           this.store.put("session", session.sessionId, session);
         }
@@ -53,6 +53,7 @@ export class Management {
       }
       return publicOperation(existing);
     }
+    if(!caller.operator && ["sendMessage","steerTurn","answerQuestions"].includes(name) && this.privateConversation(String(input.sessionId)))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
     let session: Session;
     let turnId: string | null = null;
     if (name === "connectSession" && source) {
@@ -80,32 +81,35 @@ export class Management {
         if (session.activeTurnId) fail("SESSION_BUSY", "Session has an active or unresolved turn.", false, { sessionId: session.sessionId, turnId: session.activeTurnId });
         if (!session.codexThreadId || (session.runtimeState === "unknown" || session.connectionState !== "connected")) fail("SESSION_NOT_READY", "Conversation is not ready. Inspect its creation or recovery state.", true, { sessionId: session.sessionId });
         turnId = randomUUID();
-      } else if (name === "interruptTurn" || name === "decideApproval") {
+      } else if (["interruptTurn","decideApproval","answerQuestions","steerTurn"].includes(name)) {
         turnId = String(input.turnId);
         if (session.activeTurnId !== turnId) fail("STALE_TURN", "Turn is no longer active.", false, { sessionId: session.sessionId, turnId });
-        if (name === "decideApproval") {
-          const approval = this.store.get<Approval>("approval", String(input.approvalId));
-          if (!approval || approval.sessionId !== session.sessionId || approval.turnId !== turnId || approval.status !== "pending") fail("STALE_APPROVAL", "Approval is not pending for this session and turn.");
+        if (name === "decideApproval" || name === "answerQuestions") {
+          const interaction = this.store.get<Interaction>("interaction", String(input.interactionId));
+          if (!interaction || interaction.sessionId !== session.sessionId || interaction.turnId !== turnId || interaction.status !== "pending") fail("STALE_INTERACTION", "Interaction is not pending for this session and turn.");
+          if ((name === "decideApproval" && interaction.kind !== "approval") || (name === "answerQuestions" && interaction.kind !== "questions")) fail("INVALID_INPUT","Operation does not match the interaction.");
+          if (interaction.authority === "operator" && !caller.operator) fail("FORBIDDEN","This interaction requires the Core operator.");
         }
       }
     }
     const operation: Operation = { commandId, operation: name as Command["operation"], sessionId: session.sessionId, turnId,
-      input, caller: caller.id, requestId, fingerprint, status: "accepted", createdAt: now(), error: null };
+      input,authority:caller.operator ? "operator" : "agent",caller:caller.id,requestId,fingerprint,status:"accepted",createdAt:now(),error:null };
     this.store.transaction(() => {
       if (name === "sendMessage") {
         session.activeTurnId = turnId;
         this.store.put("turn", turnId!, { turnId: turnId!, sessionId: session.sessionId, requestId, codexTurnId: null,
-          state: "accepted", createdAt: operation.createdAt, observedAt: operation.createdAt, error: null } satisfies Turn);
+          mode:input.mode as Turn["mode"],state:"accepted",createdAt:operation.createdAt,observedAt:operation.createdAt,error:null } satisfies Turn);
       }
-      if (name === "decideApproval") {
-        const approval = this.store.get<Approval>("approval", String(input.approvalId))!;
-        approval.status = "requested"; approval.decision = input.decision as "allow" | "deny"; approval.decidedAt = now();
-        this.store.put("approval", approval.approvalId, approval);
+      if (name === "decideApproval" || name === "answerQuestions") {
+        const interaction = this.store.get<Interaction>("interaction", String(input.interactionId))!;
+        interaction.status = "requested"; interaction.requestId = requestId; interaction.observedAt = now();
+        if (name === "decideApproval") interaction.decision = input.decision as "allow" | "deny";
+        this.store.put("interaction", interaction.interactionId, interaction);
       }
       this.store.put("session", session.sessionId, session);
       this.store.put("operation", commandId, operation);
     });
-    if (name === "sendMessage") this.pendingInputs.set(commandId, input);
+    if (["sendMessage","steerTurn","answerQuestions"].includes(name)) this.pendingInputs.set(commandId,input);
     this.dispatch(session.hostId, operation);
     return publicOperation(operation);
   }
@@ -171,38 +175,57 @@ export class Management {
     const list = await this.list();
     return list.sessions.find(s => s.sessionId === id) ?? fail("NOT_FOUND", "Conversation is absent from the available native inventories.", true, { sessionId: id });
   }
-  private async get(id: string) {
+  private async get(id: string,caller:Caller) {
     const session = await this.view(id);
-    return { session, turns: this.store.list<Turn>("turn").filter(t => t.sessionId === id),
-      approvals: this.store.list<Approval>("approval").filter(a => a.sessionId === id),
+    let interactions = this.store.list<Interaction>("interaction").filter(item=>item.sessionId === id), interactionsError = null;
+    if (session.managed && session.codexThreadId) {
+      try {
+        const page = await this.query(session.hostId,"readInteractions",{sessionId:id},caller.operator ? "operator" : "agent") as {interactions:Interaction[]};
+        if (!Array.isArray(page.interactions)) fail("READ_FAILED","Invalid interaction view.",true);
+        for (const item of page.interactions) { if (item.sessionId !== id) fail("INVALID_INPUT","Interaction belongs to another session."); this.applyInteraction(item); }
+        interactions = page.interactions.map(item=>{
+          const metadata = this.store.get<Interaction>("interaction",item.interactionId)!;
+          return {...metadata,...(metadata.content.contentId === item.content.contentId ? {details:item.details} : {})};
+        });
+      } catch (cause) { interactionsError = cause instanceof ManagementError ? cause.detail : {code:"READ_FAILED",message:"Interactions are unavailable.",retryable:true}; }
+    }
+    return { session, contextAuthority:this.privateConversation(id) ? "operator" : "agent",turns: this.store.list<Turn>("turn").filter(t => t.sessionId === id),
+      interactions:interactions.map(item=>{if(caller.operator || !this.privateConversation(id))return item;const {details:_details,...metadata}=item;return metadata;}),interactionsError,
       operations: this.store.list<Operation>("operation").filter(o => o.sessionId === id).map(publicOperation) };
   }
-  private async history(input: Record<string, unknown>) {
+  private privateTurns(sessionId:string):Set<string> {
+    return this.privateConversation(sessionId) ? new Set(this.store.list<Turn>("turn").filter(turn=>turn.sessionId===sessionId && turn.codexTurnId).map(turn=>turn.codexTurnId!)) : new Set();
+  }
+  private privateConversation(sessionId:string):boolean {return this.store.list<Interaction>("interaction").some(item=>item.sessionId===sessionId && item.sensitive);}
+  private async history(input: Record<string, unknown>,caller:Caller) {
     if ([input.beforeCursor,input.afterCursor,input.updateCursor].filter(value=>value !== undefined).length > 1) fail("INVALID_INPUT","Choose one history cursor.");
     const session = await this.view(String(input.sessionId)), cursor = Number(input.cursor ?? 0), limit = Number(input.limit ?? 50);
     const empty: EventHistory = { events: [], nextCursor: cursor, hasMore: false, liveMessages: [] };
     const [eventRead, nativeRead] = await Promise.allSettled([
-      Promise.resolve().then(() => session.managed ? this.query(session.hostId, "readEvents", { sessionId: session.sessionId, cursor, limit }) : empty),
+      Promise.resolve().then(() => session.managed ? this.query(session.hostId, "readEvents", { sessionId: session.sessionId, cursor, limit },caller.operator ? "operator" : "agent") : empty),
       Promise.resolve().then(() => session.codexThreadId ? this.query(session.hostId, "readSessionHistory", { codexThreadId: session.codexThreadId,
         ...(session.native || session.codexHome ? { codexHome: session.native?.codexHome ?? session.codexHome! } : {}), limit,
-        ...(input.beforeCursor ? { beforeCursor:String(input.beforeCursor) } : {}),...(input.afterCursor ? { afterCursor:String(input.afterCursor) } : {}),...(input.updateCursor ? { updateCursor:String(input.updateCursor) } : {}) }) : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() }),
+        ...(input.beforeCursor ? { beforeCursor:String(input.beforeCursor) } : {}),...(input.afterCursor ? { afterCursor:String(input.afterCursor) } : {}),...(input.updateCursor ? { updateCursor:String(input.updateCursor) } : {}) },caller.operator ? "operator" : "agent") : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() }),
     ]);
     const error = (cause: unknown, message: string) => cause instanceof ManagementError ? cause.detail : { code: "READ_FAILED", message, retryable: true };
     const events = eventRead.status === "fulfilled" ? eventRead.value as EventHistory : empty;
     const native = nativeRead.status === "fulfilled" ? nativeRead.value as NativeHistory : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() };
     if (eventRead.status === "fulfilled") this.liveReplies.replace(session.sessionId, events.liveMessages);
     this.liveReplies.saved(session.sessionId, native.messages);
-    return { events: events.events, nextCursor: events.nextCursor, hasMore: events.hasMore,
-      messages:native.messages,activities:native.activities,beforeCursor:native.beforeCursor,afterCursor:native.afterCursor,updateCursor:native.updateCursor,hasMoreUpdates:native.hasMoreUpdates,liveMessages:this.liveReplies.get(session.sessionId),
+    const live=this.liveReplies.get(session.sessionId);
+    const privateTurns=caller.operator || !this.privateConversation(session.sessionId) ? new Set<string>() : new Set([...this.privateTurns(session.sessionId),...native.messages.map(item=>item.turnId),...native.activities.map(item=>item.turnId),...live.map(item=>item.turnId),...events.events.flatMap(event=>[event.turnId??"",(event.payload.turn as Turn|undefined)?.codexTurnId??""])]);
+    return { events: caller.operator ? events.events : maskPrivateEvents(events.events,privateTurns), nextCursor: events.nextCursor, hasMore: events.hasMore,
+      messages:maskPrivateMessages(native.messages,privateTurns),activities:native.activities.map(item=>privateTurns.has(item.turnId) ? maskPrivateActivity(item) : item),beforeCursor:native.beforeCursor,afterCursor:native.afterCursor,updateCursor:native.updateCursor,hasMoreUpdates:native.hasMoreUpdates,liveMessages:maskPrivateMessages(live,privateTurns),
       historyError: nativeRead.status === "rejected" ? error(nativeRead.reason, "Native saved messages could not be read.") : null,
       eventsError: eventRead.status === "rejected" ? error(eventRead.reason, "Host event history could not be read.") : null };
   }
-  private async readContent(operation: "getSessionActivity" | "readSessionContent", input: Record<string,unknown>) {
+  private async readContent(operation: "getSessionActivity" | "readSessionContent", input: Record<string,unknown>,caller:Caller) {
     const session = await this.view(String(input.sessionId));
     if (!session.codexThreadId) fail("SESSION_NOT_READY","Native conversation is not ready.");
+    if(!caller.operator && this.privateConversation(session.sessionId) && operation === "readSessionContent")fail("FORBIDDEN","This conversation contains private operator input.");
     const { sessionId: _sessionId, ...options } = input;
     return this.query(session.hostId,operation,{ ...options,codexThreadId:session.codexThreadId,
-      ...(session.native || session.codexHome ? { codexHome:session.native?.codexHome ?? session.codexHome! } : {}) });
+      ...(session.native || session.codexHome ? { codexHome:session.native?.codexHome ?? session.codexHome! } : {}) },caller.operator ? "operator" : "agent");
   }
   uncertain(operation: Operation): void {
     operation.status = "unknown";
@@ -226,6 +249,15 @@ export class Management {
       this.store.put("session", session.sessionId, session);
     }
     if (result.status !== "unknown") this.pendingInputs.delete(operation.commandId);
+    if (result.status === "error" && ["answerQuestions","decideApproval"].includes(operation.operation)) {
+      const interaction=this.store.get<Interaction>("interaction",String(operation.input.interactionId));
+      if(interaction?.status === "requested" && interaction.requestId === operation.requestId) {
+        if(["INVALID_INPUT","FORBIDDEN","LIMIT_EXCEEDED"].includes(result.error?.code??"") && session.activeTurnId === interaction.turnId) {
+          interaction.status="pending";interaction.requestId=null;interaction.decision=null;
+        } else if(["STALE_INTERACTION","STALE_TURN"].includes(result.error?.code??""))interaction.status="invalidated";
+        interaction.observedAt=now();this.store.put("interaction",interaction.interactionId,interaction);
+      }
+    }
     this.store.put("operation", operation.commandId, operation);
   }
   event(hostId: string, event: Event): void {
@@ -235,7 +267,7 @@ export class Management {
     this.liveReplies.observe(event);
     this.store.transaction(() => {
       const payload = event.payload;
-      for (const key of ["session", "turn", "approval"]) {
+      for (const key of ["session", "turn", "interaction"]) {
         const record = payload[key] as { sessionId: string } | undefined;
         if (record && record.sessionId !== event.sessionId) fail("INVALID_INPUT", "Event record belongs to another session.");
       }
@@ -243,7 +275,7 @@ export class Management {
       const current = this.session(event.sessionId); current.latestCursor = event.cursor;
       this.store.put("session", event.sessionId, current);
       if (event.payload.turn) this.applyTurn(event.payload.turn as unknown as Turn);
-      if (event.payload.approval) this.applyApproval(event.payload.approval as unknown as Approval);
+      if (event.payload.interaction) this.applyInteraction(event.payload.interaction as unknown as Interaction);
     });
   }
   private applySession(hostId: string, session: Session): void {
@@ -267,28 +299,30 @@ export class Management {
         session.activeTurnId = null;
         this.store.put("session", session.sessionId, session);
       }
-      for (const approval of this.store.list<Approval>("approval")) if (approval.turnId === turn.turnId && approval.status !== "resolved") {
-        approval.status = "invalidated"; this.store.put("approval", approval.approvalId, approval);
+      for (const interaction of this.store.list<Interaction>("interaction")) if (interaction.turnId === turn.turnId && interaction.status !== "resolved") {
+        interaction.status = "invalidated"; this.store.put("interaction", interaction.interactionId, interaction);
       }
     }
   }
-  private applyApproval(approval: Approval): void {
-    const session = this.session(approval.sessionId);
-    const existing = this.store.get<Approval>("approval", approval.approvalId);
-    if (existing && (existing.sessionId !== approval.sessionId || existing.turnId !== approval.turnId)) fail("INVALID_INPUT", "Approval identity conflict.");
-    if (session.activeTurnId !== approval.turnId && approval.status !== "resolved") approval.status = "invalidated";
-    if (existing?.decision && !approval.decision) approval = { ...approval, decision: existing.decision, decidedAt: existing.decidedAt };
-    this.store.put("approval", approval.approvalId, approval);
+  private applyInteraction(interaction: Interaction): void {
+    const session = this.session(interaction.sessionId);
+    const existing = this.store.get<Interaction>("interaction", interaction.interactionId);
+    if (existing && (existing.sessionId !== interaction.sessionId || existing.turnId !== interaction.turnId)) fail("INVALID_INPUT", "Interaction identity conflict.");
+    if (session.activeTurnId !== interaction.turnId && interaction.status !== "resolved") interaction.status = "invalidated";
+    if (existing && (["resolved","invalidated"].includes(existing.status) || ({pending:0,requested:1,delivered:2,resolved:3,invalidated:3}[existing.status] > {pending:0,requested:1,delivered:2,resolved:3,invalidated:3}[interaction.status]))) {
+      interaction = {...interaction,...existing,authority:interaction.authority};
+    }
+    this.store.put("interaction", interaction.interactionId, interaction);
   }
   reconcile(hostId: string, report: HostReport): void {
     this.store.transaction(() => {
       for (const session of report.sessions) this.applySession(hostId, session);
       for (const turn of report.turns) { if (this.session(turn.sessionId).hostId !== hostId) fail("INVALID_INPUT", "Invalid turn host."); this.applyTurn(turn); }
-      for (const approval of report.approvals) { if (this.session(approval.sessionId).hostId !== hostId) fail("INVALID_INPUT", "Invalid approval host."); this.applyApproval(approval); }
-      const reportedApprovals = new Set(report.approvals.map(a => a.approvalId));
-      for (const approval of this.store.list<Approval>("approval")) {
-        if (this.session(approval.sessionId).hostId === hostId && !reportedApprovals.has(approval.approvalId) && approval.status !== "resolved") {
-          approval.status = "invalidated"; this.store.put("approval", approval.approvalId, approval);
+      for (const interaction of report.interactions) { if (this.session(interaction.sessionId).hostId !== hostId) fail("INVALID_INPUT", "Invalid interaction host."); this.applyInteraction(interaction); }
+      const reportedInteractions = new Set(report.interactions.map(a => a.interactionId));
+      for (const interaction of this.store.list<Interaction>("interaction")) {
+        if (this.session(interaction.sessionId).hostId === hostId && !reportedInteractions.has(interaction.interactionId) && interaction.status !== "resolved") {
+          interaction.status = "invalidated"; this.store.put("interaction", interaction.interactionId, interaction);
         }
       }
       for (const result of report.operations) this.result(hostId, result);
@@ -308,15 +342,15 @@ export class Management {
     for (const operation of this.store.list<Operation>("operation")) {
       if (this.session(operation.sessionId).hostId !== hostId || operation.status === "delivered" || operation.status === "error") continue;
       if (seen.has(operation.commandId)) continue;
-      const input = operation.operation === "sendMessage" ? this.pendingInputs.get(operation.commandId) : operation.input;
+      const input = ["sendMessage","steerTurn","answerQuestions"].includes(operation.operation) ? this.pendingInputs.get(operation.commandId) : operation.input;
       if (!input) continue; // A restart requires the client to retry its original message and request ID.
       if (operation.operation === "sendMessage") {
         const session = this.session(operation.sessionId); session.activeTurnId = operation.turnId;
         this.store.put("session", session.sessionId, session);
       }
-      if (operation.operation === "decideApproval") {
-        const approval = this.store.get<Approval>("approval", String(operation.input.approvalId));
-        if (!approval || approval.status !== "pending") continue;
+      if (operation.operation === "decideApproval" || operation.operation === "answerQuestions") {
+        const interaction = this.store.get<Interaction>("interaction", String(operation.input.interactionId));
+        if (!interaction || !["pending","requested"].includes(interaction.status) || (interaction.requestId && interaction.requestId!==operation.requestId)) continue;
       }
       this.dispatch(hostId, { ...operation, input });
     }

@@ -24,11 +24,11 @@ export interface SessionTreeModel {
 }
 
 const statusLabels = {
-  idle: "Idle", running: "Running", awaiting_approval: "Approval",
+  idle: "Idle", running: "Running", awaiting_approval: "Approval",awaiting_input:"Questions",
   interrupted: "Interrupted", error: "Execution error", unknown: "Unknown",
 };
 const statusTones = {
-  idle: "neutral", running: "running", awaiting_approval: "warning",
+  idle: "neutral", running: "running", awaiting_approval: "warning",awaiting_input:"warning",
   interrupted: "neutral", error: "danger", unknown: "neutral",
 } as const;
 

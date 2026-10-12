@@ -3,6 +3,7 @@ export type { RpcMessage, ConnectSessionOptions, ConnectedSession } from "./runt
 export { discoverSessions } from "./discovery.js";
 export { readSessionHistory, SessionHistoryError } from "./history.js";
 export { readSessionItems, readSessionItem } from "./items.js";
+export { readSessionToolOrigin } from "./tool-origin.js";
 export type { ReadSessionItemsOptions, SessionItemRecord, SessionItemsPage } from "./items.js";
 export type { DiscoverOptions, DiscoverySnapshot, CodexSession, CodexProcess, RuntimeReport,
   RuntimeSessionReport, RuntimeStatus, SessionKind, SourceName, SourceReport, SourceState,

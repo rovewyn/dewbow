@@ -1,4 +1,4 @@
-import type { ApiError } from "@dewbow/team-protocol";
+import type { ApiError,ContentPage,InteractionDetails } from "@dewbow/team-protocol";
 
 export class ApiClientError extends Error {
   constructor(readonly detail: ApiError) { super(detail.message); this.name = "ApiClientError"; }
@@ -23,6 +23,15 @@ async function request<T>(path: string, method: string, input?: unknown, signal?
 }
 
 export const call = <T>(operation: string, input: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> => request(`/api/${operation}`, "POST", input, signal);
+export async function readInteractionDetails(bindingId:string,contentId:string,signal?:AbortSignal):Promise<InteractionDetails> {
+  let text="",cursor:string|null=null,offset=0;
+  do {
+    const page:ContentPage=await call<ContentPage>("readMemberSessionContent",{bindingId,contentId,...(cursor ? {contentCursor:cursor} : {})},signal);
+    if(page.contentId!==contentId || page.byteOffset!==offset || page.byteLength>1048576 || (page.nextCursor && !page.text))throw new Error("Invalid interaction details page.");
+    text+=page.text;offset+=new TextEncoder().encode(page.text).length;cursor=page.nextCursor;
+  }while(cursor);
+  return JSON.parse(text) as InteractionDetails;
+}
 export const readAuth = (): Promise<{ authenticated: boolean }> => request("/auth/session", "GET");
 export const signIn = (token: string): Promise<{ authenticated: boolean }> => request("/auth/login", "POST", { token });
 export const signOut = (): Promise<unknown> => request("/auth/logout", "POST", {});

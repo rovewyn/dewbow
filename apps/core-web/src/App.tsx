@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
-import type { Event, Host, SessionSummary, NativeMessage } from "@dewbow/core-protocol";
+import type { Event, Host, SessionSummary, NativeMessage,InteractionDetails } from "@dewbow/core-protocol";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -11,9 +11,10 @@ import {
   NativeSelectOption,
 } from "@/components/ui/native-select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { api, ApiError, request } from "./api";
+import { api, ApiError, request,readInteractionDetails } from "./api";
 import type { Detail, History, OperationSummary } from "./api";
 import { historyEntries, mergeNativeMessages } from "./history";
+import {QuestionForm} from "./QuestionForm";
 import { SessionTreeView } from "@/components/session-tree/SessionTreeView";
 import { buildSessionTree, projectSessionTree } from "@/components/session-tree/model";
 
@@ -53,12 +54,28 @@ export function App() {
     [busy, setBusy] = useState(false);
   const [password, setPassword] = useState(""),
     [message, setMessage] = useState("");
+  const [mode,setMode]=useState<"default"|"plan">("default");
   const [hostId, setHostId] = useState(""),
     [workDir, setWorkDir] = useState("");
   const [retry, setRetry] = useState<{
     operation: string;
     input: Record<string, unknown>;
   } | null>(null);
+  const pendingInputs=useRef(new Map<string,{operation:string;input:Record<string,unknown>}>());
+  const [loadedInteractions,setLoadedInteractions]=useState(new Map<string,InteractionDetails>());
+  const [loadingInteractions,setLoadingInteractions]=useState(new Set<string>());
+  useEffect(()=>{setLoadedInteractions(new Map());setLoadingInteractions(new Set());},[selected]);
+  useEffect(()=>{if(authenticated === false){pendingInputs.current.clear();setRetry(null);setMessage("");setMode("default");setLoadedInteractions(new Map());setLoadingInteractions(new Set());}},[authenticated]);
+  useEffect(()=>{
+    for(const op of detail?.operations??[]) {
+      const saved=pendingInputs.current.get(op.requestId);if(!saved)continue;
+      if(op.status === "delivered" || op.status === "error") {
+        pendingInputs.current.delete(op.requestId);
+        if(op.status === "delivered" && typeof saved.input.message === "string")setMessage(previous=>previous===saved.input.message ? "" : previous);
+        setRetry(previous=>previous?.input.requestId===op.requestId ? null : previous);
+      } else if(op.status === "unknown")setRetry(previous=>previous??saved);
+    }
+  },[detail]);
   const history = useRef<HTMLOListElement>(null);
   const conversation = useRef<HTMLDivElement>(null);
   const [loadingHeight, setLoadingHeight] = useState(0);
@@ -188,6 +205,7 @@ export function App() {
     }
   }
   async function operation(name: string, input: Record<string, unknown>) {
+    if(typeof input.requestId === "string")pendingInputs.current.set(input.requestId,{operation:name,input});
     setBusy(true);
     setError("");
     setRetry(null);
@@ -202,7 +220,10 @@ export function App() {
         select(result.sessionId);
         setNotice(`Session creation ${result.status} · ${result.requestId}`);
       }
-      if (name === "sendMessage") setMessage("");
+      if(result.status === "delivered" || result.status === "error") {
+        pendingInputs.current.delete(String(input.requestId));
+        if(result.status === "delivered" && typeof input.message === "string")setMessage(previous=>previous===input.message ? "" : previous);
+      }
     } catch (cause) {
       setError(describe(cause));
       setNotice("");
@@ -225,6 +246,7 @@ export function App() {
   const activeTurn = detail?.turns.find(
     (t) => t.turnId === detail.session.activeTurnId,
   );
+  const canSteer=Boolean(connected && detail?.session.connectionState === "connected" && activeTurn?.codexTurnId && ["running","awaiting_input","awaiting_approval"].includes(activeTurn.state));
   const sessionTree = useMemo(() => buildSessionTree(hosts, sessions), [hosts, sessions]);
   const treeModel = useMemo(() => projectSessionTree(sessionTree, search, selected), [sessionTree, search, selected]);
   return (
@@ -477,17 +499,17 @@ export function App() {
                     )}
                   </div>
                   <div className="approvals">
-                    {detail.approvals
+                    {detail.interactions
                       .filter(
                         (a) =>
                           a.status === "pending" ||
                           a.status === "requested" ||
                           a.status === "delivered",
                       )
-                      .map((approval) => (
-                        <Card className="approval" key={approval.approvalId}>
+                      .map((item) => {const approval={...item,details:item.details??loadedInteractions.get(item.content.contentId??"")};return (
+                        <Card className="approval" key={approval.interactionId}>
                           <div className="row">
-                            <h3>Approval {approval.status}</h3>
+                            <h3>{approval.kind === "questions" ? "Questions" : approval.kind === "approval" ? "Approval" : "Operator action"} {approval.status}</h3>
                             <Badge
                               variant="secondary"
                               className="status awaiting_approval"
@@ -498,22 +520,27 @@ export function App() {
                           <p>
                             {detail.session.hostId} · Turn {approval.turnId}
                           </p>
-                          <pre>
+                          {!approval.details && approval.content.contentId && <Button disabled={busy || !connected || loadingInteractions.has(approval.content.contentId)} onClick={()=>{
+                            const sessionId=detail.session.sessionId,contentId=approval.content.contentId!,controller=historyController.current;setLoadingInteractions(previous=>new Set(previous).add(contentId));
+                            void readInteractionDetails(sessionId,contentId,controller?.signal).then(details=>{if(selectedRef.current===sessionId && !controller?.signal.aborted)setLoadedInteractions(previous=>new Map(previous).set(contentId,details));}).catch(cause=>{if(selectedRef.current===sessionId && !controller?.signal.aborted)setError(describe(cause));}).finally(()=>{if(selectedRef.current===sessionId && !controller?.signal.aborted)setLoadingInteractions(previous=>{const next=new Set(previous);next.delete(contentId);return next;});});
+                          }}>{loadingInteractions.has(approval.content.contentId) ? "Loading details…" : "Load interaction details"}</Button>}
+                          {approval.details?.action && <pre>
                             {String(
-                              approval.action.command ??
-                                approval.action.grantRoot ??
-                                approval.action.kind,
+                              approval.details?.action?.command ??
+                                approval.details?.action?.grantRoot ??
+                                JSON.stringify(approval.details?.action??{},null,2),
                             )}
-                          </pre>
-                          {approval.action.reason ? (
-                            <p>{String(approval.action.reason)}</p>
+                          </pre>}
+                          {approval.details?.action?.reason ? (
+                            <p>{String(approval.details.action.reason)}</p>
                           ) : null}
-                          <p>
+                          {approval.kind === "approval" && <p>
                             {approval.decision
                               ? `Decision: ${approval.decision}`
                               : "Review the action before allowing it."}
-                          </p>
-                          <div className="actions">
+                          </p>}
+                          {approval.kind === "questions" && approval.details?.questions && <QuestionForm key={approval.interactionId} questions={approval.details.questions} disabled={busy || !connected || approval.status!=="pending" || approval.turnId!==detail.session.activeTurnId} onAnswer={answers=>{void operation("answerQuestions",{sessionId:detail.session.sessionId,turnId:approval.turnId,interactionId:approval.interactionId,requestId:crypto.randomUUID(),answers});}}/>}
+                          {approval.kind === "approval" && <div className="actions">
                             {(["allow", "deny"] as const).map((decision) => (
                               <Button
                                 key={decision}
@@ -523,6 +550,7 @@ export function App() {
                                 disabled={
                                   busy ||
                                   !connected ||
+                                  !approval.details?.action ||
                                   approval.status !== "pending" ||
                                   approval.turnId !==
                                     detail.session.activeTurnId
@@ -531,23 +559,26 @@ export function App() {
                                   void operation("decideApproval", {
                                     sessionId: detail.session.sessionId,
                                     turnId: approval.turnId,
-                                    approvalId: approval.approvalId,
+                                    interactionId: approval.interactionId,
                                     decision,
+                                    requestId:crypto.randomUUID(),
                                   });
                                 }}
                               >
                                 {decision === "allow" ? "Allow" : "Deny"}
                               </Button>
                             ))}
-                          </div>
+                          </div>}
+                          {approval.kind === "unsupported" && <p>Interrupt the turn or handle this request in the native client.</p>}
                           {!connected && (
                             <p>
                               Reconnect and reconcile the host before deciding.
                             </p>
                           )}
                         </Card>
-                      ))}
+                      );})}
                   </div>
+                  {detail.interactionsError && <p role="alert">{detail.interactionsError.message}</p>}
                   <ol
                     ref={history}
                     className="history"
@@ -607,8 +638,9 @@ export function App() {
                     className="composer"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      void operation("sendMessage", {
+                      void operation(canSteer ? "steerTurn" : "sendMessage", {
                         sessionId: detail.session.sessionId,
+                        ...(canSteer ? {turnId:activeTurn!.turnId} : {mode}),
                         message,
                         requestId: crypto.randomUUID(),
                       });
@@ -621,7 +653,7 @@ export function App() {
                       required
                       value={message}
                       onChange={(event) => setMessage(event.target.value)}
-                      disabled={busy || !canSend}
+                      disabled={busy || (!canSend && !canSteer)}
                       placeholder={
                         canSend
                           ? "Send a message in this conversation…"
@@ -629,11 +661,12 @@ export function App() {
                       }
                     />
                     <div className="actions">
+                      <NativeSelect aria-label="Turn mode" value={activeTurn?.mode??mode} disabled={busy || Boolean(activeTurn)} onChange={event=>setMode(event.target.value as "default"|"plan")}><NativeSelectOption value="default">Default</NativeSelectOption><NativeSelectOption value="plan">Plan</NativeSelectOption></NativeSelect>
                       <Button
                         type="submit"
-                        disabled={busy || !canSend || !message.trim()}
+                        disabled={busy || (!canSend && !canSteer) || !message.trim()}
                       >
-                        Send message
+                        {canSteer ? "Add instruction" : "Send message"}
                       </Button>
                       <Button
                         type="button"

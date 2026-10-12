@@ -6,7 +6,7 @@ Team connects to one configured Core Control Plane. Core discovers and manages h
 
 `createMemberSession` accepts `memberId`, `hostId`, absolute host-side `workDir`, and `requestId`. Overrides come only from the member's selected definition. It rejects archived members or teams. It atomically records a binding and the exact Core creation input before the network request, including a generated Core request ID, `agentRef`, and `sessionOptions`. Default uses `{ id: "default", revision: "1" }` with empty options.
 
-The result is `{ binding, operation, error }`. A new binding may have `sessionId: null` until Core's response is received. An accepted operation is not readiness or task completion. Poll `getSessionBinding` to read Core's connection state, runtime state, actual configuration snapshot, turns, approvals, and operations. One member may own several bindings; a Core session ID is unique in Team storage.
+The result is `{ binding, operation, error }`. A new binding may have `sessionId: null` until Core's response is received. An accepted operation is not readiness or task completion. Poll `getSessionBinding` to read Core's connection state, runtime state, actual configuration snapshot, turns, interactions, and operations. One member may own several bindings; a Core session ID is unique in Team storage.
 
 ## Recovery and uncertainty
 
@@ -29,12 +29,16 @@ Network, timeout, malformed-response, or redirect failures during a write produc
 | `listSessionBindings` | optional `teamId`, `memberId` | `{ bindings }` |
 | `getSessionBinding` | `bindingId` | `{ binding, requestedOptions, requests, core, coreError }` |
 | `connectMemberSession` | `bindingId`, `requestId` | `{ binding, operation, error }` |
-| `sendMemberMessage` | `bindingId`, `message`, `requestId` | `{ binding, operation, error }` |
+| `sendMemberMessage` | `bindingId`, `message`, `requestId`, optional `mode` (`default` or `plan`, default `default`) | `{ binding, operation, error }` |
+| `steerMemberTurn` | `bindingId`, exact active `turnId`, `message`, `requestId` | Append instructions with the current mode |
+| `answerMemberQuestions` | `bindingId`, exact `turnId`, `interactionId`, `requestId`, structured `answers` | Respond to ordinary questions; Core enforces authority |
 | `interruptMemberTurn` | `bindingId`, exact `turnId`, `requestId` | `{ binding, operation, error }` |
 | `readMemberSessionHistory` | `bindingId`, optional `cursor`, one of `beforeCursor`, `afterCursor`, `updateCursor`, `limit` | Core event, message and activity history |
 | `getMemberSessionActivity` | `bindingId`, native `itemId` | Core activity and private content references |
 | `readMemberSessionContent` | `bindingId`, `contentId`, optional `contentCursor`, `limitBytes` | Transient Core content chunk |
 
 `getSessionBinding` keeps local binding and requested configuration information available when Core cannot be read. It reports `coreError` and leaves `core` null. Request records expose command results and errors, without credentials or message bodies. Successful Core reads reconcile their operation results into Team's request journal.
+
+Steering and answers preserve the page request ID to Core request ID mapping, operation, turn, interaction and mode. Their body fingerprints persist; message and answer bodies do not enter Team's request journal. Retry the exact original operation, ID and input after uncertainty. The browser retains pending input in memory; a refresh can require the original message to be supplied again. An ordinary question's retained answer may be read from its host-private details for an original-response retry. Unknown-origin, approval and secret interactions require the Core operator. A conversation that received private operator input cannot be continued or read through Team because subsequent native context may repeat that input. Restricted messages/content explicitly link back to Core.
 
 History stays in native Codex and host-private storage. Reads resolve the binding's original authenticated Core target. Management events, older/newer native pages and native updates have independent cursors. Initial history returns the latest 50 items; poll the update watermark for changes to existing IDs and preserve it when loading older history. Merge by native ID, source version and completion state. A delayed older-page response must not lower the event cursor or replace a newer live snapshot. Full output and recorded diffs pass through Team only for the requested chunk and never enter its durable records. History errors mean unavailable history, not an empty conversation. No history read reconnects the session.
