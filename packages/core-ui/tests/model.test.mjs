@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildChatModel, mergeNativeMessages, mergeActivities, emptyHistory, mergeHistory, restrictHistory } from "../dist/chat/model.js";
+import { buildChatModel, mergeNativeMessages, mergeActivities, emptyHistory, mergeHistory, restrictHistory, projectHistoryWindow } from "../dist/chat/model.js";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { InteractionCard } from "../dist/chat/InteractionCard.js";
 
 const date = "2026-01-01T00:00:00Z";
 const message = (id, ordinal, role, text, extra = {}) => ({ id, ordinal, updatedOrdinal: ordinal, turnId: "native-turn", role, text, phase: role === "assistant" ? "commentary" : null, createdAt: date, itemComplete: false, ...extra });
@@ -43,6 +46,30 @@ test("projection uses exact turn and client identities, keeps instruction before
   assert.equal(conflicting.turns.find(item => item.turnId === "second").messages[0].text, "Contradictory task");
   const afterFinal = buildChatModel({ sessionKey: "session", turns: [turn], messages, events: [...events.filter(item => item.type !== "user_message" || item.cursor === 1), event(11, "user_message", { text: "Observed after final", steering: true })], interactions: [] });
   assert.equal(afterFinal.turns[0].messages.at(-1).text, "Observed after final");
+  const orderedTool = { id: "tool", turnId: "native-turn", ordinal: 4, updatedOrdinal: 6, itemComplete: true, createdAt: date, type: "commandExecution", title: "Tool", status: "completed", contents: [] };
+  const sequence = buildChatModel({ sessionKey: "session", turns: [turn], messages, events, activities: [orderedTool], interactions: [] });
+  assert.deepEqual(sequence.turns[0].entries.map(entry => entry.kind === "message" ? entry.message.kind : entry.kind), ["user", "progress", "activity", "instruction", "final"]);
+  assert.equal(afterFinal.turns[0].entries.at(-1).message.text, "Observed after final");
+  const opaqueMessages = messages.map(item => item.id === "final" ? { ...item, id: "activity:tool" } : item);
+  const opaqueEvents = [...events.map(item => item.payload.itemId === "final" ? { ...item, payload: { ...item.payload, itemId: "activity:tool" } } : item), event(4, "tool_activity", { activity: orderedTool })];
+  assert.deepEqual(buildChatModel({ sessionKey: "session", turns: [turn], messages: opaqueMessages, events: opaqueEvents, activities: [orderedTool], interactions: [] }).turns[0].entries.map(entry => entry.kind === "message" ? entry.message.kind : entry.kind), ["user", "progress", "activity", "instruction", "final"]);
+  const older = { ...turn, turnId: "older", codexTurnId: "older-native", state: "completed" };
+  const history = mergeHistory(emptyHistory(), page({ messages, events: [...events, { ...event(20, "user_message", { text: "Unloaded task" }), turnId: older.turnId, payload: { turn: older, text: "Unloaded task" } }] }));
+  const window = projectHistoryWindow(history, [older, turn], turn.turnId);
+  assert.equal(buildChatModel({ sessionKey: "session", turns: [older, turn], ...window, interactions: [] }).turns.some(item => item.turnId === older.turnId), false);
+  const gap = { ...event(21, "history_gap", { fromCursor: 19, toCursor: 20 }), turnId: null };
+  const recovered = projectHistoryWindow({ ...history, events: [...history.events, gap] }, [older, { ...turn, codexTurnId: null }], null);
+  const recoveredModel = buildChatModel({ sessionKey: "session", turns: [older, { ...turn, codexTurnId: null }], ...recovered, interactions: [] });
+  assert.equal(recoveredModel.turns[0].turnId, turn.turnId); assert.equal(recoveredModel.notices.includes("Unavailable events 19–20."), true);
+});
+
+test("denied interaction reads hide cached details in pending and historical cards", () => {
+  const interaction = { interactionId: "private", kind: "questions", status: "resolved", content: { contentId: "content" }, details: { questions: [{ questionId: "q", header: "Hidden header", prompt: "Hidden prompt", secret: false }], answers: [{ questionId: "q", answers: ["Hidden answer"] }], action: { command: "Hidden command" } } };
+  const view = { canReadContent: () => false, canRespond: () => true, canSubmitInteraction: () => true, composer: { busy: false }, loadingInteractions: new Set() };
+  for (const status of ["pending", "resolved", "invalidated"]) {
+    const html = renderToStaticMarkup(createElement(InteractionCard, { interaction: { ...interaction, status }, view }));
+    for (const text of ["Hidden header", "Hidden prompt", "Hidden answer", "Hidden command"]) assert.equal(html.includes(text), false);
+  }
 });
 
 test("completed native activities retain source metadata while restricted updates remain monotonic", () => {
