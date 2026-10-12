@@ -67,6 +67,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     socket.send(JSON.stringify({ type: "query", query: { queryId: "discover", operation: "discoverSessions", input: {} } }));
     const discovered = await until(() => frames.find(f => f.type === "query_result" && f.response.queryId === "discover")?.response);
     assert.equal(discovered.result.sessions[0].name, "Synthetic saved conversation");
+    const discoveredHome = discovered.result.sessions.find(row => row.id === nativeId).codexHome;
     socket.send(JSON.stringify({ type: "query", query: { queryId: "history", operation: "readSessionHistory", input: { codexThreadId: nativeId } } }));
     const saved = await until(() => frames.find(f => f.type === "query_result" && f.response.queryId === "history")?.response);
     assert.equal(saved.result.messages[0].text, "Native saved reply");
@@ -144,7 +145,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal((await issue(command("interrupt-3", "interruptTurn", "session-1", { requestId: "interrupt-3" }, "turn-3"))).status, "delivered");
     await until(() => event("session-1", "turn_completed")?.turnId === "turn-3");
     assert.equal(event("session-1", "turn_completed").payload.turn.state, "interrupted");
-    const nativeSessionId = `native:${createHash("sha256").update(JSON.stringify([config.hostId, dir, nativeId])).digest("hex")}`;
+    const nativeSessionId = `native:${createHash("sha256").update(JSON.stringify([config.hostId, discoveredHome, nativeId])).digest("hex")}`;
     const connectNative = command("connect-native", "connectSession", nativeSessionId, { sessionId: nativeSessionId, requestId: "connect-native" });
     assert.equal((await issue(connectNative)).status, "delivered");
     assert.equal(event(nativeSessionId, "session_connected").payload.session.codexThreadId, nativeId);
@@ -153,7 +154,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     await issue(command("native-send", "sendMessage", nativeSessionId, { message: "wait", requestId: "native-send" }, "native-followup"));
     await issue(command("native-stop", "interruptTurn", nativeSessionId, { requestId: "native-stop" }, "native-followup"));
     await until(() => event(nativeSessionId, "turn_completed")?.payload.turn.state === "interrupted");
-    const blockedSessionId = `native:${createHash("sha256").update(JSON.stringify([config.hostId, dir, blockedId])).digest("hex")}`;
+    const blockedSessionId = `native:${createHash("sha256").update(JSON.stringify([config.hostId, discoveredHome, blockedId])).digest("hex")}`;
     const blocked = await issue(command("connect-blocked", "connectSession", blockedSessionId, { sessionId: blockedSessionId, requestId: "connect-blocked" }));
     assert.equal(blocked.error.code, "SESSION_IN_USE");
     assert.equal(event(blockedSessionId, "operation_error").payload.session.connectionState, "error");
