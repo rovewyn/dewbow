@@ -45,16 +45,16 @@ async function observe(sessionId, predicate) {
   throw new Error(`Observation timed out for ${sessionId}; retain its IDs and inspect the session.`);
 }
 async function history(sessionId) {
-  let cursor = 0, messageCursor = null, more = true;
+  let cursor=0,beforeCursor=null,more=true;
   const events = [], messages = new Map();
   while (more) {
-    const page = await call("readSessionHistory", { sessionId, cursor, limit: 20, ...(messageCursor ? { messageCursor } : {}) });
+    const page = await call("readSessionHistory",{sessionId,cursor,limit:20,...(beforeCursor ? {beforeCursor} : {})});
     assert.equal(page.historyError, null);
     assert.ok(page.events.every(event => event.cursor > cursor));
     events.push(...page.events); cursor = page.nextCursor;
     for (const message of page.messages) messages.set(message.id, message);
-    if (page.nextMessageCursor) messageCursor = page.nextMessageCursor;
-    more = page.hasMore || page.nextMessageCursor !== null;
+    beforeCursor = page.beforeCursor;
+    more = page.hasMore || beforeCursor !== null;
   }
   assert.equal(new Set(events.map(event => event.eventId)).size, events.length);
   assert.ok(events.every((event, index) => index === 0 || event.cursor > events[index - 1].cursor));
@@ -68,7 +68,7 @@ try {
   assert.equal(initialized.protocolVersion, "2025-03-26");
   const notification = await fetch(`${origin}/mcp`, { method: "POST", headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-03-26" }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) });
   assert.equal(notification.status, 202);
-  assert.equal((await rpc("tools/list")).tools.length, 8);
+  assert.equal((await rpc("tools/list")).tools.length,10);
   const unauthorized = await fetch(`${origin}/api/listHosts`, { method: "POST", headers: { Authorization: "Bearer invalid-smoke-credential", "Content-Type": "application/json" }, body: "{}" });
   assert.equal(unauthorized.status, 401);
   trace.checks.push("invalid_management_credential_rejected");

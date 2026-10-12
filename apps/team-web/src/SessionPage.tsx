@@ -114,6 +114,11 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged }: 
     {tab === "conversation" && <section className="conversation-panel" id="panel-conversation" role="tabpanel" aria-labelledby="tab-conversation">
       <ErrorNotice error={observed.historyError} />
       <div className="conversation" ref={chatRef} role="log" aria-label="Conversation history" aria-live="polite" onScroll={() => { if (chatRef.current) stickToBottom.current = chatRef.current.scrollHeight - chatRef.current.scrollTop - chatRef.current.clientHeight < 64; }}>
+        {observed.history.beforeCursor && <button className="button secondary small" disabled={observed.loadingOlder} onClick={() => {
+          const list = chatRef.current, height = list?.scrollHeight ?? 0, top = list?.scrollTop ?? 0;
+          stickToBottom.current = false;
+          void observed.loadOlder().then(() => requestAnimationFrame(() => { if (list && chatRef.current === list) list.scrollTop = top+list.scrollHeight-height; }));
+        }}>{observed.loadingOlder ? "Loading older history…" : "Load older history"}</button>}
         {!messages.length ? <Empty title={details ? "No saved messages" : "Loading conversation"}>{binding?.sessionId ? "Messages come from the existing Codex conversation." : "Finish session creation to start the conversation."}</Empty> : messages.map(item => <article className={`message ${item.role}`} key={item.id}><div className="message-heading"><span className={`message-avatar ${item.role}`}>{item.role === "user" ? "Y" : "C"}</span><strong>{item.role === "user" ? "You" : "Codex"}</strong><time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div><pre className="message-text">{item.text}</pre></article>)}
       </div>
       {uncertainSend && !retryRequestId && <div className="notice warning"><p>An earlier message is unresolved. Retry it with the original text.</p><button className="button secondary small" onClick={() => retry(uncertainSend)}>Restore original message</button></div>}

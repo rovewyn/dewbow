@@ -4,7 +4,7 @@ import { TeamManagement } from "./management.js";
 import { MemberSessions } from "./member-sessions.js";
 import { TeamStore } from "./store.js";
 
-const sessionOperations = new Set(["listHosts", "createMemberSession", "listSessionBindings", "getSessionBinding", "retryMemberSessionCreation", "connectMemberSession", "sendMemberMessage", "interruptMemberTurn", "readMemberSessionHistory"]);
+const sessionOperations = new Set(["listHosts", "createMemberSession", "listSessionBindings", "getSessionBinding", "retryMemberSessionCreation", "connectMemberSession", "sendMemberMessage", "interruptMemberTurn", "readMemberSessionHistory", "getMemberSessionActivity", "readMemberSessionContent"]);
 
 export class TeamApi {
   private readonly management: TeamManagement;

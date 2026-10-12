@@ -78,4 +78,4 @@ export function canonicalJson(value: unknown): string {
 }
 
 export { normalizeDefinitionId, validateInput } from "./validation.js";
-export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreApproval, CoreSessionDetails, NativeMessage, CoreHistory, MemberOperation, MemberSessionResult, SessionBindingDetails } from "./core.js";
+export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreApproval, CoreSessionDetails, NativeMessage, SessionActivity, ContentRef, ContentPage, CoreHistory, MemberOperation, MemberSessionResult, SessionBindingDetails } from "./core.js";

@@ -66,6 +66,12 @@ git diff --check
 
 The critical daemon integration test runs a synthetic app-server subprocess and transport. It protects command deduplication, process ownership, conversation continuity, busy sessions, exact approval routing, independent sessions, confirmed interruption, event replay, and restart recovery including the command/turn write gap. It uses temporary synthetic data and no native Codex credentials. Actual Codex and two-machine smoke checks are separate from CI.
 
+## Private tool content
+
+The daemon stores tool bodies in a separate private `<host-state>.contents.sqlite` database beside its journal, using the same owner and permission checks. Command output deltas append in bounded chunks; terminal items confirm completeness. Native aggregated output without a full observed capture has unknown completeness. Interrupted capture stays partial. Native file-change diffs and structured tool details are stored separately from journal records and loaded on demand through `getSessionActivity` and `readSessionContent`. Missing native content stays explicitly unavailable. This storage does not reconstruct deleted native messages or tool side effects.
+
+Content scope includes canonical native home and thread identity. Chunk cursors cannot cross conversations and reads preserve UTF-8 boundaries. Core and Team receive metadata references and transient requested chunks; their persistent operation records never contain these bodies. Daemon event history removes commands and paths from tool payloads as well as message and plan text. Protect and retain the private content database with the daemon state when recovering it. Replacing obsolete Dewbow state also replaces this content database; do not reset native Codex storage.
+
 ## Native data and journal contents
 
 Codex remains the source of saved conversation metadata and chat messages. Discovery caches live only in memory. SDK history reads the native read-only history projection. A confirmed, connected Dewbow-created conversation with no recorded turns returns an empty message page when Codex has not yet indexed its history and no message cursor was supplied. Missing history after a turn, discovered or adopted native conversations, disconnected or unresolved sessions, and other storage errors remain visible, with no fallback to a Dewbow message copy. Read-only queries do not start or resume conversations. A native writer lock is distinct from an active model turn.

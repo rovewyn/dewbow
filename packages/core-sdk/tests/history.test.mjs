@@ -5,7 +5,7 @@ import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { readSessionHistory, SessionHistoryError } from "../dist/index.js";
+import { readSessionHistory, readSessionItems, readSessionItem, SessionHistoryError } from "../dist/index.js";
 
 const session = "00000000-0000-4000-8000-000000000001";
 const other = "00000000-0000-4000-8000-000000000002";
@@ -24,15 +24,15 @@ function database(path) {
     CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY);
     CREATE TABLE thread_turns(thread_id TEXT, turn_id TEXT, status TEXT, PRIMARY KEY(thread_id,turn_id));
     CREATE TABLE thread_items(thread_id TEXT, turn_id TEXT, item_id TEXT, rollout_ordinal INTEGER,
-      created_at_ms INTEGER, item_json TEXT, item_type TEXT, PRIMARY KEY(thread_id,turn_id,item_id));
+      created_at_ms INTEGER,item_json TEXT,item_type TEXT,updated_at_ordinal INTEGER,started_at_ms INTEGER,completed_at_ms INTEGER,PRIMARY KEY(thread_id,turn_id,item_id));
     CREATE UNIQUE INDEX idx_thread_items_page ON thread_items(thread_id,rollout_ordinal)`);
   db.prepare("INSERT INTO thread_turns VALUES(?,?,?)").run(session, "turn-a", "completed");
   db.prepare("INSERT INTO thread_history_projection_state VALUES(?)").run(empty);
   return db;
 }
 function insert(db, id, ordinal, item) {
-  db.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?)").run(
-    id, "turn-a", item.id, ordinal, 1700000000000 + ordinal, JSON.stringify(item), item.type);
+  db.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?,?)").run(
+    id,"turn-a",item.id,ordinal,1700000000000+ordinal,JSON.stringify(item),item.type,ordinal,1700000000000+ordinal,1700000000000+ordinal);
 }
 async function digest(path) { return createHash("sha256").update(await readFile(path)).digest("hex"); }
 
@@ -97,10 +97,35 @@ test("history distinguishes empty sessions from unavailable stores and rejects i
   await symlink(process.platform === "win32" ? path : join(path, "thread_history_1.sqlite"), join(path, "thread_history_2.sqlite"), process.platform === "win32" ? "junction" : "file");
   await assert.rejects(read(), error("UNAVAILABLE"));
   await rm(join(path, "thread_history_2.sqlite"));
-  db.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?)").run(session, "turn-a", "invalid", 2, 1700000000002, "invalid JSON", "agentMessage");
+  db.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?,?)").run(session,"turn-a","invalid",2,1700000000002,"invalid JSON","agentMessage",2,1700000000002,null);
   await assert.rejects(read(), error("INVALID_HISTORY"));
   db.prepare("DELETE FROM thread_items WHERE item_id='invalid'").run();
   insert(db, session, 2, { type: "agentMessage", id: "large", text: "x".repeat(8 * 1024 * 1024), phase: "final_answer" });
   await assert.rejects(read(), error("LIMIT_EXCEEDED"));
   await assert.rejects(read(session, { signal: AbortSignal.abort() }), { name: "AbortError" });
+});
+
+test("recent native items page in both directions and update old IDs without losing tied update positions", async t => {
+  const path = await home(t), db = database(path);
+  for (let ordinal=1;ordinal<=70;ordinal++) insert(db,session,ordinal,{type:"agentMessage",id:`item-${String(ordinal).padStart(3,"0")}`,text:`Saved ${ordinal}`,phase:"commentary"});
+  insert(db,session,71,{type:"reasoning",id:"private-reasoning",summary:["PRIVATE_REASONING_MARKER"]});
+  const latest = await readSessionItems(session,{codexHome:path});
+  assert.equal(latest.items.length,50); assert.equal(latest.items[0].ordinal,21); assert.equal(latest.afterCursor,null);
+  assert.ok(latest.beforeCursor); assert.ok(latest.updateCursor);
+  const older = await readSessionItems(session,{codexHome:path,beforeCursor:latest.beforeCursor,limit:10});
+  assert.deepEqual(older.items.map(item=>item.ordinal),[11,12,13,14,15,16,17,18,19,20]);
+  const newer = await readSessionItems(session,{codexHome:path,afterCursor:older.afterCursor,limit:2});
+  assert.deepEqual(newer.items.map(item=>item.ordinal),[21,22]);
+  await assert.rejects(readSessionItems(other,{codexHome:path,beforeCursor:latest.beforeCursor}),TypeError);
+  await assert.rejects(readSessionItems(session,{codexHome:path,afterCursor:latest.beforeCursor}),TypeError);
+  db.prepare("UPDATE thread_items SET item_json=?,updated_at_ordinal=100,completed_at_ms=? WHERE item_id='item-001'").run(JSON.stringify({type:"agentMessage",id:"item-001",text:"Short final",phase:"final_answer"}),1700000000100);
+  db.prepare("UPDATE thread_items SET updated_at_ordinal=100 WHERE item_id='item-002'").run();
+  const firstUpdate = await readSessionItems(session,{codexHome:path,updateCursor:latest.updateCursor,limit:1});
+  assert.equal(firstUpdate.items[0].id,"item-001"); assert.equal(firstUpdate.items[0].ordinal,100); assert.equal(firstUpdate.hasMoreUpdates,true);
+  const secondUpdate = await readSessionItems(session,{codexHome:path,updateCursor:firstUpdate.updateCursor,limit:1});
+  assert.equal(secondUpdate.items[0].id,"item-002"); assert.equal(secondUpdate.hasMoreUpdates,false);
+  assert.equal((await readSessionItems(session,{codexHome:path})).items.at(-1).item.text,"Short final");
+  assert.equal((await readSessionItem(session,"item-001",{codexHome:path})).item.text,"Short final");
+  await assert.rejects(readSessionItem(other,"item-001",{codexHome:path}),error=>error.code === "SESSION_NOT_FOUND");
+  assert.equal(JSON.stringify(latest).includes("PRIVATE_REASONING_MARKER"),false);
 });

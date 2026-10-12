@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
 import { emptyHistory, mergeHistory, type HistoryState } from "./history.js";
@@ -9,10 +9,16 @@ export function useSession(bindingId: string) {
   const [history, setHistory] = useState<HistoryState>(emptyHistory);
   const [error, setError] = useState<ApiError | null>(null);
   const [historyError, setHistoryError] = useState<ApiError | null>(null);
+  const savedRef = useRef(emptyHistory());
+  const controllerRef = useRef<AbortController|null>(null);
+  const [loadingOlder,setLoadingOlder] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
+    controllerRef.current = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let saved = emptyHistory();
+    savedRef.current = emptyHistory();
+    let saved = savedRef.current;
+    setLoadingOlder(false);
     setDetails(null); setLastCore(null); setHistory(saved); setError(null); setHistoryError(null);
     async function poll() {
       try {
@@ -23,13 +29,13 @@ export function useSession(bindingId: string) {
         if (current.binding.sessionId && !current.coreError) {
           try {
             for (let pages = 0; pages < 25; pages++) {
-              const cursor = saved.messageCursor;
-              const page = await call<CoreHistory>("readMemberSessionHistory", { bindingId, cursor: saved.eventCursor, limit: 100,
-                ...(cursor ? { messageCursor: cursor } : {}) }, controller.signal);
+              saved = savedRef.current;
+              const cursor = saved.updateCursor;
+              const page = await call<CoreHistory>("readMemberSessionHistory",{bindingId,cursor:saved.eventCursor,limit:50,...(cursor ? { updateCursor:cursor } : {})},controller.signal);
               if (controller.signal.aborted) return;
-              saved = mergeHistory(saved, page, cursor);
+              saved = mergeHistory(savedRef.current,page,cursor ? "newer" : "initial"); savedRef.current = saved;
               setHistory(saved); setHistoryError(page.historyError ?? page.eventsError ?? null);
-              if (page.historyError || page.eventsError || (!page.hasMore && page.nextMessageCursor === null)) break;
+              if (page.historyError || page.eventsError || (!page.hasMore && !page.hasMoreUpdates)) break;
             }
           } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }
         } else if (current.coreError) setHistoryError(current.coreError);
@@ -39,5 +45,16 @@ export function useSession(bindingId: string) {
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [bindingId]);
-  return { details, lastCore, history, error, historyError };
+  async function loadOlder() {
+    const controller = controllerRef.current, cursor = savedRef.current.beforeCursor;
+    if (!controller || !cursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await call<CoreHistory>("readMemberSessionHistory",{bindingId,beforeCursor:cursor,cursor:savedRef.current.eventCursor,limit:50},controller.signal);
+      if (controller.signal.aborted) return;
+      savedRef.current = mergeHistory(savedRef.current,page,"older"); setHistory(savedRef.current); setHistoryError(page.historyError ?? page.eventsError ?? null);
+    } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }
+    finally { if (!controller.signal.aborted) setLoadingOlder(false); }
+  }
+  return { details,lastCore,history,error,historyError,loadOlder,loadingOlder };
 }

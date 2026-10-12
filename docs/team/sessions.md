@@ -31,8 +31,10 @@ Network, timeout, malformed-response, or redirect failures during a write produc
 | `connectMemberSession` | `bindingId`, `requestId` | `{ binding, operation, error }` |
 | `sendMemberMessage` | `bindingId`, `message`, `requestId` | `{ binding, operation, error }` |
 | `interruptMemberTurn` | `bindingId`, exact `turnId`, `requestId` | `{ binding, operation, error }` |
-| `readMemberSessionHistory` | `bindingId`, optional `cursor`, `messageCursor`, `limit` | Core event/message history |
+| `readMemberSessionHistory` | `bindingId`, optional `cursor`, one of `beforeCursor`, `afterCursor`, `updateCursor`, `limit` | Core event, message and activity history |
+| `getMemberSessionActivity` | `bindingId`, native `itemId` | Core activity and private content references |
+| `readMemberSessionContent` | `bindingId`, `contentId`, optional `contentCursor`, `limitBytes` | Transient Core content chunk |
 
 `getSessionBinding` keeps local binding and requested configuration information available when Core cannot be read. It reports `coreError` and leaves `core` null. Request records expose command results and errors, without credentials or message bodies. Successful Core reads reconcile their operation results into Team's request journal.
 
-History stays in Core/native Codex storage. The management-event cursor and native-message cursor are independent; clients page each separately. Re-read the final native page during polling and replace messages by native item ID because active messages can change. Merge temporary live output by ID until saved messages catch up. History errors mean unavailable history, not an empty conversation. No history read reconnects the session.
+History stays in native Codex and host-private storage. Reads resolve the binding's original authenticated Core target. Management events, older/newer native pages and native updates have independent cursors. Initial history returns the latest 50 items; poll the update watermark for changes to existing IDs and preserve it when loading older history. Merge by native ID, source version and completion state. A delayed older-page response must not lower the event cursor or replace a newer live snapshot. Full output and recorded diffs pass through Team only for the requested chunk and never enter its durable records. History errors mean unavailable history, not an empty conversation. No history read reconnects the session.

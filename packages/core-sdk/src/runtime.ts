@@ -29,7 +29,7 @@ export class CodexRuntime {
   onSpawn: (pid: number) => void = () => {};
   async start(executable: string, home?: string): Promise<number> {
     if (this.child && this.child.exitCode === null && this.child.signalCode === null) throw new CodexRuntimeError("SESSION_IN_USE", "This runtime is already started.");
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DEWBOW_")));
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("DEWBOW_")));
     const command = nativeCommand(executable, ["app-server", "--listen", "stdio://"]);
     this.child = spawn(command.executable, command.args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...env, ...(home ? { CODEX_HOME: home } : {}) } });
     if (this.child.pid) this.onSpawn(this.child.pid);
@@ -95,10 +95,11 @@ export class CodexRuntime {
     const child = this.child;
     if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
     await new Promise<void>((resolve, reject) => {
+      const terminate = setTimeout(() => child.kill("SIGTERM"), 1000);
       const force = setTimeout(() => child.kill("SIGKILL"), 4000);
       const deadline = setTimeout(() => { child.removeListener("exit", exited); reject(new CodexRuntimeError("EXECUTION_FAILED", "The owned Codex process did not exit within the shutdown deadline.")); }, 5000);
-      const exited = () => { clearTimeout(force); clearTimeout(deadline); resolve(); };
-      child.once("exit", exited); child.stdin.end(); child.kill("SIGTERM");
+      const exited = () => { clearTimeout(terminate); clearTimeout(force); clearTimeout(deadline); resolve(); };
+      child.once("exit", exited); child.stdin.end();
     });
     if (this.child === child) this.child = undefined;
   }

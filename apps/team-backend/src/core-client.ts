@@ -1,6 +1,6 @@
 import { fail, TeamError, type ApiError } from "@dewbow/team-protocol";
 
-export type CoreOperationName = "listHosts" | "createSession" | "getSession" | "connectSession" | "sendMessage" | "interruptTurn" | "readSessionHistory";
+export type CoreOperationName = "listHosts" | "createSession" | "getSession" | "connectSession" | "sendMessage" | "interruptTurn" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
 
 export interface CoreApi {
   readonly url: string | null;

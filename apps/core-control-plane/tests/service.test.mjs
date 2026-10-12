@@ -63,7 +63,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
         const selectedEvents = events.filter(e => e.sessionId === query.input.sessionId && e.cursor > start);
         const page = selectedEvents.slice(0, query.input.limit ?? 100).map(e => { const { text, ...payload } = e.payload; return { ...e, payload }; });
         const result = query.operation === "readEvents" ? { events: page, nextCursor: page.at(-1)?.cursor ?? start, hasMore: selectedEvents.length > page.length, liveMessages: streamed.filter(m => m.sessionId === query.input.sessionId).map(({ sessionId, ...m }) => m) } : query.operation === "discoverSessions" ? { sessions: rows.slice(start, start + 500), observedAt: now(), sources: [{ source: "database", state: "success", error: null }], nextCursor: start + 500 < rows.length ? start + 500 : null }
-          : { messages: [message], observedAt: now(), nextCursor: null };
+          : { messages:[message],activities:[],observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false };
         socket.send(JSON.stringify({ type: "query_result", response: { queryId: query.queryId, result } }));
       }
     });
@@ -74,7 +74,7 @@ test("API and MCP share durable IDs, enforce approval authority, and reconcile d
     await service.start();
     assert.equal((await api("listHosts", {}, {})).error.code, "UNAUTHORIZED");
     const listed = (await mcp("tools/list")).result.tools;
-    assert.deepEqual(listed.map(tool => tool.name), ["listHosts", "listSessions", "createSession", "connectSession", "getSession", "readSessionHistory", "sendMessage", "interruptTurn"]);
+    assert.deepEqual(listed.map(tool=>tool.name),["listHosts","listSessions","createSession","connectSession","getSession","readSessionHistory","getSessionActivity","readSessionContent","sendMessage","interruptTurn"]);
     assert.deepEqual(listed.find(tool => tool.name === "createSession").inputSchema.required, ["hostId", "workDir", "requestId"]);
     assert.equal(listed.find(tool => tool.name === "createSession").inputSchema.properties.sessionOptions.additionalProperties, false);
     assert.ok(listed.every(tool => Object.keys(tool.inputSchema.properties).every(key => /^[a-z][a-zA-Z0-9]*$/.test(key))));

@@ -4,19 +4,23 @@ import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { WebSocket } from "ws";
-import { discoverSessions, readSessionHistory, SessionHistoryError } from "@dewbow/core-sdk";
+import { discoverSessions, readSessionHistory, readSessionItems, readSessionItem, SessionHistoryError } from "@dewbow/core-sdk";
 import type { DiscoverOptions, DiscoverySnapshot, ReadSessionHistoryOptions } from "@dewbow/core-sdk";
 import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow/core-protocol";
-import type { AgentRef, Approval, Command, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
+import type { AgentRef, Approval, Command, ContentPage, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionActivity, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
 import type { HostDaemonConfig } from "./config.js";
 import { Runtime } from "./runtime.js";
 import type { RpcMessage } from "./runtime.js";
 import { checkSavedModel, confirmSessionConfig, resolveSessionConfig, sessionThreadOptions } from "./session-config.js";
+import { SessionContent } from "./content.js";
+import { projectItem } from "./history.js";
 
 interface Journal { command: Command; fingerprint: string; result: OperationResult }
 export class HostDaemon {
   private store: Store | undefined;
+  private contents: SessionContent | undefined;
+  private readonly outputCapture = new Map<string,string>();
   private readonly runtime = new Runtime();
   private socket: WebSocket | undefined;
   private reconnect: NodeJS.Timeout | undefined;
@@ -39,6 +43,7 @@ export class HostDaemon {
     try {
       const owner = this.store.get<{ daemonPid: number | null; runtimePid: number | null }>("meta", "owner");
       if (owner && (alive(owner.daemonPid) || (owner.runtimePid !== null && alive(owner.runtimePid)))) fail("RECOVERY_REQUIRED", "A recorded daemon or runtime is still alive. Verify and stop it locally before restarting.");
+      this.contents = new SessionContent(`${this.config.statePath}.contents.sqlite`);
       this.runtime.onMessage = message => this.notification(message);
       this.runtime.onExit = () => this.runtimeClosed();
       this.runtime.onSpawn = pid => this.store!.put("meta", "owner", { daemonPid: process.pid, runtimePid: pid });
@@ -123,7 +128,7 @@ export class HostDaemon {
   }
   private async query(query: HostQuery): Promise<void> {
     try {
-      let result: NativeInventory | NativeHistory | EventHistory;
+      let result: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage;
       if (query.operation === "discoverSessions") {
         if (!this.inventory || this.inventory.expires < Date.now()) {
           this.inventory = { expires: Date.now() + 10000, snapshot: this.discoverSessions({ codexExecutable: this.config.codexExecutable, signal: AbortSignal.any([this.reads.signal, AbortSignal.timeout(20000)]) }) };
@@ -144,32 +149,51 @@ export class HostDaemon {
         const events = this.store!.history(session.sessionId, cursor, limit + 1);
         result = { events: events.slice(0, limit), nextCursor: events.slice(0, limit).at(-1)?.cursor ?? cursor,
           hasMore: events.length > limit, liveMessages: this.liveReplies.get(session.sessionId) };
+      } else if (query.operation === "getSessionActivity" || query.operation === "readSessionContent") {
+        const home = await realpath(query.input.codexHome ?? this.config.codexHome ?? process.env.CODEX_HOME ?? join(homedir(),".codex"));
+        const scope = this.contentScope(home,query.input.codexThreadId!);
+        if (query.operation === "getSessionActivity") {
+          try {
+            const record = await readSessionItem(query.input.codexThreadId!,query.input.itemId!,{codexHome:home,signal:this.reads.signal});
+            const projected = projectItem(record,scope,this.contents!);
+            if (!projected.activity) fail("INVALID_INPUT","This native item is not an activity.");
+            result = projected.activity;
+          }
+          catch (error) {
+            if (!(error instanceof SessionHistoryError) || !["UNAVAILABLE","READ_FAILED","SESSION_NOT_FOUND","LIMIT_EXCEEDED"].includes(error.code)) throw error;
+            result = this.contents!.getActivity(scope,query.input.itemId!);
+          }
+        } else result = this.contents!.read(scope,query.input.contentId!,query.input.contentCursor,query.input.limitBytes);
       } else if (query.operation === "readSessionHistory") {
         const queryHome = query.input.codexHome ? await realpath(query.input.codexHome).catch(() => query.input.codexHome!) : undefined;
         try {
-          const page = await readSessionHistory(query.input.codexThreadId!, { ...(queryHome ? { codexHome: queryHome } : this.config.codexHome ? { codexHome: this.config.codexHome } : {}),
-            limit: query.input.limit ?? 100, ...(query.input.messageCursor ? { cursor: query.input.messageCursor } : {}) });
-          result = { observedAt: page.observedAt, nextCursor: page.nextCursor, messages: page.messages.map(m => ({ id: m.id, turnId: m.turnId,
-            role: m.role, text: m.text, phase: m.phase, createdAt: new Date(m.createdAtMs).toISOString(), turnStatus: m.turnStatus })) };
+          const page = await readSessionItems(query.input.codexThreadId!, { ...(queryHome ? { codexHome: queryHome } : this.config.codexHome ? { codexHome: this.config.codexHome } : {}),
+            limit:query.input.limit ?? 50,signal:this.reads.signal,...(query.input.beforeCursor ? { beforeCursor:query.input.beforeCursor } : {}),...(query.input.afterCursor ? { afterCursor:query.input.afterCursor } : {}),...(query.input.updateCursor ? { updateCursor:query.input.updateCursor } : {}) });
+          const projected = page.items.map(item => projectItem(item,this.contentScope(page.codexHome,page.sessionId),this.contents!));
+          result = { observedAt:page.observedAt,beforeCursor:page.beforeCursor,afterCursor:page.afterCursor,updateCursor:page.updateCursor,hasMoreUpdates:page.hasMoreUpdates,
+            messages:projected.flatMap(row=>row.message ? [row.message] : []),activities:projected.flatMap(row=>row.activity ? [row.activity] : []) };
         } catch (cause) {
           const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId
             && (!queryHome || (process.platform === "win32" ? s.codexHome?.toLowerCase() === queryHome.toLowerCase() : s.codexHome === queryHome)));
           // Codex may not index a newly created conversation until its first turn.
-          if (!(cause instanceof SessionHistoryError) || cause.code !== "SESSION_NOT_FOUND" || query.input.messageCursor
+          if (!(cause instanceof SessionHistoryError) || cause.code !== "SESSION_NOT_FOUND" || query.input.beforeCursor || query.input.afterCursor || query.input.updateCursor
             || !session?.sessionConfig?.resolved || session.connectionState !== "connected" || session.runtimeState !== "idle"
             || this.store!.list<Turn>("turn").some(turn => turn.sessionId === session.sessionId)) throw cause;
-          result = { observedAt: now(), nextCursor: null, messages: [] };
+          result = { observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,messages:[],activities:[] };
         }
       } else fail("INVALID_INPUT", "Unknown host query.");
       if (query.operation === "readSessionHistory") {
         const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId);
         if (session) this.liveReplies.saved(session.sessionId, (result as NativeHistory).messages);
       }
-      this.send({ type: "query_result", response: { queryId: query.queryId, result: this.redact(result) as NativeInventory | NativeHistory | EventHistory } });
+      this.send({ type: "query_result", response: { queryId: query.queryId, result: this.redact(result) as NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage } });
     } catch (cause) {
       const code = cause instanceof ManagementError ? cause.detail.code : typeof (cause as { code?: unknown })?.code === "string" ? String((cause as { code: string }).code) : "READ_FAILED";
       this.send({ type: "query_result", response: { queryId: query.queryId, error: { code, message: query.operation === "discoverSessions" ? "Native conversation discovery failed." : query.operation === "readEvents" ? "Host event history could not be read." : "Native saved messages could not be read.", retryable: true } } });
     }
+  }
+  private contentScope(home: string, threadId: string): string {
+    return createHash("sha256").update(JSON.stringify([process.platform === "win32" ? home.toLowerCase() : home,threadId])).digest("hex");
   }
   private async command(command: Command): Promise<void> {
     const fingerprint = createHash("sha256").update(canonicalJson([command.operation, command.sessionId, command.turnId, command.input])).digest("hex");
@@ -341,6 +365,11 @@ export class HostDaemon {
       session.activeTurnId = null; session.runtimeState = turn.state === "completed" ? "idle" : turn.state as "error" | "interrupted";
       this.invalidate(turn); this.emit(session, "turn_completed", {}, turn);
     } else if (message.method === "item/agentMessage/delta") this.emit(session, "assistant_delta", { itemId: params.itemId, text: params.delta }, turn);
+    else if (message.method === "item/commandExecution/outputDelta" && typeof params.delta === "string") {
+      const key = JSON.stringify([session.sessionId,turn.turnId,params.itemId]);
+      const id = this.outputCapture.get(key);
+      if (id) this.contents!.appendCapture(this.contentScope(session.codexHome!,session.codexThreadId!),id,params.delta);
+    }
     else if (message.method === "item/started" || message.method === "item/completed") {
       const item = params.item;
       if (!item || item.type === "userMessage" || item.type === "reasoning") return;
@@ -350,10 +379,27 @@ export class HostDaemon {
       if (item.type === "fileChange") { payload.status = item.status; payload.paths = item.changes?.map((c: { path: string }) => c.path); }
       if (item.type === "mcpToolCall") { payload.server = item.server; payload.tool = item.tool; payload.status = item.status; }
       if (item.type === "plan") payload.text = item.text;
+      if (!["agentMessage","plan"].includes(item.type)) {
+        const key = JSON.stringify([session.sessionId,turn.turnId,item.id]);
+        const scope = this.contentScope(session.codexHome!,session.codexThreadId!);
+        if (message.method === "item/started" && item.type === "commandExecution" && !this.outputCapture.has(key)) this.outputCapture.set(key,this.contents!.startCapture(scope,item.id).contentId!);
+        const capture = this.outputCapture.get(key), finished = message.method === "item/completed" && ["completed","failed","declined"].includes(item.status);
+        let capturedRef = capture ? this.contents!.captureRef(scope,capture) : undefined;
+        if (capture && finished && (capturedRef!.byteLength! > 0 || item.aggregatedOutput === "")) capturedRef = this.contents!.finishCapture(scope,capture);
+        const projected = projectItem({ id:item.id,turnId:turn.codexTurnId ?? "",ordinal:session.latestCursor+1,updatedOrdinal:session.latestCursor+1,completedAtMs:message.method === "item/completed" ? Date.now() : null,createdAtMs:Date.now(),turnStatus:turn.state,item,itemJson:JSON.stringify(item) },scope,this.contents!,true);
+        if (projected.activity) {
+          projected.activity.ordinal = null;
+          projected.activity.updatedOrdinal = null;
+          if (capturedRef && (!finished || capturedRef.completeness === "complete")) projected.activity.contents = [capturedRef];
+          payload.activity = this.contents!.saveActivity(scope,projected.activity);
+        }
+        if (finished) this.outputCapture.delete(key);
+      }
       this.emit(session, item.type === "agentMessage" ? "assistant_message" : "tool_activity", payload, turn);
     } else if (message.method === "turn/plan/updated") this.emit(session, "progress", { plan: params.plan, explanation: params.explanation ?? null }, turn);
   }
   private invalidate(turn: Turn): void {
+    for (const key of this.outputCapture.keys()) if (JSON.parse(key)[1] === turn.turnId) this.outputCapture.delete(key);
     for (const approval of this.store!.list<Approval>("approval")) if (approval.turnId === turn.turnId && approval.status !== "resolved") {
       approval.status = "invalidated"; this.store!.put("approval", approval.approvalId, approval);
     }
@@ -416,6 +462,7 @@ export class HostDaemon {
     this.stopping = true; this.ready = false; clearTimeout(this.reconnect); clearInterval(this.heartbeat);
     this.socket?.terminate();
     await this.runtime.stop();
+    this.contents?.close(); this.contents = undefined; this.outputCapture.clear();
     if (this.store) {
       if (this.ownsStore) this.store.put("meta", "owner", { daemonPid: null, runtimePid: null });
       this.store.close(); this.store = undefined;
