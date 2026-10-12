@@ -29,6 +29,7 @@ All npm packages share the `@dewbow` scope. Core directories and package names u
 | --- | --- | --- |
 | `packages/core-protocol` | `@dewbow/core-protocol` | Core management contracts and service journal |
 | `packages/core-sdk` | `@dewbow/core-sdk` | Local Codex discovery, saved history, and runtime integration |
+| `packages/core-ui` | `@dewbow/core-ui` | Shared controlled chat contracts, model functions, shadcn primitives and theme |
 | `apps/core-host-daemon` | `@dewbow/core-host-daemon` | Host-side Codex runtime ownership and Core connection |
 | `apps/core-control-plane` | `@dewbow/core-control-plane` | Core API, MCP, host gateway, and management state |
 | `apps/core-web` | `@dewbow/core-web` | Core operator interface for hosts, conversations, and approvals |
@@ -46,4 +47,5 @@ All npm packages share the `@dewbow` scope. Core directories and package names u
 - [Core host daemon](host-daemon.md)
 - [Core Control Plane](control-plane.md)
 - [Core operator Web](web.md)
+- [Shared chat UI](chat-ui.md)
 - [Team documentation](team/)

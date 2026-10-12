@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, CircleAlert, Monitor, Search, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Button } from "@dewbow/core-ui/ui";
+import { Input } from "@dewbow/core-ui/ui";
 import type { SessionTreeModel, SessionTreeNode } from "./model";
 import "./session-tree.css";
 

@@ -18,4 +18,6 @@ The management API uses `POST /api/<operation>`. It accepts a bearer operator cr
 
 Install scripts are denied unless explicitly reviewed and allowed in `package.json`. The optional `fsevents` install script remains denied. Keep all local environment files and storage under ignored paths. Do not commit private credentials or real session data.
 
-Windows can run the Core and Team HTTP services and their built Web clients. Core native execution and its SDK/daemon fixtures use the macOS/Linux setup in [Local operations](../operations.md). Team tests retain POSIX database-mode assertions on those platforms; Windows mode bits do not establish ACL ownership or private access. Keep Windows local state in a directory with appropriate account permissions.
+Windows can run Core native execution, the independent Core and Team HTTP services, and both built Web clients. Follow the standalone CLI, mise and private ACL setup in [Local operations](../operations.md). Team tests retain POSIX database-mode assertions on those platforms; Windows mode bits do not establish ACL ownership or private access. Keep Windows local state in a directory with appropriate account permissions.
+
+Team Web consumes shared shadcn primitives and history merging from `core-ui`. Build Core protocol, Team protocol and shared UI before building Team Web on a clean checkout. Tailwind scans the shared package output; its styles preserve Team's application-wide layout. See [Shared chat UI](../chat-ui.md) for presentation boundaries.

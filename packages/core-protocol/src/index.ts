@@ -54,6 +54,7 @@ export interface ContentRef {
 }
 export interface SessionActivity {
   id: string; turnId: string; ordinal: number | null; createdAt: string; type: string; title: string;
+  availability?: "available" | "restricted";
   status: string | null; command?: string; paths?: string[]; contents: ContentRef[];
   updatedOrdinal: number | null; itemComplete: boolean;
 }
@@ -71,7 +72,7 @@ export function maskPrivateMessages(messages: NativeMessage[], turns: Set<string
 }
 export function maskPrivateActivity(activity: SessionActivity): SessionActivity {
   const {command:_command,paths:_paths,...metadata}=activity;
-  return {...metadata,title:"Restricted activity",contents:activity.contents.map(ref=>({...ref,label:"Restricted content",authority:"operator"}))};
+  return {...metadata,availability:"restricted",title:"Restricted activity",contents:activity.contents.map(ref=>({...ref,label:"Restricted content",authority:"operator"}))};
 }
 export function maskPrivateEvents(events: Event[], turns: Set<string>): Event[] {
   return events.map(event=>{

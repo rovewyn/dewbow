@@ -60,3 +60,5 @@ git diff --check
 ```
 
 The small history-projection test protects streamed/completed reply deduplication while preserving tool activity and visible history gaps. Tree-model tests protect scoped lineage, retained orphan/cyclic nodes and search ancestor paths. Manually inspect desktop and narrow viewports, tree keyboard navigation, expansion across polls, search/clear, selected-child restoration, empty and disconnected states, login/logout, skip navigation, session selection, refresh, human Allow/Deny, message sending and interruption. Check errors and disabled controls during disconnects. Automated checks with synthetic data do not establish native Codex or two-machine acceptance; keep actual local screenshots and traces in ignored output directories.
+
+The shared `core-ui` package supplies shadcn primitives, theme tokens and native message merging. Build it before the Web workspace on a clean checkout. See [Shared chat UI](chat-ui.md) for package entry points and the controlled chat interface.

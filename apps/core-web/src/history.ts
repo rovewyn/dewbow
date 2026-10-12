@@ -1,15 +1,7 @@
 import type { Event, NativeMessage } from "@dewbow/core-protocol";
 export interface Entry { id: string; timestamp: string; kind: "user" | "assistant" | "activity"; title: string; text: string }
-const final = (message: NativeMessage) => message.itemComplete === true || ["completed","interrupted","failed"].includes(message.turnStatus ?? "");
-export function mergeNativeMessages(previous: NativeMessage[], incoming: NativeMessage[]): NativeMessage[] {
-  const saved = new Map(previous.map(message=>[message.id,message]));
-  for (const message of incoming) {
-    const previous = saved.get(message.id);
-    if (previous?.updatedOrdinal !== undefined && message.updatedOrdinal !== undefined && previous.updatedOrdinal > message.updatedOrdinal) continue;
-    if (!previous || !final(previous) || final(message)) saved.set(message.id,message);
-  }
-  return [...saved.values()].sort((a,b)=>a.ordinal !== undefined && b.ordinal !== undefined ? a.ordinal-b.ordinal : a.createdAt.localeCompare(b.createdAt));
-}
+import { isMessageComplete as final } from "@dewbow/core-ui/chat/model";
+export { mergeNativeMessages } from "@dewbow/core-ui/chat/model";
 /** Join native saved messages and transient replies with management metadata. */
 export function historyEntries(events: Event[], messages: NativeMessage[], live: NativeMessage[] = []): Entry[] {
   const entries: Entry[] = [];

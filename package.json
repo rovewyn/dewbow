@@ -5,13 +5,28 @@
   "description": "Dewbow Core and Team services, Web clients, and shared libraries",
   "type": "module",
   "packageManager": "npm@12.2.0",
-  "allowScripts": { "koffi@3.3.3": true, "fsevents": false },
-  "engines": { "node": ">=24.15.0" },
-  "workspaces": ["packages/core-protocol", "packages/core-sdk", "packages/team-protocol", "apps/core-host-daemon", "apps/core-control-plane", "apps/team-backend", "apps/core-web", "apps/team-web"],
+  "allowScripts": {
+    "koffi@3.3.3": true,
+    "fsevents": false
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "workspaces": [
+    "packages/core-protocol",
+    "packages/core-sdk",
+    "packages/team-protocol",
+    "packages/core-ui",
+    "apps/core-host-daemon",
+    "apps/core-control-plane",
+    "apps/team-backend",
+    "apps/core-web",
+    "apps/team-web"
+  ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "typecheck": "npm run build --workspace @dewbow/core-protocol && npm run build --workspace @dewbow/core-sdk && npm run build --workspace @dewbow/team-protocol && npm run typecheck --workspaces",
-    "test": "npm run build --workspace @dewbow/core-protocol && npm run build --workspace @dewbow/team-protocol && npm test --workspaces --if-present && node --test scripts/tests/*.test.mjs",
+    "typecheck": "npm run build --workspace @dewbow/core-protocol && npm run build --workspace @dewbow/core-sdk && npm run build --workspace @dewbow/team-protocol && npm run build --workspace @dewbow/core-ui && npm run typecheck --workspaces",
+    "test": "npm run build --workspace @dewbow/core-protocol && npm run build --workspace @dewbow/team-protocol && npm run build --workspace @dewbow/core-ui && npm test --workspaces --if-present && node --test scripts/tests/*.test.mjs",
     "core:demo": "npm run demo --workspace @dewbow/core-sdk",
     "core:demo:history": "npm run demo:history --workspace @dewbow/core-sdk --",
     "core:host-daemon": "npm run build --workspace @dewbow/core-protocol && npm run build --workspace @dewbow/core-sdk && npm run build --workspace @dewbow/core-host-daemon && npm run start --workspace @dewbow/core-host-daemon --",
@@ -28,5 +43,8 @@
     "local:team:backend": "node --env-file=state/local/team.env apps/team-backend/dist/cli.js",
     "local:smoke": "node --env-file=state/local/agent.env scripts/smoke.mjs"
   },
-  "devDependencies": { "@types/node": "24.19.2", "typescript": "7.0.2" }
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
 }
