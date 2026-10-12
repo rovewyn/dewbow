@@ -3,7 +3,11 @@ import koffi from "koffi";
 
 let windowsOwner: ((path: string) => boolean) | undefined;
 
-/** Windows has no POSIX uid; compare the file owner SID with this process's user. */
+export function isTrustedWindowsOwner(ownerSid: string, userSid: string, defaultOwnerSid: string): boolean {
+  return ownerSid === userSid || (ownerSid === "S-1-5-32-544" && ownerSid === defaultOwnerSid);
+}
+
+/** Compare ownership with the current Windows token, including elevated defaults. */
 function createWindowsOwnerCheck(): (path: string) => boolean {
   const kernel = koffi.load("kernel32.dll"), security = koffi.load("advapi32.dll");
   const currentProcess = kernel.func("void * __stdcall GetCurrentProcess()");
@@ -22,14 +26,17 @@ function createWindowsOwnerCheck(): (path: string) => boolean {
   }
   const token: unknown[] = [null], required = [0];
   if (!openToken(currentProcess(), 8, token)) throw new Error("Process identity unavailable.");
-  let userSid: string;
+  let userSid: string, defaultOwnerSid: string;
   try {
-    tokenInformation(token[0], 1, null, 0, required);
-    const size = required[0]!;
-    if (size < koffi.sizeof("void *") || size > 65536) throw new Error("Process identity unavailable.");
-    const buffer = Buffer.alloc(size);
-    if (!tokenInformation(token[0], 1, buffer, size, required)) throw new Error("Process identity unavailable.");
-    userSid = stringifySid(koffi.decode(buffer, "void *"));
+    const tokenSid = (kind: number) => {
+      tokenInformation(token[0], kind, null, 0, required);
+      const size = required[0]!;
+      if (size < koffi.sizeof("void *") || size > 65536) throw new Error("Process identity unavailable.");
+      const buffer = Buffer.alloc(size);
+      if (!tokenInformation(token[0], kind, buffer, size, required)) throw new Error("Process identity unavailable.");
+      return stringifySid(koffi.decode(buffer, "void *"));
+    };
+    userSid = tokenSid(1); defaultOwnerSid = tokenSid(4);
   } finally { closeHandle(token[0]); }
   return path => {
     const flags = attributes(path);
@@ -37,7 +44,8 @@ function createWindowsOwnerCheck(): (path: string) => boolean {
     const owner: unknown[] = [null], descriptor: unknown[] = [null];
     try {
       if (namedSecurity(path, 1, 1, owner, null, null, null, descriptor) !== 0) return false;
-      return stringifySid(owner[0]) === userSid;
+      const ownerSid = stringifySid(owner[0]);
+      return isTrustedWindowsOwner(ownerSid, userSid, defaultOwnerSid);
     } finally { if (descriptor[0]) localFree(descriptor[0]); }
   };
 }

@@ -14,7 +14,7 @@ npm run build --workspace @dewbow/core-sdk
 npm run core:demo
 ```
 
-The demo prints summary counts and source outcomes. It starts no HTTP server. The SDK does not require Python. `node:sqlite` reads the database; Koffi supplies native macOS lock queries and Windows file owner SID checks. POSIX files must belong to the current UID. Windows files must belong to the current account and be ordinary files; lineage paths cannot escape their selected home through junctions or links.
+The demo prints summary counts and source outcomes. It starts no HTTP server. The SDK does not require Python. `node:sqlite` reads the database; Koffi supplies native macOS lock queries and Windows file owner SID checks. POSIX files must belong to the current UID. Windows files must belong to the current account and be ordinary files; an elevated token's default Administrators owner is also accepted. Other group owners are rejected. Lineage paths cannot escape their selected home through junctions or links.
 
 This package is currently private and unpublished. To use it in another local project:
 

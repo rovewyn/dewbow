@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { discoverSessions, getParentSession, getForkSourceSession } from "../dist/index.js";
 import { readLineageHeader } from "../dist/lineage.js";
 import { nativeCommand } from "../dist/internal.js";
+import { isTrustedWindowsOwner } from "../dist/file-trust.js";
 
 const parent = "00000000-0000-4000-8000-000000000001";
 const child = "00000000-0000-4000-8000-000000000002";
@@ -30,6 +31,12 @@ function database(path, ids = [parent]) {
 async function digest(path) { return createHash("sha256").update(await readFile(path)).digest("hex"); }
 
 test("database and lineage discovery preserve WAL data, privacy, and distinct relationships", async t => {
+  const userSid = "S-1-5-21-1-2-3-1000", otherSid = "S-1-5-21-1-2-3-1001", administrators = "S-1-5-32-544";
+  assert.equal(isTrustedWindowsOwner(userSid, userSid, userSid), true);
+  assert.equal(isTrustedWindowsOwner(administrators, userSid, administrators), true);
+  assert.equal(isTrustedWindowsOwner(administrators, userSid, userSid), false);
+  assert.equal(isTrustedWindowsOwner(otherSid, userSid, administrators), false);
+  assert.equal(isTrustedWindowsOwner("S-1-5-32-545", userSid, "S-1-5-32-545"), false);
   const path = await home(t), other = await home(t);
   const db = database(path, [parent, child, fork]);
   const otherDb = database(other, [parent]);

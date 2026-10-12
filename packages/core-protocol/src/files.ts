@@ -6,7 +6,9 @@ import { dirname, parse, resolve } from "node:path";
 const securedDirectories = new Set<string>();
 const aclScript = `
 $ErrorActionPreference = 'Stop'
-$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$user = $identity.User
+if ($null -eq $user -or $null -eq $identity.Owner) { exit 15 }
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 foreach ($path in (ConvertFrom-Json $env:DEWBOW_PRIVATE_PATHS)) {
   $item = if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::Directory) -ne 0) { [IO.DirectoryInfo]::new($path) } else { [IO.FileInfo]::new($path) }
@@ -16,7 +18,9 @@ foreach ($path in (ConvertFrom-Json $env:DEWBOW_PRIVATE_PATHS)) {
     $ancestor = if ($ancestor -is [IO.DirectoryInfo]) { $ancestor.Parent } else { $ancestor.Directory }
   }
   $existing = $item.GetAccessControl()
-  if ($existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $user.Value) { exit 12 }
+  $owner = $existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+  # Elevated Windows tokens can create files owned by their default Administrators SID.
+  if ($owner -ne $user.Value -and -not ($owner -eq 'S-1-5-32-544' -and $owner -eq $identity.Owner.Value)) { exit 12 }
   $acl = if ($item -is [IO.DirectoryInfo]) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }
   $acl.SetAccessRuleProtection($true, $false)
   foreach ($sid in @($user, $system)) {
