@@ -89,6 +89,8 @@ As part of post-merge cleanup, stop local preview servers started for that pull 
 
 Use Conventional Commits for commit messages and pull request titles: `type(scope): description`, with an optional scope.
 
+The project has no affiliation with any GitHub user named `dewbow`. To avoid sending that person unintended notifications, do not include `@dewbow` in commit message titles or bodies, including when describing the npm namespace or scoped packages. Use wording such as "the dewbow npm scope" or unscoped package names instead.
+
 Describe the problem, resulting behavior, and purpose of the change. Include relevant validation results, disclose omitted checks, and link issues when applicable. Keep descriptions focused on the final implementation.
 
 Review staged files before committing. Honor repository-specific restrictions on reports, measurements, screenshots, logs, and other outputs before including them in commits or pull requests.
