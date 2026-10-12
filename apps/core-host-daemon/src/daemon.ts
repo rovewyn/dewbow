@@ -1,13 +1,13 @@
 import { access, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { homedir } from "node:os";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { randomUUID, createHash } from "node:crypto";
 import { WebSocket } from "ws";
-import { discoverSessions, readSessionHistory, readSessionItems, readSessionItem, SessionHistoryError } from "@dewbow/core-sdk";
+import { discoverSessions, readSessionHistory, readSessionItems, readSessionItem, readSessionToolOrigin, SessionHistoryError } from "@dewbow/core-sdk";
 import type { DiscoverOptions, DiscoverySnapshot, ReadSessionHistoryOptions } from "@dewbow/core-sdk";
-import { canonicalJson, fail, LiveReplies, ManagementError, now, terminal, validateInput } from "@dewbow/core-protocol";
-import type { AgentRef, Approval, Command, ContentPage, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionActivity, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
+import { canonicalJson, fail, LiveReplies, ManagementError, maskPrivateMessages, maskPrivateActivity, maskPrivateEvents, now, terminal, validateInput } from "@dewbow/core-protocol";
+import type { AgentRef, Interaction, Command, ContentPage, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionActivity, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
 import type { HostDaemonConfig } from "./config.js";
 import { Runtime } from "./runtime.js";
@@ -15,12 +15,16 @@ import type { RpcMessage } from "./runtime.js";
 import { checkSavedModel, confirmSessionConfig, resolveSessionConfig, sessionThreadOptions } from "./session-config.js";
 import { SessionContent } from "./content.js";
 import { projectItem } from "./history.js";
+import {approvalResponse,builtinQuestion,createInteraction,interactionDetails,publicInteraction,validateAnswers,type NativeInteraction} from "./interactions.js";
 
 interface Journal { command: Command; fingerprint: string; result: OperationResult }
 export class HostDaemon {
   private store: Store | undefined;
   private contents: SessionContent | undefined;
   private readonly outputCapture = new Map<string,string>();
+  private readonly runtimeId = randomUUID();
+  private readonly toolOrigins = new Map<string,{name:string;namespace:string|null}|null>();
+  private readonly modeSettings = new Map<string,{model:string;reasoningEffort:string|null}>();
   private readonly runtime = new Runtime();
   private socket: WebSocket | undefined;
   private reconnect: NodeJS.Timeout | undefined;
@@ -78,7 +82,7 @@ export class HostDaemon {
   }
   private send(frame: ToControlPlane): void { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame)); }
   private report(): HostReport {
-    return { sessions: this.store!.list<Session>("session"), turns: this.store!.list<Turn>("turn"), approvals: this.store!.list<Approval>("approval"), operations: this.store!.list<Journal>("command").map(j => j.result) };
+    return { sessions:this.store!.list<Session>("session"),turns:this.store!.list<Turn>("turn"),interactions:this.store!.list<NativeInteraction>("interaction").map(publicInteraction),operations:this.store!.list<Journal>("command").map(j=>j.result) };
   }
   private connect(): void {
     const url = new URL("/hosts/connect", this.config.controlPlaneUrl); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -128,7 +132,7 @@ export class HostDaemon {
   }
   private async query(query: HostQuery): Promise<void> {
     try {
-      let result: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage;
+      let result: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | {interactions:Interaction[]};
       if (query.operation === "discoverSessions") {
         if (!this.inventory || this.inventory.expires < Date.now()) {
           this.inventory = { expires: Date.now() + 10000, snapshot: this.discoverSessions({ codexExecutable: this.config.codexExecutable, signal: AbortSignal.any([this.reads.signal, AbortSignal.timeout(20000)]) }) };
@@ -147,31 +151,48 @@ export class HostDaemon {
         const cursor = query.input.cursor ?? 0, limit = query.input.limit ?? 100;
         if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) fail("INVALID_INPUT", "Invalid event history page.");
         const events = this.store!.history(session.sessionId, cursor, limit + 1);
-        result = { events: events.slice(0, limit), nextCursor: events.slice(0, limit).at(-1)?.cursor ?? cursor,
-          hasMore: events.length > limit, liveMessages: this.liveReplies.get(session.sessionId) };
+        result = { events: query.authority === "operator" ? events.slice(0,limit) : maskPrivateEvents(events.slice(0,limit),this.privateTurns(session.codexThreadId!)), nextCursor: events.slice(0, limit).at(-1)?.cursor ?? cursor,
+          hasMore: events.length > limit, liveMessages: query.authority === "operator" ? this.liveReplies.get(session.sessionId) : maskPrivateMessages(this.liveReplies.get(session.sessionId),this.privateTurns(session.codexThreadId!)) };
+      } else if (query.operation === "readInteractions") {
+        const session = this.session(String(query.input.sessionId)), scope = this.contentScope(session.codexHome!,session.codexThreadId!);
+        const all = this.store!.list<NativeInteraction>("interaction").filter(item=>item.sessionId === session.sessionId);
+        const selected = all.filter((item,index)=>index >= all.length-50 || ["pending","requested","delivered"].includes(item.status));
+        if (selected.length>500) fail("LIMIT_EXCEEDED","Too many active interactions.");
+        const privateSession=this.privateConversation(session.codexThreadId!);
+        const details=new Map<string,import("@dewbow/core-protocol").InteractionDetails>();let budget=6*1024*1024;
+        const active=(item:NativeInteraction)=>["pending","requested","delivered"].includes(item.status);
+        for(const item of [...selected].sort((a,b)=>Number(active(b))-Number(active(a)))) {
+          if((query.authority!=="operator" && privateSession) || (item.content.byteLength??1048577)>budget)continue;
+          const value=interactionDetails(item,scope,this.contents!),bytes=Buffer.byteLength(JSON.stringify(value));
+          if(bytes<=budget){details.set(item.interactionId,value);budget-=bytes;}
+        }
+        result = {interactions:selected.map(item=>({...publicInteraction(item),...(details.has(item.interactionId) ? {details:details.get(item.interactionId)!} : {})}))};
       } else if (query.operation === "getSessionActivity" || query.operation === "readSessionContent") {
         const home = await realpath(query.input.codexHome ?? this.config.codexHome ?? process.env.CODEX_HOME ?? join(homedir(),".codex"));
         const scope = this.contentScope(home,query.input.codexThreadId!);
         if (query.operation === "getSessionActivity") {
           try {
             const record = await readSessionItem(query.input.codexThreadId!,query.input.itemId!,{codexHome:home,signal:this.reads.signal});
-            const projected = projectItem(record,scope,this.contents!);
+            const protectedTurn=this.privateConversation(query.input.codexThreadId!);
+            const projected = projectItem(record,scope,this.contents!,false,protectedTurn ? "operator" : "agent");
             if (!projected.activity) fail("INVALID_INPUT","This native item is not an activity.");
-            result = projected.activity;
+            result = protectedTurn && query.authority!=="operator" ? maskPrivateActivity(projected.activity) : projected.activity;
           }
           catch (error) {
             if (!(error instanceof SessionHistoryError) || !["UNAVAILABLE","READ_FAILED","SESSION_NOT_FOUND","LIMIT_EXCEEDED"].includes(error.code)) throw error;
-            result = this.contents!.getActivity(scope,query.input.itemId!);
+            const activity=this.contents!.getActivity(scope,query.input.itemId!);
+            result = this.privateConversation(query.input.codexThreadId!) && query.authority!=="operator" ? maskPrivateActivity(activity) : activity;
           }
-        } else result = this.contents!.read(scope,query.input.contentId!,query.input.contentCursor,query.input.limitBytes);
+        } else {if(this.privateConversation(query.input.codexThreadId!) && query.authority!=="operator")fail("FORBIDDEN","This conversation contains private operator input.");result = this.contents!.read(scope,query.input.contentId!,query.input.contentCursor,query.input.limitBytes,query.authority);}
       } else if (query.operation === "readSessionHistory") {
         const queryHome = query.input.codexHome ? await realpath(query.input.codexHome).catch(() => query.input.codexHome!) : undefined;
         try {
           const page = await readSessionItems(query.input.codexThreadId!, { ...(queryHome ? { codexHome: queryHome } : this.config.codexHome ? { codexHome: this.config.codexHome } : {}),
             limit:query.input.limit ?? 50,signal:this.reads.signal,...(query.input.beforeCursor ? { beforeCursor:query.input.beforeCursor } : {}),...(query.input.afterCursor ? { afterCursor:query.input.afterCursor } : {}),...(query.input.updateCursor ? { updateCursor:query.input.updateCursor } : {}) });
-          const projected = page.items.map(item => projectItem(item,this.contentScope(page.codexHome,page.sessionId),this.contents!));
+          const protectedTurns=this.privateConversation(page.sessionId) ? new Set(page.items.map(item=>item.turnId)) : new Set<string>();
+          const projected = page.items.map(item => projectItem(item,this.contentScope(page.codexHome,page.sessionId),this.contents!,false,protectedTurns.has(item.turnId) ? "operator" : "agent"));
           result = { observedAt:page.observedAt,beforeCursor:page.beforeCursor,afterCursor:page.afterCursor,updateCursor:page.updateCursor,hasMoreUpdates:page.hasMoreUpdates,
-            messages:projected.flatMap(row=>row.message ? [row.message] : []),activities:projected.flatMap(row=>row.activity ? [row.activity] : []) };
+            messages:maskPrivateMessages(projected.flatMap(row=>row.message ? [row.message] : []),query.authority === "operator" ? new Set() : protectedTurns),activities:projected.flatMap(row=>row.activity ? [protectedTurns.has(row.activity.turnId) && query.authority!=="operator" ? maskPrivateActivity(row.activity) : row.activity] : []) };
         } catch (cause) {
           const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId
             && (!queryHome || (process.platform === "win32" ? s.codexHome?.toLowerCase() === queryHome.toLowerCase() : s.codexHome === queryHome)));
@@ -186,24 +207,37 @@ export class HostDaemon {
         const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId);
         if (session) this.liveReplies.saved(session.sessionId, (result as NativeHistory).messages);
       }
-      this.send({ type: "query_result", response: { queryId: query.queryId, result: this.redact(result) as NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage } });
+      const response={queryId:query.queryId,result:this.redact(result) as typeof result};
+      if(Buffer.byteLength(JSON.stringify(response))>8*1024*1024)fail("LIMIT_EXCEEDED","Host read exceeds the response limit. Use a smaller page or separate content reads.");
+      this.send({ type: "query_result", response });
     } catch (cause) {
       const code = cause instanceof ManagementError ? cause.detail.code : typeof (cause as { code?: unknown })?.code === "string" ? String((cause as { code: string }).code) : "READ_FAILED";
-      this.send({ type: "query_result", response: { queryId: query.queryId, error: { code, message: query.operation === "discoverSessions" ? "Native conversation discovery failed." : query.operation === "readEvents" ? "Host event history could not be read." : "Native saved messages could not be read.", retryable: true } } });
+      this.send({ type: "query_result", response: { queryId: query.queryId, error: { code, message: query.operation === "discoverSessions" ? "Native conversation discovery failed." : query.operation === "readEvents" ? "Host event history could not be read." : "Native saved messages could not be read.", retryable: cause instanceof ManagementError ? cause.detail.retryable : true } } });
     }
   }
   private contentScope(home: string, threadId: string): string {
     return createHash("sha256").update(JSON.stringify([process.platform === "win32" ? home.toLowerCase() : home,threadId])).digest("hex");
   }
+  private privateTurns(threadId:string):Set<string> {
+    const sessionIds=new Set(this.store!.list<Session>("session").filter(session=>session.codexThreadId===threadId).map(session=>session.sessionId));
+    return this.privateConversation(threadId) ? new Set(this.store!.list<Turn>("turn").filter(turn=>sessionIds.has(turn.sessionId) && turn.codexTurnId).map(turn=>turn.codexTurnId!)) : new Set();
+  }
+  private privateConversation(threadId:string):boolean {
+    const ids=new Set(this.store!.list<Session>("session").filter(session=>session.codexThreadId===threadId).map(session=>session.sessionId));
+    return this.store!.list<NativeInteraction>("interaction").some(item=>ids.has(item.sessionId) && item.sensitive);
+  }
   private async command(command: Command): Promise<void> {
-    const fingerprint = createHash("sha256").update(canonicalJson([command.operation, command.sessionId, command.turnId, command.input])).digest("hex");
+    const fingerprint = createHash("sha256").update(canonicalJson([command.operation,command.sessionId,command.turnId,command.input,command.authority])).digest("hex");
     const previous = this.store!.get<Journal>("command", command.commandId);
     if (previous) {
       if (previous.fingerprint !== fingerprint) this.send({ type: "result", result: { commandId: command.commandId, status: "error", error: { code: "REQUEST_CONFLICT", message: "Daemon command input conflict.", retryable: false } } });
-      else if (!this.inFlight.has(command.commandId)) this.send({ type: "result", result: previous.result });
+      else if (!this.inFlight.has(command.commandId)) {
+        if(previous.result.status === "unknown")await this.reconcileCommand(previous);
+        this.send({ type: "result", result: previous.result });
+      }
       return;
     }
-    const { message: _message, ...metadata } = command.input;
+    const { message:_message,answers:_answers,...metadata } = command.input;
     const journal: Journal = { command: { ...command, input: metadata }, fingerprint, result: { commandId: command.commandId, status: "unknown", error: { code: "DELIVERY_UNCERTAIN", message: "Command has no confirmed result yet.", retryable: true, sessionId: command.sessionId } } };
     this.store!.put("command", command.commandId, journal); this.inFlight.add(command.commandId);
     try {
@@ -226,7 +260,26 @@ export class HostDaemon {
       this.store!.put("command", command.commandId, journal); this.send({ type: "result", result: journal.result });
     }
   }
+  private async reconcileCommand(journal:Journal):Promise<void> {
+    const command=journal.command,session=this.store!.get<Session>("session",command.sessionId);
+    if(!session?.codexThreadId)return;
+    let confirmed=false;
+    if(["sendMessage","steerTurn"].includes(command.operation)) {
+      try {
+        const page=await readSessionItems(session.codexThreadId,{codexHome:session.codexHome!,limit:500,signal:this.reads.signal});
+        const item=page.items.find(record=>record.item.type === "userMessage" && record.item.clientId === command.commandId);
+        confirmed=Boolean(item);
+        const turn=command.turnId ? this.store!.get<Turn>("turn",command.turnId) : undefined;
+        if(item && turn && !turn.codexTurnId){turn.codexTurnId=item.turnId;this.store!.put("turn",turn.turnId,turn);}
+      } catch { /* Missing evidence keeps the original operation unknown; never resend it. */ }
+    } else if(["answerQuestions","decideApproval"].includes(command.operation)) {
+      const item=this.store!.get<NativeInteraction>("interaction",String(command.input.interactionId));
+      confirmed=Boolean(item && item.requestId === command.input.requestId && ["delivered","resolved"].includes(item.status));
+    }
+    if(confirmed){journal.result={commandId:command.commandId,status:"delivered",error:null};this.store!.put("command",command.commandId,journal);}
+  }
   private async execute(command: Command): Promise<void> {
+    command = {...command,input:validateInput(command.operation,command.input)};
     if (command.operation === "createSession") {
       const input = validateInput("createSession", command.input);
       if (command.input.hostId !== this.config.hostId) fail("INVALID_INPUT", "Session targets another host.");
@@ -242,9 +295,10 @@ export class HostDaemon {
       } catch { fail("INVALID_WORKDIR", "Working directory must be an existing readable and writable absolute directory on this host."); }
       session.sessionConfig!.resolved = await resolveSessionConfig(this.runtime, session.workDir, session.sessionConfig!.overrides, this.config.model);
       this.emit(session, "session_configured", {}, undefined, false);
-      const result = await this.runtime.request("thread/start", { ...this.threadOptions(session), ephemeral: false });
+      const result = await this.runtime.request("thread/start", { ...this.threadOptions(session),ephemeral:false,experimentalRawEvents:true });
       session.codexThreadId = result.thread.id; this.store!.put("session", session.sessionId, session);
       confirmSessionConfig(session.sessionConfig!.resolved!, result);
+      this.rememberMode(session,result);
       if (result.cwd !== session.workDir) fail("RECOVERY_REQUIRED", "Codex did not retain the selected working directory.");
       session.runtimeState = "idle"; session.connectionState = "connected"; session.connectionConfirmedAt = now(); this.emit(session, "session_created"); return;
     }
@@ -268,6 +322,7 @@ export class HostDaemon {
       if (session.codexHome !== home) fail("INVALID_INPUT", "Conversation belongs to a different Codex home.");
       if (session.sessionConfig?.resolved) await checkSavedModel(this.runtime, session.sessionConfig.resolved);
       const result = await this.runtime.connectSession(session.codexThreadId!, this.threadOptions(session));
+      this.rememberMode(session,result);
       if (session.sessionConfig?.resolved) {
         confirmSessionConfig(session.sessionConfig.resolved, result);
         if (result.cwd !== session.workDir) fail("RECOVERY_REQUIRED", "Codex did not retain the saved working directory.");
@@ -278,14 +333,16 @@ export class HostDaemon {
     }
     const session = this.session(command.sessionId);
     if (!session.codexThreadId) fail("SESSION_NOT_READY", "Codex conversation has not been created.");
+    if(command.authority!=="operator" && ["sendMessage","steerTurn","answerQuestions"].includes(command.operation) && this.privateConversation(session.codexThreadId))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
     if (command.operation === "sendMessage") {
       if (session.activeTurnId) fail("SESSION_BUSY", "Session already has an active or unresolved turn.");
       if (session.runtimeState === "unknown" || session.connectionState !== "connected") fail("RECOVERY_REQUIRED", "Conversation recovery is unresolved.");
       const turn: Turn = { turnId: command.turnId!, sessionId: session.sessionId, requestId: String(command.input.requestId), codexTurnId: null,
-        state: "accepted", createdAt: now(), observedAt: now(), error: null };
+        mode:command.input.mode as Turn["mode"],state:"accepted",createdAt:now(),observedAt:now(),error:null };
       session.activeTurnId = turn.turnId;
-      this.emit(session, "user_message", { text: String(command.input.message) }, turn, false);
-      const result = await this.runtime.sendMessage(session.codexThreadId, String(command.input.message));
+      this.emit(session,"user_message",{text:String(command.input.message),clientId:command.commandId,requestId:command.input.requestId},turn,false);
+      const settings = this.modeSettings.get(session.sessionId) ?? fail("RECOVERY_REQUIRED","The native model must be confirmed before starting a mode.");
+      const result = await this.runtime.sendMessage(session.codexThreadId,String(command.input.message),{clientUserMessageId:command.commandId,collaborationMode:{mode:turn.mode,settings:{model:settings.model,reasoning_effort:settings.reasoningEffort,developer_instructions:null}}});
       const current = this.store!.get<Turn>("turn", turn.turnId)!;
       if (!terminal(current.state)) {
         const currentSession = this.session(session.sessionId);
@@ -299,16 +356,40 @@ export class HostDaemon {
       if (command.operation === "interruptTurn") {
         await this.runtime.request("turn/interrupt", { threadId: session.codexThreadId, turnId: turn.codexTurnId });
         this.emit(this.session(session.sessionId), "interrupt_requested", {}, this.store!.get<Turn>("turn", turn.turnId)!);
-      } else if (command.operation === "decideApproval") {
-        const approval = this.store!.get<Approval>("approval", String(command.input.approvalId));
-        if (!approval || approval.sessionId !== session.sessionId || approval.turnId !== turn.turnId || approval.status !== "pending") fail("STALE_APPROVAL", "Exact approval request is no longer pending.");
-        approval.decision = command.input.decision as "allow" | "deny"; approval.decidedAt = now(); approval.status = "requested";
-        this.store!.put("approval", approval.approvalId, approval); this.emit(session, "approval_decision_requested", { approval }, turn);
-        this.runtime.respond(approval.codexRequestId, { decision: approval.decision === "allow" ? "accept" : "decline" });
-        approval.status = "delivered"; this.store!.put("approval", approval.approvalId, approval);
-        this.emit(this.session(session.sessionId), "approval_decision_delivered", { approval }, this.store!.get<Turn>("turn", turn.turnId)!);
+      } else if (command.operation === "steerTurn") {
+        const result = await this.runtime.steerTurn(session.codexThreadId,turn.codexTurnId,String(command.input.message),command.commandId);
+        if (result.turnId !== turn.codexTurnId) fail("DELIVERY_UNCERTAIN","Native steering returned a different turn.",true);
+        this.emit(this.session(session.sessionId),"user_message",{text:String(command.input.message),clientId:command.commandId,requestId:command.input.requestId,steering:true},this.store!.get<Turn>("turn",turn.turnId)!,false);
+      } else if (command.operation === "decideApproval" || command.operation === "answerQuestions") {
+        const interaction = this.store!.get<NativeInteraction>("interaction",String(command.input.interactionId));
+        if (!interaction || interaction.sessionId !== session.sessionId || interaction.turnId !== turn.turnId || interaction.status !== "pending" || interaction.runtimeId !== this.runtimeId) fail("STALE_INTERACTION","Exact native interaction is no longer pending.");
+        if (interaction.authority === "operator" && command.authority !== "operator") fail("FORBIDDEN","This native interaction requires the Core operator.");
+        const scope=this.contentScope(session.codexHome!,session.codexThreadId),details=interactionDetails(interaction,scope,this.contents!);
+        let response:unknown;
+        if (command.operation === "answerQuestions") {
+          if (interaction.kind !== "questions") fail("INVALID_INPUT","Interaction does not accept answers.");
+          const answers=command.input.answers as import("@dewbow/core-protocol").QuestionAnswer[];validateAnswers(details,answers);
+          response={answers:Object.fromEntries(answers.map(answer=>[answer.questionId,{answers:answer.answers}]))};
+          const encoded=JSON.stringify({...details,answers});if(Buffer.byteLength(encoded)>1048576)fail("LIMIT_EXCEEDED","Answers exceed the private interaction limit.");
+          if(interaction.authority === "operator"){interaction.sensitive=true;this.contents!.restrictScope(scope);}
+          interaction.content=this.contents!.put(scope,interaction.interactionId,"output","Interaction details",encoded,"complete",interaction.sensitive ? "operator" : "agent");
+        } else {
+          if (interaction.kind !== "approval" || command.authority !== "operator") fail("FORBIDDEN","Only the Core operator can decide native approvals.");
+          interaction.decision=command.input.decision as "allow"|"deny";response=approvalResponse(interaction,details,interaction.decision);
+        }
+        interaction.status="requested";interaction.requestId=String(command.input.requestId);interaction.observedAt=now();
+        this.store!.put("interaction",interaction.interactionId,interaction);this.emit(session,"interaction_response_requested",{interaction:publicInteraction(interaction)},turn);
+        this.runtime.respond(interaction.codexRequestId,response);
+        const current=this.store!.get<NativeInteraction>("interaction",interaction.interactionId)!;
+        if (!["resolved","invalidated"].includes(current.status)) {current.status="delivered";current.observedAt=now();this.store!.put("interaction",current.interactionId,current);}
+        this.emit(this.session(session.sessionId),"interaction_response_delivered",{interaction:publicInteraction(current)},this.store!.get<Turn>("turn",turn.turnId)!);
       } else fail("INVALID_INPUT", "Unknown host command.");
     }
+  }
+  private rememberMode(session:Session,result:{model?:string;reasoningEffort?:string|null}):void {
+    const saved=session.sessionConfig?.resolved,model=saved?.model??result.model,reasoningEffort=saved ? saved.reasoningEffort : result.reasoningEffort??null;
+    if (!model) fail("RECOVERY_REQUIRED","Native model settings are unavailable.");
+    this.modeSettings.set(session.sessionId,{model,reasoningEffort});
   }
   private threadOptions(session: Session): import("@dewbow/core-sdk").ConnectSessionOptions {
     if (session.sessionConfig === undefined || (session.sessionConfig !== null && !session.sessionConfig.resolved)) fail("RECOVERY_REQUIRED", "Session configuration snapshot is missing. Start with fresh Dewbow state.");
@@ -327,33 +408,50 @@ export class HostDaemon {
   private notification(message: RpcMessage): void {
     if (!this.store || this.stopping) return;
     const params = message.params ?? {};
-    const session = this.store.list<Session>("session").find(s => s.codexThreadId === params.threadId);
+    const resolved = message.method === "serverRequest/resolved" ? this.store.list<NativeInteraction>("interaction").filter(item=>item.runtimeId === this.runtimeId && item.codexRequestId === params.requestId && (!params.threadId || this.store!.get<Session>("session",item.sessionId)?.codexThreadId === params.threadId)) : [];
+    const session = this.store.list<Session>("session").find(s=>s.codexThreadId === params.threadId) ?? (resolved.length===1 ? this.store.get<Session>("session",resolved[0]!.sessionId) : undefined);
     if (!session) { if (message.id !== undefined) this.runtime.reject(message.id); return; }
     const turn = session.activeTurnId ? this.store.get<Turn>("turn", session.activeTurnId) : undefined;
     if (message.method === "serverRequest/resolved") {
-      const approval = this.store.list<Approval>("approval").find(a => a.sessionId === session.sessionId && a.codexRequestId === params.requestId && (a.status === "pending" || a.status === "delivered" || a.status === "requested"));
-      if (approval) {
-        approval.status = "resolved"; this.store.put("approval", approval.approvalId, approval);
-        if (turn && !terminal(turn.state)) { turn.state = "running"; turn.observedAt = now(); session.runtimeState = "running"; }
-        this.emit(session, "approval_resolved", { approval }, turn);
+      const interaction = resolved.length===1 ? resolved[0] : undefined;
+      if (interaction && !["resolved","invalidated"].includes(interaction.status)) {
+        interaction.status="resolved";interaction.observedAt=now();this.store.put("interaction",interaction.interactionId,interaction);
+        if (turn && !terminal(turn.state)) this.waitingState(session,turn);
+        this.emit(session,"interaction_resolved",{interaction:publicInteraction(interaction)},turn);
       }
       return;
     }
     if (!turn || terminal(turn.state)) { if (message.id !== undefined) this.runtime.reject(message.id); return; }
     const codexTurnId = params.turnId ?? params.turn?.id;
+    if(!turn.codexTurnId && typeof codexTurnId === "string" && this.store.list<Turn>("turn").some(previous=>previous.sessionId===session.sessionId && previous.turnId!==turn.turnId && previous.codexTurnId===codexTurnId)) {
+      if(message.id!==undefined)this.runtime.reject(message.id);return;
+    }
     if (codexTurnId && turn.codexTurnId && turn.codexTurnId !== codexTurnId) return;
     if (codexTurnId && !turn.codexTurnId) turn.codexTurnId = String(codexTurnId);
-    if (message.id !== undefined) {
-      if (message.method !== "item/commandExecution/requestApproval" && message.method !== "item/fileChange/requestApproval") {
-        this.runtime.reject(message.id); this.emit(session, "unsupported_request", { method: message.method }, turn); return;
+    if (message.method === "rawResponseItem/completed") {
+      const item=params.item;
+      if(typeof params.turnId !== "string" || params.turnId!==turn.codexTurnId)return;
+      if (item?.type === "function_call" && typeof item.call_id === "string") {
+        const key=JSON.stringify([session.codexThreadId,turn.codexTurnId,item.call_id]),previous=this.toolOrigins.get(key);
+        const next=typeof item.name === "string" && (item.namespace==null || typeof item.namespace === "string") ? {name:item.name,namespace:item.namespace??null} : null;
+        const origin=this.toolOrigins.has(key) && (previous===null || !next || previous!.name!==next.name || previous!.namespace!==next.namespace) ? null : next;
+        this.toolOrigins.set(key,origin);
+        for(const question of this.store.list<NativeInteraction>("interaction").filter(value=>value.sessionId===session.sessionId && value.turnId===turn.turnId && value.itemId===item.call_id && value.kind === "questions" && value.status === "pending")) this.confirmQuestionOrigin(session,turn,question,origin);
       }
-      const action = this.redact({ kind: message.method, command: params.command ?? null, cwd: params.cwd ?? session.workDir, reason: params.reason ?? null,
-        itemId: params.itemId, grantRoot: params.grantRoot ?? null }) as Record<string, unknown>;
-      const approval: Approval = { approvalId: randomUUID(), sessionId: session.sessionId, turnId: turn.turnId, codexRequestId: message.id,
-        action, status: "pending", decision: null, decidedAt: null };
-      this.store.put("approval", approval.approvalId, approval);
-      turn.state = "awaiting_approval"; turn.observedAt = now(); session.runtimeState = "awaiting_approval";
-      this.emit(session, "approval_requested", { approval }, turn); return;
+      return;
+    }
+    if (message.id !== undefined) {
+      if(typeof params.turnId!=="string" || params.turnId!==turn.codexTurnId){this.runtime.reject(message.id);return;}
+      const scope=this.contentScope(session.codexHome!,session.codexThreadId!),origin=this.toolOrigins.get(JSON.stringify([session.codexThreadId,turn.codexTurnId,params.itemId]));
+      let interaction:NativeInteraction;
+      try{interaction=createInteraction(session,turn,this.redact(message) as RpcMessage,scope,this.contents!,this.runtimeId,origin??undefined);}
+      catch(error){if(!(error instanceof ManagementError) || error.detail.code!=="LIMIT_EXCEEDED")throw error;interaction=createInteraction(session,turn,{id:message.id,method:"unsupported/oversizedInteraction",params:{threadId:params.threadId,turnId:params.turnId,itemId:params.itemId}},scope,this.contents!,this.runtimeId);}
+      this.store.put("interaction", interaction.interactionId, interaction);
+      if(interaction.sensitive)this.contents!.restrictScope(scope);
+      this.waitingState(session,turn);
+      this.emit(session,"interaction_requested",{interaction:{...publicInteraction(interaction),details:interactionDetails(interaction,scope,this.contents!)}},turn);
+      if (interaction.kind === "questions" && interaction.authority === "operator" && origin===undefined) void this.refreshQuestionOrigin(session,turn,interaction);
+      return;
     }
     if (message.method === "turn/started") {
       this.confirmTurnStarted(session, turn);
@@ -384,9 +482,11 @@ export class HostDaemon {
         const scope = this.contentScope(session.codexHome!,session.codexThreadId!);
         if (message.method === "item/started" && item.type === "commandExecution" && !this.outputCapture.has(key)) this.outputCapture.set(key,this.contents!.startCapture(scope,item.id).contentId!);
         const capture = this.outputCapture.get(key), finished = message.method === "item/completed" && ["completed","failed","declined"].includes(item.status);
+        const protectedTurn=this.privateConversation(session.codexThreadId!);
+        if(capture && protectedTurn)this.contents!.restrict(scope,capture);
         let capturedRef = capture ? this.contents!.captureRef(scope,capture) : undefined;
         if (capture && finished && (capturedRef!.byteLength! > 0 || item.aggregatedOutput === "")) capturedRef = this.contents!.finishCapture(scope,capture);
-        const projected = projectItem({ id:item.id,turnId:turn.codexTurnId ?? "",ordinal:session.latestCursor+1,updatedOrdinal:session.latestCursor+1,completedAtMs:message.method === "item/completed" ? Date.now() : null,createdAtMs:Date.now(),turnStatus:turn.state,item,itemJson:JSON.stringify(item) },scope,this.contents!,true);
+        const projected = projectItem({ id:item.id,turnId:turn.codexTurnId ?? "",ordinal:session.latestCursor+1,updatedOrdinal:session.latestCursor+1,completedAtMs:message.method === "item/completed" ? Date.now() : null,createdAtMs:Date.now(),turnStatus:turn.state,item,itemJson:JSON.stringify(item) },scope,this.contents!,true,protectedTurn ? "operator" : "agent");
         if (projected.activity) {
           projected.activity.ordinal = null;
           projected.activity.updatedOrdinal = null;
@@ -398,10 +498,40 @@ export class HostDaemon {
       this.emit(session, item.type === "agentMessage" ? "assistant_message" : "tool_activity", payload, turn);
     } else if (message.method === "turn/plan/updated") this.emit(session, "progress", { plan: params.plan, explanation: params.explanation ?? null }, turn);
   }
+  private waitingState(session:Session,turn:Turn):void {
+    const pending=this.store!.list<NativeInteraction>("interaction").filter(item=>item.turnId===turn.turnId && item.blocking && !["resolved","invalidated"].includes(item.status));
+    const state=pending.some(item=>item.kind!=="questions") ? "awaiting_approval" : pending.length ? "awaiting_input" : "running";
+    turn.state=state;turn.observedAt=now();session.runtimeState=state;
+  }
+  private confirmQuestionOrigin(session:Session,turn:Turn,interaction:NativeInteraction,origin:{name:string;namespace:string|null}|null):void {
+    const scope=this.contentScope(session.codexHome!,session.codexThreadId!),details=interactionDetails(interaction,scope,this.contents!);
+    interaction.authority=builtinQuestion(origin) && !interaction.sensitive && details.questions?.length ? "agent" : "operator";interaction.observedAt=now();this.store!.put("interaction",interaction.interactionId,interaction);
+    this.emit(session,"interaction_updated",{interaction:publicInteraction(interaction)},turn);
+  }
+  private async refreshQuestionOrigin(session:Session,turn:Turn,interaction:NativeInteraction):Promise<void> {
+    try {
+      // Rollout ownership is not provenance if the active sandbox may write it.
+      const overlap=relative(session.workDir,session.codexHome!);
+      if((!isAbsolute(overlap) && overlap!==".." && !overlap.startsWith(`..${sep}`)) || !session.sessionConfig?.resolved || session.sessionConfig.resolved.sandbox.type!=="workspaceWrite" || session.sessionConfig.resolved.sandbox.writableRoots.length)return;
+      const sandbox=session.sessionConfig.resolved.sandbox;
+      for(const root of [...(!sandbox.excludeTmpdirEnvVar ? [tmpdir()] : []),...(!sandbox.excludeSlashTmp && process.platform!=="win32" ? ["/tmp"] : [])]) {
+        const canonical=await realpath(root),path=relative(canonical,session.codexHome!);
+        if(!isAbsolute(path) && path!==".." && !path.startsWith(`..${sep}`))return;
+      }
+      if(this.store!.list<NativeInteraction>("interaction").some(item=>item.turnId===turn.turnId && item.kind === "approval" && item.decision === "allow"))return;
+      const origin=await readSessionToolOrigin(session.codexThreadId!,turn.codexTurnId!,interaction.itemId!,{codexHome:session.codexHome!,signal:this.reads.signal});
+      if(!origin || !this.store || this.stopping)return;
+      const current=this.store.get<NativeInteraction>("interaction",interaction.interactionId),active=this.store.get<Turn>("turn",turn.turnId);
+      const key=JSON.stringify([session.codexThreadId,turn.codexTurnId,interaction.itemId]);
+      const granted=this.store.list<NativeInteraction>("interaction").some(item=>item.turnId===turn.turnId && item.kind === "approval" && item.decision === "allow");
+      if(!granted && !this.toolOrigins.has(key) && current?.status === "pending" && active && !terminal(active.state) && this.session(session.sessionId).activeTurnId===turn.turnId) this.confirmQuestionOrigin(this.session(session.sessionId),active,current,origin);
+    } catch { /* An unverified native origin stays restricted to the Core operator. */ }
+  }
   private invalidate(turn: Turn): void {
     for (const key of this.outputCapture.keys()) if (JSON.parse(key)[1] === turn.turnId) this.outputCapture.delete(key);
-    for (const approval of this.store!.list<Approval>("approval")) if (approval.turnId === turn.turnId && approval.status !== "resolved") {
-      approval.status = "invalidated"; this.store!.put("approval", approval.approvalId, approval);
+    for (const key of this.toolOrigins.keys()) if (JSON.parse(key)[1] === turn.codexTurnId) this.toolOrigins.delete(key);
+    for (const interaction of this.store!.list<NativeInteraction>("interaction")) if (interaction.turnId === turn.turnId && interaction.status !== "resolved") {
+      interaction.status = "invalidated"; this.store!.put("interaction", interaction.interactionId, interaction);
     }
   }
   private runtimeClosed(): void {
@@ -423,7 +553,7 @@ export class HostDaemon {
       if (journal.result.status !== "unknown" || command.operation !== "sendMessage" || !command.turnId || this.store!.get("turn", command.turnId)) continue;
       const session = this.session(command.sessionId);
       const turn: Turn = { turnId: command.turnId, sessionId: command.sessionId, requestId: String(command.input.requestId), codexTurnId: null,
-        state: "unknown", createdAt: now(), observedAt: now(), error: null };
+        mode:command.input.mode as Turn["mode"],state:"unknown",createdAt:now(),observedAt:now(),error:null };
       this.store!.put("turn", turn.turnId, turn); session.activeTurnId = turn.turnId; session.runtimeState = "unknown";
       this.store!.put("session", session.sessionId, session);
     }
@@ -434,6 +564,7 @@ export class HostDaemon {
       try {
         if (session.sessionConfig?.resolved) await checkSavedModel(this.runtime, session.sessionConfig.resolved);
         const result = await this.runtime.connectSession(session.codexThreadId, { ...this.threadOptions(session), excludeTurns: false });
+        this.rememberMode(session,result);
         if (session.sessionConfig?.resolved) {
           confirmSessionConfig(session.sessionConfig.resolved, result);
           if (result.cwd !== session.workDir) fail("RECOVERY_REQUIRED", "Codex did not retain the saved working directory.");

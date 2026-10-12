@@ -64,7 +64,7 @@ For a Windows smoke run, pass `(Resolve-Path state/local/workdir).Path` as the w
 
 ## Connect an external MCP client
 
-Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <management-credential>`. The ignored `state/local/mcp.json` is an example; adapt its `mcpServers` wrapper to your client's settings format. Keep the real header out of browser storage and version control. Ten tools are exposed; approval decisions are operator-only.
+Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <management-credential>`. The ignored `state/local/mcp.json` is an example; adapt its `mcpServers` wrapper to your client's settings format. Keep the real header out of browser storage and version control. Twelve tools are exposed; approval decisions are operator-only.
 
 For a Codex CLI client, configure the URL with its documented command:
 

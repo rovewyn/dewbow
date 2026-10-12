@@ -1,5 +1,6 @@
-export type SessionState = "idle" | "running" | "awaiting_approval" | "interrupted" | "error" | "unknown";
-export type TurnState = "accepted" | "running" | "awaiting_approval" | "completed" | "interrupted" | "error" | "unknown";
+export type SessionState = "idle" | "running" | "awaiting_approval" | "awaiting_input" | "interrupted" | "error" | "unknown";
+export type TurnMode = "default" | "plan";
+export type TurnState = "accepted" | "running" | "awaiting_approval" | "awaiting_input" | "completed" | "interrupted" | "error" | "unknown";
 export type OperationStatus = "accepted" | "delivered" | "error" | "unknown";
 export interface Host {
   hostId: string; name: string; status: "connected" | "disconnected" | "revoked"; lastSeenAt: string | null;
@@ -43,10 +44,13 @@ export interface NativeMessage {
   ordinal?: number;
   itemComplete?: boolean;
   updatedOrdinal?: number;
+  clientId?: string | null;
+  availability?: "available" | "restricted";
 }
 export interface ContentRef {
   contentId: string | null; kind: "output" | "diff"; label: string; byteLength: number | null;
   availability: "available" | "partial" | "unavailable"; completeness: "complete" | "partial" | "unknown";
+  authority: "agent" | "operator";
 }
 export interface SessionActivity {
   id: string; turnId: string; ordinal: number | null; createdAt: string; type: string; title: string;
@@ -61,6 +65,25 @@ export interface NativeHistory {
   messages: NativeMessage[]; activities: SessionActivity[]; beforeCursor: string | null; afterCursor: string | null;
   updateCursor: string | null; hasMoreUpdates: boolean; observedAt: string;
 }
+/** Protect a secret-bearing native turn across saved and volatile reads. */
+export function maskPrivateMessages(messages: NativeMessage[], turns: Set<string>): NativeMessage[] {
+  return messages.map(message=>turns.has(message.turnId) ? {...message,text:"",availability:"restricted"} : message);
+}
+export function maskPrivateActivity(activity: SessionActivity): SessionActivity {
+  const {command:_command,paths:_paths,...metadata}=activity;
+  return {...metadata,title:"Restricted activity",contents:activity.contents.map(ref=>({...ref,label:"Restricted content",authority:"operator"}))};
+}
+export function maskPrivateEvents(events: Event[], turns: Set<string>): Event[] {
+  return events.map(event=>{
+    const nativeTurn=(event.payload.turn as Turn|undefined)?.codexTurnId;
+    if(!turns.has(event.turnId??"") && !turns.has(nativeTurn??""))return event;
+    const payload={...event.payload};
+    for(const key of ["text","plan","explanation","command","cwd","paths","tool","server"])delete payload[key];
+    if(payload.activity)payload.activity=maskPrivateActivity(payload.activity as SessionActivity);
+    if(payload.interaction){const {details:_details,...metadata}=payload.interaction as Interaction;payload.interaction=metadata;}
+    return {...event,payload};
+  });
+}
 export interface NativeInventory {
   sessions: NativeSession[]; observedAt: string;
   sources: { source: string; state: string; error: string | null }[];
@@ -68,22 +91,34 @@ export interface NativeInventory {
 }
 export interface EventHistory { events: Event[]; nextCursor: number; hasMore: boolean; liveMessages: NativeMessage[] }
 export interface HostQuery {
-  queryId: string; operation: "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent";
+  queryId: string; operation: "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
   input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
+  authority: "agent" | "operator";
 }
-export interface HostQueryResult { queryId: string; result?: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage; error?: ManagementErrorData }
+export interface InteractionPage { interactions: Interaction[] }
+export interface HostQueryResult { queryId: string; result?: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | InteractionPage; error?: ManagementErrorData }
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;
+  mode: TurnMode;
 }
 export interface Event {
   eventId: string; cursor: number; sessionId: string; turnId: string | null;
   timestamp: string; type: string; payload: Record<string, unknown>;
 }
-export interface Approval {
-  approvalId: string; sessionId: string; turnId: string; codexRequestId: string | number;
-  action: Record<string, unknown>; status: "pending" | "requested" | "delivered" | "resolved" | "invalidated";
-  decision: "allow" | "deny" | null; decidedAt: string | null;
+export interface UserQuestion {
+  questionId: string; header: string; prompt: string; options: { label: string; description: string }[] | null;
+  allowCustom: boolean; secret: boolean;
+}
+export interface QuestionAnswer { questionId: string; answers: string[] }
+export interface InteractionDetails { questions?: UserQuestion[]; action?: Record<string,unknown>; answers?: QuestionAnswer[] }
+export interface Interaction {
+  interactionId: string; sessionId: string; turnId: string; itemId: string | null;
+  kind: "approval" | "questions" | "unsupported"; authority: "operator" | "agent"; blocking: boolean;
+  status: "pending" | "requested" | "delivered" | "resolved" | "invalidated";
+  createdAt: string; observedAt: string; decision: "allow" | "deny" | null; requestId: string | null;
+  content: ContentRef; details?: InteractionDetails;
+  sensitive: boolean;
 }
 export interface ManagementErrorData {
   code: string; message: string; retryable: boolean; sessionId?: string; turnId?: string;
@@ -95,15 +130,16 @@ export function fail(code: string, message: string, retryable = false, refs: { s
   throw new ManagementError({ code, message, retryable, ...refs });
 }
 export interface Command {
-  commandId: string; operation: "createSession" | "connectSession" | "sendMessage" | "interruptTurn" | "decideApproval";
+  commandId: string; operation: "createSession" | "connectSession" | "sendMessage" | "steerTurn" | "answerQuestions" | "interruptTurn" | "decideApproval";
   sessionId: string; turnId: string | null; input: Record<string, unknown>;
+  authority: "operator" | "agent";
 }
 export interface Operation extends Command {
   caller: string; requestId: string; fingerprint: string; status: OperationStatus; createdAt: string;
   error: ManagementErrorData | null;
 }
 export interface HostReport {
-  sessions: Session[]; turns: Turn[]; approvals: Approval[]; operations: OperationResult[];
+  sessions: Session[]; turns: Turn[]; interactions: Interaction[]; operations: OperationResult[];
 }
 export interface OperationResult { commandId: string; status: "delivered" | "error" | "unknown"; error: ManagementErrorData | null }
 export type ToHost = { type: "sync"; cursors: Record<string, number> } | { type: "ready" } | { type: "command"; command: Command } | { type: "query"; query: HostQuery };
@@ -127,26 +163,35 @@ export const tools = [
   tool("listSessions", "List SDK-discovered Codex conversations with optional managed execution metadata.", { hostId: text }, []),
   tool("createSession", "Create a session with optional agent overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, requestId: request, agentRef, sessionOptions }, ["hostId", "workDir", "requestId"]),
   tool("connectSession", "Connect an SDK-discovered native conversation without creating a new thread. Poll getSession for readiness.", { sessionId: text, requestId: request }, ["sessionId", "requestId"]),
-  tool("getSession", "Read current and last known state, turns, operations, and pending approvals.", { sessionId: text }, ["sessionId"]),
+  tool("getSession", "Read state, turns, requests, and unified interactions. Delivery is separate from turn completion.", { sessionId: text }, ["sessionId"]),
   tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
   tool("getSessionActivity", "Read activity metadata and private content references for an exact conversation item.", { sessionId: text, itemId: text }, ["sessionId", "itemId"]),
   tool("readSessionContent", "Read a UTF-8 chunk from host-private output or diff content. The default chunk is 64 KiB.", { sessionId: text, contentId: text, contentCursor: text, limitBytes: { type: "integer", minimum: 4, maximum: 262144 } }, ["sessionId", "contentId"]),
-  tool("sendMessage", "Record a new turn in the existing conversation. Acceptance does not mean execution has started.", { sessionId: text, message: { ...text, maxLength: 100000 }, requestId: request }, ["sessionId", "message", "requestId"]),
+  tool("sendMessage", "Record a new Default or Plan turn. Default is used when mode is omitted.", { sessionId: text, message: { ...text, maxLength: 100000 }, requestId: request, mode:{ type:"string",enum:["default","plan"] } }, ["sessionId", "message", "requestId"]),
+  tool("steerTurn", "Append instructions to the exact active turn without changing its mode.", { sessionId:text,turnId:text,message:{...text,maxLength:100000},requestId:request },["sessionId","turnId","message","requestId"]),
+  tool("answerQuestions", "Answer an exact pending interaction. Ordinary questions permit agents; other questions require the Core operator.", { sessionId:text,turnId:text,interactionId:text,requestId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"object",properties:{questionId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},required:["questionId","answers"],additionalProperties:false}} },["sessionId","turnId","interactionId","requestId","answers"]),
   tool("interruptTurn", "Request interruption of the exact active turn. Poll final state separately.", { sessionId: text, turnId: text, requestId: request }, ["sessionId", "turnId", "requestId"]),
 ] as const;
-const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId: text, turnId: text, approvalId: text, decision: { type: "string", enum: ["allow", "deny"] } }, ["sessionId", "turnId", "approvalId", "decision"]);
-export type ToolName = "listHosts" | "listSessions" | "createSession" | "connectSession" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent" | "sendMessage" | "interruptTurn" | "decideApproval";
+const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId:text,turnId:text,interactionId:text,requestId:request,decision:{type:"string",enum:["allow","deny"]} },["sessionId","turnId","interactionId","requestId","decision"]);
+export type ToolName = Command["operation"] | "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
 export function validateInput(name: string, input: unknown): Record<string, unknown> {
   const schema = [...tools, approvalTool].find(t => t.name === name)?.inputSchema;
   if (!schema) fail("INVALID_INPUT", "Unknown operation.");
-  return validateField(schema, input, "input") as Record<string, unknown>;
+  const validated = validateField(schema, input, "input") as Record<string, unknown>;
+  if (name === "sendMessage") validated.mode ??= "default";
+  return validated;
 }
 
 interface InputSchema {
   type: string; minLength?: number; maxLength?: number; minimum?: number; maximum?: number; enum?: string[];
   properties?: Record<string, unknown>; required?: string[];
+  items?: InputSchema; minItems?: number; maxItems?: number;
 }
 function validateField(schema: InputSchema, value: unknown, path: string): unknown {
+  if (schema.type === "array") {
+    if (!Array.isArray(value) || value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? 500)) fail("INVALID_INPUT",`Invalid ${path}.`);
+    return value.map((item,index)=>validateField(schema.items!,item,`${path}[${index}]`));
+  }
   if (schema.type === "object") {
     if (!value || typeof value !== "object" || Array.isArray(value)) fail("INVALID_INPUT", `${path} must be an object.`);
     const values = value as Record<string, unknown>;

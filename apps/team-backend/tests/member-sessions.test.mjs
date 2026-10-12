@@ -27,7 +27,7 @@ class SyntheticCore {
       if (operation === "createSession") this.sessions.set(sessionId, {
         session: { sessionId, hostId: input.hostId, workDir: input.workDir, connectionState: "connected", runtimeState: "idle", activeTurnId: null,
           sessionConfig: { agentRef: input.agentRef, overrides: input.sessionOptions, resolved: { developerInstructions: `Host baseline.\n\n${input.sessionOptions.instructionsAppend ?? ""}` } } },
-        operations: [], turns: [], approvals: [],
+        operations: [], turns: [], interactions: [],
       });
       this.sessions.get(sessionId).operations.push(result);
     }
@@ -104,6 +104,15 @@ test("default creation avoids definition queries; send retries keep message bodi
   assert.equal(retry.operation.turnId, first.operation.turnId);
   assert.deepEqual(core.calls.filter(call => call.operation === "sendMessage").map(call => call.input.requestId), [first.operation.requestId, first.operation.requestId]);
   assert.ok(!JSON.stringify(prepare("SELECT * FROM operation_requests").all()).includes(message));
+  const steering={bindingId:binding.bindingId,turnId:first.operation.turnId,message:"Synthetic appended instruction",requestId:"steering"};
+  const steered=await api.execute("steerMemberTurn",steering);
+  await api.execute("steerMemberTurn",steering);
+  assert.deepEqual(core.calls.filter(call=>call.operation === "steerTurn").map(call=>call.input.requestId),[steered.operation.requestId,steered.operation.requestId]);
+  const question={bindingId:binding.bindingId,turnId:first.operation.turnId,interactionId:"synthetic-question",requestId:"answers",answers:[{questionId:"constructor",answers:["Synthetic structured answer"]}]};
+  const answered=await api.execute("answerMemberQuestions",question);await api.execute("answerMemberQuestions",question);
+  assert.deepEqual(core.calls.filter(call=>call.operation === "answerQuestions").map(call=>call.input.requestId),[answered.operation.requestId,answered.operation.requestId]);
+  assert.ok(!JSON.stringify(prepare("SELECT * FROM operation_requests").all()).includes("Synthetic structured answer"));
+  assert.ok(!JSON.stringify(prepare("SELECT * FROM operation_requests").all()).includes(steering.message));
   await api.execute("interruptMemberTurn", { bindingId: binding.bindingId, turnId: first.operation.turnId, requestId: "interrupt" });
   const recorded = await api.execute("getSessionBinding", { bindingId: binding.bindingId });
   assert.equal(recorded.requests.find(request => request.operation === "interruptMemberTurn").turnId, first.operation.turnId);

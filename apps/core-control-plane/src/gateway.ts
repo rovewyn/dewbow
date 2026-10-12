@@ -19,7 +19,7 @@ export class Gateway {
   constructor(private readonly config: ControlPlaneConfig, private readonly management: Management) {
     this.permissions();
     management.dispatch = (hostId, command) => this.send(hostId, command);
-    management.query = (hostId, operation, input) => this.query(hostId, operation, input);
+    management.query = (hostId, operation, input, authority) => this.query(hostId, operation, input, authority);
     this.timer = setInterval(() => this.heartbeat(), 10000);
   }
   permissions(): HostPermission[] {
@@ -96,7 +96,7 @@ export class Gateway {
       } catch { socket.close(1008, "Invalid host frame"); }
     });
   }
-  private query(hostId: string, operation: HostQuery["operation"], input: HostQuery["input"]): Promise<unknown> {
+  private query(hostId: string, operation: HostQuery["operation"], input: HostQuery["input"], authority: HostQuery["authority"]="agent"): Promise<unknown> {
     this.permissions();
     this.management.available(hostId);
     const connection = this.connections.get(hostId);
@@ -105,7 +105,7 @@ export class Gateway {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.queries.delete(queryId); reject(new ManagementError({ code: "READ_TIMEOUT", message: "Native read timed out.", retryable: true })); }, 25000);
       this.queries.set(queryId, { hostId, resolve, reject, timer });
-      connection.socket.send(JSON.stringify({ type: "query", query: { queryId, operation, input } }));
+      connection.socket.send(JSON.stringify({ type: "query", query: { queryId, operation, input, authority } }));
     });
   }
   private seen(hostId: string, connected = false): void {

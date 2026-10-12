@@ -7,13 +7,13 @@ const string = (value: unknown) => typeof value === "string" ? value : null;
 const terminal = (status: string | null) => ["completed","failed","declined"].includes(status ?? "");
 
 /** Native names and bodies stop at this adapter; journals receive references only. */
-export function projectItem(record: SessionItemRecord, scope: string, contents: SessionContent, live = false): { message?: NativeMessage; activity?: SessionActivity } {
+export function projectItem(record: SessionItemRecord, scope: string, contents: SessionContent, live = false, authority: "agent" | "operator" = "agent"): { message?: NativeMessage; activity?: SessionActivity } {
   const { item } = record, type = String(item.type), createdAt = new Date(record.createdAtMs).toISOString();
   if (["userMessage","agentMessage","plan"].includes(type)) {
     if (type === "userMessage" ? !Array.isArray(item.content) || item.content.some((part:any)=>!part || typeof part.type !== "string" || (part.type === "text" && typeof part.text !== "string")) : typeof item.text !== "string") throw new SessionHistoryError("INVALID_HISTORY","Native message content is invalid.");
     const text = type === "userMessage" ? (Array.isArray(item.content) ? item.content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n") : "") : string(item.text) ?? "";
     return { message: { id:record.id,turnId:record.turnId,ordinal:record.ordinal,updatedOrdinal:record.updatedOrdinal,createdAt,turnStatus:record.turnStatus,itemComplete:record.completedAtMs !== null,
-      role:type === "userMessage" ? "user" : "assistant",text,phase:type === "plan" ? "plan" : string(item.phase) } };
+      role:type === "userMessage" ? "user" : "assistant",text,phase:type === "plan" ? "plan" : string(item.phase),...(type === "userMessage" ? {clientId:string(item.clientId)} : {}) } };
   }
   const activity: SessionActivity = { id:record.id,turnId:record.turnId,ordinal:live ? null : record.ordinal,updatedOrdinal:live ? null : record.updatedOrdinal,itemComplete:record.completedAtMs !== null && (type !== "commandExecution" || terminal(string(item.status))),createdAt,type,title:type,status:string(item.status),contents:[] };
   if (type === "commandExecution") {
@@ -41,5 +41,6 @@ export function projectItem(record: SessionItemRecord, scope: string, contents: 
   } else if (["webSearch","collabAgentToolCall","subAgentActivity","imageGeneration"].includes(type)) {
     activity.contents = [contents.put(scope,record.id,"output","Native tool details",record.itemJson,record.completedAtMs !== null ? "unknown" : "partial")];
   }
+  if(authority === "operator") for(const ref of activity.contents) if(ref.contentId){contents.restrict(scope,ref.contentId);ref.authority="operator";}
   return { activity:contents.saveActivity(scope,activity) };
 }

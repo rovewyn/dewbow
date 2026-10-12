@@ -45,8 +45,12 @@ export class Store {
     let encoded = JSON.stringify(value);
     if (kind === "operation" || kind === "command") {
       const record = JSON.parse(encoded);
-      delete (kind === "command" ? record.command.input : record.input).message;
+      const input = kind === "command" ? record.command.input : record.input;
+      delete input.message; delete input.answers;
       encoded = JSON.stringify(record);
+    }
+    if (kind === "interaction") {
+      const record = JSON.parse(encoded); delete record.details; encoded = JSON.stringify(record);
     }
     this.db.prepare("INSERT INTO records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value").run(kind, id, encoded);
   }
@@ -54,6 +58,10 @@ export class Store {
   append(event: Event): boolean {
     if (!this.eventHistory) throw new Error("Event history belongs to the host daemon.");
     const { text: _text, ...payload } = event.payload;
+    if (payload.interaction) {
+      const { details: _details, ...metadata } = payload.interaction as Record<string,unknown>;
+      payload.interaction = metadata;
+    }
     if (event.type === "tool_activity") {
       delete payload.command; delete payload.cwd; delete payload.paths;
       if (payload.activity) {

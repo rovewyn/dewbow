@@ -17,6 +17,7 @@ export interface ConnectSessionOptions {
 export interface ConnectedSession {
   thread: { id: string; cwd: string; status: { type: string }; turns: { id: string; status: string }[] };
   cwd: string;
+  model: string; reasoningEffort?: string | null;
 }
 
 export interface RpcMessage { method?: string; id?: string | number; params?: Record<string, any>; result?: any; error?: unknown }
@@ -55,7 +56,7 @@ export class CodexRuntime {
         else request.resolve(message.result);
       }
     });
-    await this.request("initialize", { clientInfo: { name: "dewbow-core-sdk", title: "Dewbow Core SDK", version: "0.1.0" }, capabilities: { experimentalApi: false } });
+    await this.request("initialize", { clientInfo: { name: "dewbow-core-sdk", title: "Dewbow Core SDK", version: "0.1.0" }, capabilities: { experimentalApi: true } });
     this.write({ method: "initialized" });
     return this.child.pid!;
   }
@@ -66,8 +67,11 @@ export class CodexRuntime {
     if (result.thread.id !== sessionId) throw new CodexRuntimeError("EXECUTION_FAILED", "Codex returned a different conversation ID.");
     return result;
   }
-  sendMessage(sessionId: string, text: string): Promise<{ turn: { id: string; status: string } }> {
-    return this.request("turn/start", { threadId: sessionId, input: [{ type: "text", text, text_elements: [] }] });
+  sendMessage(sessionId: string, text: string, options: {clientUserMessageId?:string;collaborationMode?:{mode:"default"|"plan";settings:{model:string;reasoning_effort:string|null;developer_instructions:null}}} = {}): Promise<{ turn: { id: string; status: string } }> {
+    return this.request("turn/start", { threadId:sessionId,input:[{type:"text",text,text_elements:[]}],...options });
+  }
+  steerTurn(sessionId: string, turnId: string, text: string, clientUserMessageId: string): Promise<{turnId:string}> {
+    return this.request("turn/steer",{threadId:sessionId,expectedTurnId:turnId,input:[{type:"text",text,text_elements:[]}],clientUserMessageId});
   }
   request(method: string, params: Record<string, unknown>): Promise<any> {
     const id = ++this.nextId;

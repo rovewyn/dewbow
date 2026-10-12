@@ -10,13 +10,14 @@ import { createHash } from "node:crypto";
 import { HostDaemon } from "../dist/index.js";
 import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "@dewbow/core-protocol";
+import {SessionContent} from "../dist/content.js";
 
 async function until(predicate) {
   const end = Date.now() + 3000;
   while (Date.now() < end) { const result = predicate(); if (result) return result; await new Promise(r => setTimeout(r, 10)); }
   throw new Error("Synthetic daemon check timed out");
 }
-test("owned runtime preserves conversations, deduplicates commands, routes exact approvals and recovers stopped turns", async () => {
+test("owned runtime preserves conversations, deduplicates commands, routes exact interactions and recovers stopped turns", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "dewbow-daemon-")));
   const executable = join(dir, "codex.mjs"); copyFileSync(new URL("fixtures/codex.mjs", import.meta.url), executable);
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(server, "listening");
@@ -60,8 +61,9 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     socket.send(JSON.stringify({ type: "query", query: { queryId, operation: "readSessionHistory", input } }));
     return until(() => frames.find(f => f.type === "query_result" && f.response.queryId === queryId)?.response);
   };
-  const command = (id, operation, sessionId, input, turnId = null) => ({ commandId: id, operation, sessionId, turnId, input });
+  const command = (id, operation, sessionId, input, turnId = null) => ({ commandId:id,operation,sessionId,turnId,authority:"operator",input:{...input,...(operation!=="createSession" ? {sessionId} : {}),...(turnId && operation!=="sendMessage" ? {turnId} : {}),requestId:input.requestId??id,...(operation === "sendMessage" ? {mode:input.mode??"default"} : {})} });
   const event = (sessionId, type) => frames.findLast(f => f.type === "event" && f.event.sessionId === sessionId && f.event.type === type)?.event;
+  const query=async(operation,input,authority="agent")=>{const queryId=`query-${frames.length}-${Math.random()}`;socket.send(JSON.stringify({type:"query",query:{queryId,operation,input,authority}}));return until(()=>frames.find(frame=>frame.type === "query_result" && frame.response.queryId===queryId)?.response);};
   try {
     await daemon.start(); await until(() => ready === 1);
     socket.send(JSON.stringify({ type: "query", query: { queryId: "discover", operation: "discoverSessions", input: {} } }));
@@ -104,14 +106,14 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal((await history("invalid-history-page", { codexThreadId: thread, limit: 0 })).error.code, "READ_FAILED");
     const send = command("send-1", "sendMessage", "session-1", { message: "approval", requestId: "send-1" }, "turn-1");
     assert.equal((await issue(send)).status, "delivered");
-    const pending = await until(() => event("session-1", "approval_requested"));
-    const approval = pending.payload.approval;
+    const pending = await until(() => event("session-1", "interaction_requested"));
+    const interaction = pending.payload.interaction;
     assert.equal(frames.findLast(f => f.type === "event" && f.event.sessionId === "session-1").event.payload.turn.state, "awaiting_approval");
     assert.equal(frames.filter(f => f.type === "event" && f.event.turnId === "turn-1" && f.event.type === "turn_started").length, 1);
     assert.equal((await issue(command("busy", "sendMessage", "session-1", { message: "extra", requestId: "busy" }, "extra-turn"))).error.code, "SESSION_BUSY");
-    const stale = command("stale-approval", "decideApproval", "session-1", { approvalId: "missing", decision: "allow" }, "turn-1");
-    assert.equal((await issue(stale)).error.code, "STALE_APPROVAL");
-    const decision = command("allow-1", "decideApproval", "session-1", { approvalId: approval.approvalId, decision: "allow" }, "turn-1");
+    const stale = command("stale-interaction", "decideApproval", "session-1", { interactionId: "missing", decision: "allow" }, "turn-1");
+    assert.equal((await issue(stale)).error.code, "STALE_INTERACTION");
+    const decision = command("allow-1", "decideApproval", "session-1", { interactionId: interaction.interactionId, decision: "allow" }, "turn-1");
     const decisionResult = await issue(decision);
     assert.equal(decisionResult.status, "delivered", JSON.stringify(decisionResult));
     await until(() => event("session-1", "turn_completed"));
@@ -119,10 +121,10 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal((await history("missing-started-history", { codexThreadId: thread })).error.code, "SESSION_NOT_FOUND");
     const followup = command("send-2", "sendMessage", "session-1", { message: "late-start approval deny", requestId: "send-2" }, "turn-2");
     await issue(followup);
-    const second = await until(() => { const a = event("session-1", "approval_requested")?.payload.approval; return a?.turnId === "turn-2" ? a : null; });
+    const second = await until(() => { const a = event("session-1", "interaction_requested")?.payload.interaction; return a?.turnId === "turn-2" ? a : null; });
     assert.equal(frames.findLast(f => f.type === "event" && f.event.sessionId === "session-1").event.payload.turn.state, "awaiting_approval");
     assert.equal(frames.filter(f => f.type === "event" && f.event.turnId === "turn-2" && f.event.type === "turn_started").length, 1);
-    await issue(command("deny-2", "decideApproval", "session-1", { approvalId: second.approvalId, decision: "deny" }, "turn-2"));
+    await issue(command("deny-2", "decideApproval", "session-1", { interactionId: second.interactionId, decision: "deny" }, "turn-2"));
     await until(() => event("session-1", "turn_completed")?.turnId === "turn-2");
     assert.equal(event("session-1", "assistant_message").payload.text, "Denied");
     assert.equal((await issue(command("wait-3", "sendMessage", "session-1", { message: "rpc-only wait", requestId: "wait-3" }, "turn-3"))).status, "delivered");
@@ -145,7 +147,48 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal((await issue(command("interrupt-3", "interruptTurn", "session-1", { requestId: "interrupt-3" }, "turn-3"))).status, "delivered");
     await until(() => event("session-1", "turn_completed")?.turnId === "turn-3");
     assert.equal(event("session-1", "turn_completed").payload.turn.state, "interrupted");
+    for(const scenario of ["ordinary question","foreign question","bad namespace question","missing origin turn question","unknown origin question","conflict question","secret question","bad flag question"]) {
+      const turnId=`test-${scenario}`,operation=command(turnId,"sendMessage","session-1",{message:scenario,mode:"plan"},turnId);
+      assert.equal((await issue(operation)).status,"delivered");
+      const requested=await until(()=>{const item=event("session-1","interaction_requested")?.payload.interaction;return item?.turnId===turnId ? item : null;});
+      await new Promise(resolve=>setTimeout(resolve,20));
+      const current=(await query("readInteractions",{sessionId:"session-1"},"operator")).result.interactions.find(item=>item.interactionId===requested.interactionId);
+      assert.equal(current.authority,scenario === "ordinary question" ? "agent" : "operator",scenario);
+      assert.equal(current.kind,scenario === "bad flag question" ? "unsupported" : "questions");
+      const steer=command(`steer-${turnId}`,"steerTurn","session-1",{message:"Additional synthetic instruction"},turnId);
+      assert.equal((await issue(steer)).status,"delivered");assert.equal((await issue(steer)).status,"delivered");
+      assert.equal(event("session-1","user_message").payload.turn.mode,"plan");
+      assert.equal(rpc().filter(item=>item.method === "turn/steer" && item.params.clientUserMessageId===steer.commandId).length,1);
+      const answer=command(`answer-${turnId}`,"answerQuestions","session-1",{interactionId:current.interactionId,answers:[{questionId:"choice",answers:["Continue"]}]},turnId);
+      if(scenario === "ordinary question") {
+        const bad={...answer,commandId:`bad-${turnId}`,input:{...answer.input,requestId:`bad-${turnId}`,answers:[{questionId:"missing",answers:["Continue"]}]}};
+        assert.equal((await issue(bad)).error.code,"INVALID_INPUT");
+        assert.equal((await issue({...answer,authority:"agent"})).status,"delivered");
+        assert.equal((await issue({...answer,authority:"agent"})).status,"delivered");
+        await until(()=>event("session-1","turn_completed")?.turnId===turnId);
+      } else {
+        assert.equal((await issue({...answer,authority:"agent"})).error.code,"FORBIDDEN");
+        if(current.sensitive){const agent=(await query("readInteractions",{sessionId:"session-1"})).result.interactions.find(item=>item.interactionId===current.interactionId);assert.equal(agent.details,undefined);assert.equal((await query("readSessionContent",{codexThreadId:thread,codexHome:dir,contentId:current.content.contentId})).error.code,"FORBIDDEN");}
+        if(scenario === "secret question" || scenario === "foreign question") {
+          const operator={...answer,commandId:`operator-${turnId}`,input:{...answer.input,requestId:`operator-${turnId}`}};
+          assert.equal((await issue(operator)).status,"delivered");await until(()=>event("session-1","turn_completed")?.turnId===turnId);
+          const privateItem=(await query("readInteractions",{sessionId:"session-1"})).result.interactions.find(item=>item.interactionId===current.interactionId);
+          assert.equal(privateItem.sensitive,true);assert.equal(privateItem.details,undefined);
+          const live=await query("readEvents",{sessionId:"session-1",cursor:0,limit:500});
+          assert.ok(live.result.liveMessages.filter(item=>item.turnId===event("session-1","turn_completed").payload.turn.codexTurnId).every(item=>item.text==="" && item.availability === "restricted"));
+        } else {await issue(command(`stop-${turnId}`,"interruptTurn","session-1",{},turnId));await until(()=>event("session-1","turn_completed")?.turnId===turnId);}
+      }
+      assert.equal((await issue(command(`stale-${turnId}`,"steerTurn","session-1",{message:"stale"},turnId))).error.code,"STALE_TURN");
+    }
     const nativeSessionId = `native:${createHash("sha256").update(JSON.stringify([config.hostId, discoveredHome, nativeId])).digest("hex")}`;
+    await issue(command("large-callback","sendMessage","session-1",{message:"oversized approval"},"large-turn"));
+    const large=await until(()=>{const item=event("session-1","interaction_requested")?.payload.interaction;return item?.turnId === "large-turn" ? item : null;});
+    assert.equal(large.kind,"unsupported");assert.ok(Buffer.byteLength(JSON.stringify(large))<2000);
+    await issue(command("large-stop","interruptTurn","session-1",{},"large-turn"));await until(()=>event("session-1","turn_completed")?.turnId === "large-turn");
+    await issue(command("late-callback-turn","sendMessage","session-1",{message:"stale callback wait"},"late-callback-turn"));
+    assert.equal(event("session-1","turn_started").payload.turn.codexTurnId,JSON.parse(readFileSync(join(dir,"synthetic-threads.json"),"utf8"))[thread].turns.at(-1).id);
+    assert.ok(!frames.some(frame=>frame.type === "event" && frame.event.type === "interaction_requested" && frame.event.turnId === "late-callback-turn"));
+    await issue(command("late-callback-stop","interruptTurn","session-1",{},"late-callback-turn"));await until(()=>event("session-1","turn_completed")?.turnId === "late-callback-turn");
     const connectNative = command("connect-native", "connectSession", nativeSessionId, { sessionId: nativeSessionId, requestId: "connect-native" });
     assert.equal((await issue(connectNative)).status, "delivered");
     assert.equal(event(nativeSessionId, "session_connected").payload.session.codexThreadId, nativeId);
@@ -172,13 +215,36 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.deepEqual(journal.get("session", "session-1").sessionConfig, snapshot);
     assert.deepEqual(journal.get("session", "session-2").sessionConfig, defaultSnapshot);
     assert.ok(journal.history("session-1", 0, 1000).every(e => e.payload.text === undefined));
-    assert.ok(journal.list("command").every(j => j.command.input.message === undefined));
+    assert.ok(journal.list("command").every(j => j.command.input.message === undefined && j.command.input.answers === undefined));
+    assert.ok(journal.list("interaction").every(item=>item.details===undefined));
     const crashCommand = command("crash-gap", "sendMessage", "session-2", { message: "reply", requestId: "crash-gap" }, "crash-turn");
-    const fingerprint = createHash("sha256").update(canonicalJson([crashCommand.operation, crashCommand.sessionId, crashCommand.turnId, crashCommand.input])).digest("hex");
+    const fingerprint = createHash("sha256").update(canonicalJson([crashCommand.operation, crashCommand.sessionId, crashCommand.turnId, crashCommand.input,crashCommand.authority])).digest("hex");
     journal.put("command", crashCommand.commandId, { command: crashCommand, fingerprint, result: { commandId: crashCommand.commandId, status: "unknown", error: null } });
+    const observedCommand=command("observed-steer","steerTurn",nativeSessionId,{message:"Previously delivered synthetic steer"},"native-followup");
+    const observedFingerprint=createHash("sha256").update(canonicalJson([observedCommand.operation,observedCommand.sessionId,observedCommand.turnId,observedCommand.input,observedCommand.authority])).digest("hex");
+    journal.put("command",observedCommand.commandId,{command:observedCommand,fingerprint:observedFingerprint,result:{commandId:observedCommand.commandId,status:"unknown",error:null}});
+    const savedHistory=new DatabaseSync(join(dir,"thread_history_1.sqlite")),ownedNativeTurn=event(nativeSessionId,"turn_completed").payload.turn.codexTurnId;
+    savedHistory.prepare("INSERT INTO thread_turns VALUES(?,?,?)").run(nativeId,ownedNativeTurn,"interrupted");
+    savedHistory.prepare("INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?,?)").run(nativeId,ownedNativeTurn,"observed-user-item",2,1700000000010,JSON.stringify({type:"userMessage",id:"observed-user-item",clientId:observedCommand.commandId,content:[{type:"text",text:"Previously delivered synthetic steer"}]}),"userMessage",2,1700000000010,1700000000011);savedHistory.close();
+    const content=new SessionContent(`${config.statePath}.contents.sqlite`),secondThread=event("session-2","session_created").payload.session.codexThreadId;
+    const secondHome=journal.get("session","session-2").codexHome;
+    const scope=createHash("sha256").update(JSON.stringify([process.platform === "win32" ? secondHome.toLowerCase() : secondHome,secondThread])).digest("hex");
+    for(let index=0;index<40;index++) {
+      const id=`large-history-${index}`,details={questions:[{questionId:"choice",header:"Choice",prompt:"Choose",options:null,allowCustom:true,secret:false}],answers:[{questionId:"choice",answers:["x".repeat(250000)]}]};
+      journal.put("interaction",id,{interactionId:id,sessionId:"session-2",turnId:"other-turn",itemId:id,kind:"questions",authority:"agent",blocking:true,sensitive:false,status:"resolved",createdAt:new Date().toISOString(),observedAt:new Date().toISOString(),decision:null,requestId:id,codexRequestId:index,runtimeId:"previous-runtime",nativeMethod:"item/tool/requestUserInput",content:content.put(scope,id,"output","Interaction details",JSON.stringify(details),"complete")});
+    }
+    content.close();
     journal.close();
     writeFileSync(nativeConfig, JSON.stringify({ model: "synthetic-editor", model_reasoning_effort: "high", developer_instructions: "Changed host instructions.", sandbox_workspace_write: { network_access: true, exclude_slash_tmp: true } }));
     daemon = new HostDaemon({ ...config, model: "synthetic-editor" }); await daemon.start(); await until(() => ready === 2);
+    const interactionRead=await query("readInteractions",{sessionId:"session-2"});
+    assert.equal(interactionRead.error,undefined,JSON.stringify(interactionRead.error));
+    const interactionPage=interactionRead.result;
+    assert.equal(interactionPage.interactions.length,40);
+    assert.ok(Buffer.byteLength(JSON.stringify(interactionPage))<8*1024*1024);
+    assert.ok(interactionPage.interactions.some(item=>item.details) && interactionPage.interactions.some(item=>!item.details));
+    const lazy=interactionPage.interactions.find(item=>!item.details);
+    assert.equal((await query("readSessionContent",{codexThreadId:secondThread,codexHome:dir,contentId:lazy.content.contentId})).result.byteLength,lazy.content.byteLength);
     const restored = frames.findLast(f => f.type === "report").report;
     assert.equal(restored.sessions.find(s => s.sessionId === "session-1").activeTurnId, null);
     assert.deepEqual(restored.sessions.find(s => s.sessionId === "session-1").sessionConfig, snapshot);
@@ -193,6 +259,9 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal(restored.turns.find(t => t.turnId === "turn-4").state, "interrupted");
     assert.equal(restored.turns.find(t => t.turnId === "crash-turn").state, "interrupted");
     assert.equal((await issue(crashCommand)).status, "unknown");
+    const nativeSteerCount=rpc().filter(item=>item.method === "turn/steer").length;
+    assert.equal((await issue(observedCommand)).status,"delivered");
+    assert.equal(rpc().filter(item=>item.method === "turn/steer").length,nativeSteerCount,"Positive native client evidence reconciles without repeating execution.");
     await issue(command("followup-after-restart", "sendMessage", "session-1", { message: "reply", requestId: "after-restart" }, "turn-5"));
     await until(() => event("session-1", "turn_completed")?.turnId === "turn-5");
     assert.equal(restored.sessions.find(s => s.sessionId === nativeSessionId).connectionState, "connected");
@@ -204,7 +273,7 @@ test("owned runtime preserves conversations, deduplicates commands, routes exact
     assert.equal(Object.keys(persisted).length, 4);
     assert.equal(persisted[nativeId].turns.length, 3);
     assert.equal(persisted[blockedId].turns.length, 0);
-    assert.equal(persisted[thread].turns.length, 5);
+    assert.equal(persisted[thread].turns.length, 15);
     const replay = frames.filter(f => f.type === "event" && f.event.sessionId === "session-1").map(f => f.event);
     assert.equal(new Set(replay.map(e => e.eventId)).size, Math.max(...replay.map(e => e.cursor)));
     assert.ok(!JSON.stringify(frames).includes(config.token));

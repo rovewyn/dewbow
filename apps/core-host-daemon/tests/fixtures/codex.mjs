@@ -34,9 +34,10 @@ function finish(thread, status) {
 createInterface({ input: process.stdin }).on("line", line => {
   const message = JSON.parse(line);
   if (!message.method && callbacks.has(message.id)) {
+    appendFileSync(join(process.env.CODEX_HOME,"synthetic-rpc.jsonl"),JSON.stringify(message)+"\n");
     const thread = callbacks.get(message.id); callbacks.delete(message.id);
     send({ method: "serverRequest/resolved", params: { threadId: thread.id, requestId: message.id } });
-    send({ method: "item/completed", params: { threadId: thread.id, turnId: thread.turns.at(-1).id, item: { type: "agentMessage", id: randomUUID(), text: message.result?.decision === "accept" ? "Allowed" : "Denied", phase: "final_answer" } } });
+    send({ method: "item/completed", params: { threadId: thread.id, turnId: thread.turns.at(-1).id, item: { type: "agentMessage", id: randomUUID(), text: message.result?.answers ? JSON.stringify(message.result.answers) : message.result?.decision === "accept" ? "Allowed" : "Denied", phase: "final_answer" } } });
     finish(thread, "completed"); return;
   }
   const reply = result => send({ id: message.id, result });
@@ -57,15 +58,23 @@ createInterface({ input: process.stdin }).on("line", line => {
     thread.status = { type: "idle" }; persist(); reply({ thread, ...thread.effective });
   } else if (message.method === "turn/start") {
     const thread = threads[params.threadId];
+    if(params.input[0].text.includes("stale callback"))send({id:++callback,method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:thread.turns.at(-1).id,itemId:randomUUID(),command:"Expired callback"}});
     const turn = { id: randomUUID(), status: "inProgress", items: [], error: null };
     thread.turns.push(turn); thread.status = { type: "active" }; persist();
     const lateStart = params.input[0].text.includes("late-start");
     if (!params.input[0].text.includes("rpc-only") && !lateStart) send({ method: "turn/started", params: { threadId: thread.id, turn } });
     reply({ turn });
     const advance = () => {
-      if (params.input[0].text.includes("approval")) {
+      if(params.input[0].text.includes("question")) {
+        const text=params.input[0].text,id=++callback,itemId=randomUUID();callbacks.set(id,thread);
+        const raw={threadId:thread.id,turnId:turn.id,item:{type:"function_call",call_id:itemId,name:text.includes("foreign") ? "mcp_question" : "request_user_input",namespace:text.includes("bad namespace") ? 42 : "functions"}};
+        if(text.includes("missing origin turn"))delete raw.turnId;
+        if(!text.includes("unknown origin"))send({method:"rawResponseItem/completed",params:raw});
+        send({id,method:"item/tool/requestUserInput",params:{threadId:thread.id,turnId:turn.id,itemId,isBlocking:true,questions:[{id:"choice",header:"Choice",question:"Pick the synthetic outcome",isSecret:text.includes("secret"),isOther:text.includes("bad flag") ? "false" : false,options:[{label:"Continue",description:"Continue the synthetic turn"},{label:"Stop",description:"Stop the synthetic turn"}]}]}});
+        if(text.includes("conflict"))send({method:"rawResponseItem/completed",params:{...raw,item:{...raw.item,name:"mcp_question"}}});
+      } else if (params.input[0].text.includes("approval")) {
         const id = ++callback; callbacks.set(id, thread);
-        send({ id, method: "item/commandExecution/requestApproval", params: { threadId: thread.id, turnId: turn.id, itemId: randomUUID(), command: "synthetic approval action", cwd: thread.cwd, reason: "synthetic test" } });
+        send({ id, method: "item/commandExecution/requestApproval", params: { threadId: thread.id, turnId: turn.id, itemId: randomUUID(), command: "synthetic approval action", cwd: thread.cwd, reason:params.input[0].text.includes("oversized") ? "x".repeat(1100000) : "synthetic test" } });
         if (lateStart) send({ method: "turn/started", params: { threadId: thread.id, turn } });
       } else if (!params.input[0].text.includes("wait")) {
         if (lateStart) send({ method: "turn/started", params: { threadId: thread.id, turn } });
@@ -74,5 +83,9 @@ createInterface({ input: process.stdin }).on("line", line => {
       }
     };
     if (lateStart) setTimeout(advance, 20); else advance();
+  } else if(message.method === "turn/steer") {
+    const thread=threads[params.threadId],turn=thread.turns.at(-1);
+    if(turn?.id!==params.expectedTurnId || turn.status!=="inProgress")send({id:message.id,error:{code:-32000,message:"Stale native turn"}});
+    else reply({turnId:turn.id});
   } else if (message.method === "turn/interrupt") { reply({}); finish(threads[params.threadId], "interrupted"); }
 });

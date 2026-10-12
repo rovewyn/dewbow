@@ -1,7 +1,7 @@
 import { fail } from "./index.js";
 
 interface Field {
-  type: "string" | "boolean" | "integer" | "object";
+  type: "string" | "boolean" | "integer" | "object" | "array";
   nullable?: boolean;
   minLength?: number;
   maxLength?: number;
@@ -9,6 +9,7 @@ interface Field {
   maximum?: number;
   properties?: Record<string, Field>;
   required?: string[];
+  items?: Field; minItems?: number; maxItems?: number; enum?: string[];
 }
 
 const id: Field = { type: "string", minLength: 1, maxLength: 200 };
@@ -44,7 +45,9 @@ export const inputSchemas: Record<string, Field> = {
   getSessionBinding: object({ bindingId: id }, ["bindingId"]),
   retryMemberSessionCreation: object({ bindingId: id }, ["bindingId"]),
   connectMemberSession: object({ bindingId: id, requestId: id }, ["bindingId", "requestId"]),
-  sendMemberMessage: object({ bindingId: id, message: { type: "string", minLength: 1, maxLength: 100000 }, requestId: id }, ["bindingId", "message", "requestId"]),
+  sendMemberMessage: object({ bindingId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id,mode:{type:"string",enum:["default","plan"]} },["bindingId","message","requestId"]),
+  steerMemberTurn: object({bindingId:id,turnId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id},["bindingId","turnId","message","requestId"]),
+  answerMemberQuestions: object({bindingId:id,turnId:id,interactionId:id,requestId:id,answers:{type:"array",minItems:1,maxItems:20,items:object({questionId:id,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},["questionId","answers"])}},["bindingId","turnId","interactionId","requestId","answers"]),
   interruptMemberTurn: object({ bindingId: id, turnId: id, requestId: id }, ["bindingId", "turnId", "requestId"]),
   readMemberSessionHistory: object({ bindingId:id,cursor:{ type:"integer",minimum:0 },beforeCursor:workDir,afterCursor:workDir,updateCursor:workDir,limit:{ type:"integer",minimum:1,maximum:500 } },["bindingId"]),
   getMemberSessionActivity: object({ bindingId:id,itemId:workDir },["bindingId","itemId"]),
@@ -52,6 +55,10 @@ export const inputSchemas: Record<string, Field> = {
 };
 
 function validate(field: Field, value: unknown, path: string): unknown {
+  if(field.type === "array") {
+    if(!Array.isArray(value) || value.length<(field.minItems??0) || value.length>(field.maxItems??500))fail("INVALID_INPUT",`Invalid ${path}.`);
+    return value.map((item,index)=>validate(field.items!,item,`${path}[${index}]`));
+  }
   if (value === null && field.nullable) return null;
   if (field.type === "object") {
     if (!value || typeof value !== "object" || Array.isArray(value)) fail("INVALID_INPUT", `${path} must be an object.`);
@@ -64,7 +71,7 @@ function validate(field: Field, value: unknown, path: string): unknown {
     }));
   }
   if (field.type === "string" && (typeof value !== "string" || value.length < (field.minLength ?? 1)
-    || value.length > (field.maxLength ?? 4096) || ((field.minLength ?? 1) > 0 && !value.trim()))) fail("INVALID_INPUT", `Invalid ${path}.`);
+    || value.length > (field.maxLength ?? 4096) || ((field.minLength ?? 1) > 0 && !value.trim()) || (field.enum && !field.enum.includes(value)))) fail("INVALID_INPUT", `Invalid ${path}.`);
   if (field.type === "boolean" && typeof value !== "boolean") fail("INVALID_INPUT", `${path} must be a boolean.`);
   if (field.type === "integer" && (typeof value !== "number" || !Number.isSafeInteger(value)
     || value < (field.minimum ?? 0) || value > (field.maximum ?? Number.MAX_SAFE_INTEGER))) fail("INVALID_INPUT", `Invalid ${path}.`);
@@ -74,7 +81,9 @@ function validate(field: Field, value: unknown, path: string): unknown {
 export function validateInput(operation: string, input: unknown): Record<string, unknown> {
   const schema = Object.hasOwn(inputSchemas, operation) ? inputSchemas[operation] : undefined;
   if (!schema) fail("NOT_FOUND", "Unknown operation.");
-  return validate(schema, input, "input") as Record<string, unknown>;
+  const validated=validate(schema,input,"input") as Record<string,unknown>;
+  if(operation === "sendMemberMessage")validated.mode??="default";
+  return validated;
 }
 
 export function normalizeDefinitionId(value: unknown): string | null {

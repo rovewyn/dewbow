@@ -50,7 +50,7 @@ Keep host, session, turn, event, and approval identities separate. These records
 
 - Event: stable eventId or ordered cursor, sessionId, turnId when relevant, timestamp, type, and payload. Preserve message order and make repeated reads safe.
 
-- Approval: approvalId, exact session and turn, Codex request reference, requested action, status, and decision record.
+- Interaction: interactionId, exact session and turn, kind, response authority, Codex callback reference, private content reference, status, and response request ID.
 
 ### Proposed state contract
 
@@ -114,7 +114,7 @@ Use a basic responsive layout. Keep message delivery, pending requests, and erro
 
 When Codex requests approval, create a pending approval record and display the requested action with its host, session, and turn. The operator chooses Allow or Deny in the Web interface. Route that decision to the exact active Codex request.
 
-The server must check approvalId, sessionId, turnId, and pending status before applying a decision. Apply a decision once. A repeated identical decision can return the existing result; a stale, mismatched, or conflicting decision must fail clearly.
+The server must check interactionId, sessionId, turnId, response authority, runtime instance and pending status before applying a decision. Apply a decision once. A repeated identical request ID and decision can return the existing result; a stale, mismatched, or conflicting decision must fail clearly.
 
 Keep requested, delivered, and resolved decision states distinguishable when delivery is delayed. During a host disconnect, disable approval actions until reconciliation confirms the request is still active. An interruption or ended turn invalidates approvals that are no longer actionable.
 

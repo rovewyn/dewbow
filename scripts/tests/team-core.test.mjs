@@ -71,7 +71,7 @@ test("independent Team and Core HTTP services preserve frozen requests and execu
   });
   socket.on("message", raw => {
     const frame = JSON.parse(raw);
-    if (frame.type === "sync") socket.send(JSON.stringify({ type: "report", report: { sessions: [], turns: [], approvals: [], operations: [] } }));
+    if (frame.type === "sync") socket.send(JSON.stringify({ type: "report", report: { sessions: [], turns: [], interactions: [], operations: [] } }));
     if (frame.type === "command") commands.push(frame.command);
   });
   await once(socket, "open");
@@ -100,7 +100,7 @@ test("independent Team and Core HTTP services preserve frozen requests and execu
   assert.equal(commands.length, 1, "reading a binding must not execute recovery");
   assert.ok(!JSON.stringify(details).includes(coreCredential));
   assert.equal((await teamCall("createMemberSession", { ...input, workDir: "/synthetic/changed" })).error.code, "REQUEST_CONFLICT");
-  assert.equal((await coreCall("decideApproval", { sessionId: first.binding.sessionId, turnId: "synthetic-turn", approvalId: "synthetic-approval", decision: "allow" })).error.code, "FORBIDDEN");
+  assert.equal((await coreCall("decideApproval", { sessionId: first.binding.sessionId, turnId: "synthetic-turn", interactionId: "synthetic-interaction",requestId:"synthetic-decision",decision: "allow" })).error.code, "FORBIDDEN");
 
   socket.terminate();
   await core.stop();
