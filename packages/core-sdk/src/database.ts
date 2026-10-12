@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { attribute, boolean, checkAbort, emptySession, isMissing, number, object, report, text, uuid } from "./internal.js";
 import type { Context } from "./internal.js";
+import { isOwnedFile } from "./file-trust.js";
 import type { CodexSession, SourceReport } from "./types.js";
 
 const textFields: Record<string, number> = { name: 1000, title: 1000, agent_nickname: 256, agent_role: 256,
@@ -35,7 +36,7 @@ export async function readDatabase(home: string, ctx: Context): Promise<{ report
     if (!selected) { status.state = "unavailable"; status.error = "No Codex state database was found."; return { report: status, sessions: [] }; }
     const path = join(home, selected.name);
     const info = await lstat(path);
-    if (!info.isFile() || info.uid !== process.getuid?.()) throw new Error("Unsupported database file.");
+    if (!isOwnedFile(path, info)) throw new Error("Unsupported database file.");
     database = new DatabaseSync(path, { readOnly: true, allowExtension: false, timeout: 1000 });
     database.exec("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN");
     const tables = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name));

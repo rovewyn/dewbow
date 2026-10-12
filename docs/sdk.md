@@ -6,7 +6,7 @@ The SDK returns session metadata, archive state, parent and fork relationships, 
 
 ## Setup and local demo
 
-Requires Node.js 24.15 or newer. Development uses Node.js 24.21.0, npm 12.2.0, and the committed lockfile. See [Workspace development](workspace.md#development) for version setup. macOS is the verified platform. Process discovery also supports Linux; writer lock inspection currently supports only 64-bit macOS. Other platforms return unavailable outcomes for unsupported observations.
+Requires Node.js 24.15 or newer. Development uses Node.js 24.21.0, npm 12.2.0, and the committed lockfile. See [Workspace development](workspace.md#development) for version setup. Local storage and owned stdio execution support Windows, macOS, and Linux. External process discovery supports macOS and Linux; writer lock inspection supports only 64-bit macOS. Windows external runtimes, Unix sockets, and writer locks remain unavailable or unknown. Missing observations never establish that a conversation is idle.
 
 ```sh
 npm ci
@@ -14,7 +14,7 @@ npm run build --workspace @dewbow/core-sdk
 npm run core:demo
 ```
 
-The demo prints summary counts and source outcomes. It starts no HTTP server. The SDK does not require Python. `node:sqlite` reads the database; Koffi supplies the native macOS lock query. Koffi is loaded only when writer inspection is used.
+The demo prints summary counts and source outcomes. It starts no HTTP server. The SDK does not require Python. `node:sqlite` reads the database; Koffi supplies native macOS lock queries and Windows file owner SID checks. POSIX files must belong to the current UID. Windows files must belong to the current account and be ordinary files; an elevated token's default Administrators owner is also accepted. Other group owners are rejected. Lineage paths cannot escape their selected home through junctions or links.
 
 This package is currently private and unpublished. To use it in another local project:
 
@@ -65,7 +65,7 @@ const snapshot = await discoverSessions({
 
 All sources are enabled by default. `sources: []` disables discovery. `codexHome` defaults to `CODEX_HOME`, then `~/.codex`. Additional homes must be supplied explicitly. Successful APIs can report another home. The SDK does not search the entire disk or infer homes from private process arguments.
 
-`codexExecutable` selects the CLI executable; the default is `codex` on `PATH`. `sockets` selects existing Unix WebSocket endpoints. Without explicit endpoints, process discovery selects a runtime's sole named Unix socket. Missing or ambiguous endpoints are reported unavailable. Explicit endpoints work without process discovery; their PID association then remains unknown. No daemon is started.
+`codexExecutable` selects the CLI executable; the default is `codex` on `PATH`. Node entry points run through the current Node executable, allowing direct synthetic app-server fixtures on all platforms. For Windows native execution, select the actual `codex.exe`: the official npm `codex.js` wrapper is rejected because killing its Node process does not verify native child exit. Do not use a `.cmd` shim. Processes use no shell and hide Windows console windows. Owned runtime shutdown waits for process exit with a five-second deadline and kills only its own child. `sockets` selects existing Unix WebSocket endpoints. Without explicit endpoints, process discovery selects a runtime's sole named Unix socket. Missing or ambiguous endpoints are reported unavailable. Explicit endpoints work without process discovery; their PID association then remains unknown. No daemon is started.
 
 The default limits are 50,000 distinct sessions, 30 seconds per command, and 3 seconds per database iteration, lineage scan, or writer query pass. Their maximum configurable values are 50,000, 30,000 ms, and 20,000 ms. CLI output and API messages are bounded to 8 MiB; lineage headers to 64 KiB. API snapshots have a separate 20-second budget, a 3-second idle timeout, and a 200-page limit per list. These limits are independent, not a whole-call deadline. Use an `AbortSignal` for cancellation. SQLite queries are synchronous, so cancellation is checked between bounded queries and rows rather than during an executing SQLite statement. Open-file PID lookup has its own bounded command time.
 

@@ -1,14 +1,15 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseEnv } from "node:util";
+import { ensurePrivateDirectory, createPrivateFile } from "@dewbow/core-protocol/files";
+import { environment } from "./local-config.mjs";
 
 const directory = resolve("state/local");
-mkdirSync(directory, { recursive: true, mode: 0o700 });
-mkdirSync(resolve(directory, "workdir"), { recursive: true, mode: 0o700 });
+ensurePrivateDirectory(directory);
+ensurePrivateDirectory(resolve(directory, "workdir"));
 function create(name, content) {
-  try { writeFileSync(resolve(directory, name), content, { flag: "wx", mode: 0o600 }); }
-  catch (error) { if (error.code !== "EEXIST") throw error; }
+  createPrivateFile(resolve(directory, name), content);
 }
 create("credentials.json", JSON.stringify(Object.fromEntries(
   ["agent", "host", "operator", "teamOperator"].map(name => [name, randomBytes(32).toString("base64url")]),
@@ -20,7 +21,6 @@ if (!credentials.teamOperator) {
   writeFileSync(resolve(directory, "credentials.json"), JSON.stringify(credentials, null, 2) + "\n", { mode: 0o600 });
 }
 const origin = "http://127.0.0.1:3000";
-const environment = values => Object.entries(values).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n") + "\n";
 create("hosts.json", JSON.stringify([{ hostId: "local-host", name: "Local machine", token: credentials.host }], null, 2) + "\n");
 create("control-plane.env", environment({
   DEWBOW_CONTROL_PLANE_HOST: "127.0.0.1", DEWBOW_CONTROL_PLANE_PORT: "3000", DEWBOW_PUBLIC_ORIGIN: origin,

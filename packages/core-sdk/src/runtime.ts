@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { nativeCommand } from "./internal.js";
 export class CodexRuntimeError extends Error {
   constructor(readonly code: "EXECUTION_FAILED" | "DELIVERY_UNCERTAIN" | "SESSION_IN_USE", message: string) {
     super(message); this.name = "CodexRuntimeError";
@@ -27,12 +28,17 @@ export class CodexRuntime {
   onExit: () => void = () => {};
   onSpawn: (pid: number) => void = () => {};
   async start(executable: string, home?: string): Promise<number> {
+    if (this.child && this.child.exitCode === null && this.child.signalCode === null) throw new CodexRuntimeError("SESSION_IN_USE", "This runtime is already started.");
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DEWBOW_")));
-    this.child = spawn(executable, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], env: { ...env, ...(home ? { CODEX_HOME: home } : {}) } });
+    const command = nativeCommand(executable, ["app-server", "--listen", "stdio://"]);
+    this.child = spawn(command.executable, command.args, { shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...env, ...(home ? { CODEX_HOME: home } : {}) } });
     if (this.child.pid) this.onSpawn(this.child.pid);
     this.child.stderr.resume();
-    this.child.on("error", () => this.closed());
-    this.child.on("exit", () => this.closed());
+    let closed = false;
+    const close = () => { if (!closed) { closed = true; this.closed(); } };
+    this.child.once("error", close);
+    this.child.once("exit", close);
+    this.child.stdin.on("error", close);
     createInterface({ input: this.child.stdout }).on("line", line => {
       let message: RpcMessage;
       try { message = JSON.parse(line) as RpcMessage; } catch { this.child?.kill(); return; }
@@ -68,12 +74,17 @@ export class CodexRuntime {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new CodexRuntimeError("DELIVERY_UNCERTAIN", "Codex operation timed out. Its outcome must be reconciled.")); }, 15000);
       this.pending.set(id, { resolve, reject, timer });
-      this.write({ id, method, params });
+      try { this.write({ id, method, params }); }
+      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }
   respond(id: string | number, result: unknown): void { this.write({ id, result }); }
   reject(id: string | number): void { this.write({ id, error: { code: -32601, message: "Unsupported runtime request in this MVP." } }); }
-  private write(message: unknown): void { this.child?.stdin.write(JSON.stringify(message) + "\n"); }
+  private write(message: unknown): void {
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null || !child.stdin.writable) throw new CodexRuntimeError("DELIVERY_UNCERTAIN", "Codex runtime is not writable. Reconcile the operation before retrying.");
+    child.stdin.write(JSON.stringify(message) + "\n");
+  }
   private closed(): void {
     for (const request of this.pending.values()) {
       clearTimeout(request.timer); request.reject(new CodexRuntimeError("DELIVERY_UNCERTAIN", "Codex runtime closed before confirming the operation."));
@@ -83,10 +94,12 @@ export class CodexRuntime {
   async stop(): Promise<void> {
     const child = this.child;
     if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return;
-    await new Promise<void>(resolve => {
-      const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
-      child.once("exit", () => { clearTimeout(timer); resolve(); }); child.kill("SIGTERM");
+    await new Promise<void>((resolve, reject) => {
+      const force = setTimeout(() => child.kill("SIGKILL"), 4000);
+      const deadline = setTimeout(() => { child.removeListener("exit", exited); reject(new CodexRuntimeError("EXECUTION_FAILED", "The owned Codex process did not exit within the shutdown deadline.")); }, 5000);
+      const exited = () => { clearTimeout(force); clearTimeout(deadline); resolve(); };
+      child.once("exit", exited); child.stdin.end(); child.kill("SIGTERM");
     });
-    this.child = undefined;
+    if (this.child === child) this.child = undefined;
   }
 }

@@ -1,5 +1,4 @@
-import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
-import { dirname } from "node:path";
+import { ensurePrivateFile } from "@dewbow/core-protocol/files";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { canonicalJson, defaultDefinition, fail, type AgentDefinition, type ApiError, type SessionBinding, type Team, type TeamMember } from "@dewbow/team-protocol";
@@ -28,9 +27,7 @@ export class TeamStore {
 
   constructor(path: string) {
     if (path !== ":memory:") {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-      closeSync(openSync(path, "a", 0o600));
-      chmodSync(path, 0o600);
+      ensurePrivateFile(path);
     }
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");

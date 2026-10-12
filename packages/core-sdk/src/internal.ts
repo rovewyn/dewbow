@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import type { CodexSession, DiscoverOptions, SourceName, SourceReport } from "./types.js";
 
 export interface Context {
@@ -71,10 +71,22 @@ export function attribute(session: CodexSession, source: SourceName, fields: rea
   if (!session.sources.includes(source)) session.sources.push(source);
 }
 export interface CommandResult { stdout: string; code: number; hasDiagnostics: boolean; }
+/** Run Node CLI entry points directly, without a shell or platform command shim. */
+export function nativeCommand(executable: string, args: readonly string[]): { executable: string; args: string[] } {
+  if (process.platform === "win32" && basename(executable).toLowerCase() === "codex.js") {
+    // The npm wrapper forwards signals on POSIX; Windows kills its Node process
+    // directly. Require the native process instead of leaving a child untracked.
+    throw new TypeError("Select the actual codex.exe instead of its Node wrapper on Windows.");
+  }
+  return [".js", ".mjs", ".cjs"].includes(extname(executable).toLowerCase())
+    ? { executable: process.execPath, args: [executable, ...args] }
+    : { executable, args: [...args] };
+}
 export function runCommand(executable: string, args: readonly string[], ctx: Context, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
   checkAbort(ctx.signal);
   return new Promise((resolve, reject) => {
-    const child = execFile(executable, [...args], { timeout: ctx.commandTimeoutMs, maxBuffer: 8 * 1024 * 1024,
+    const command = nativeCommand(executable, args);
+    const child = execFile(command.executable, command.args, { timeout: ctx.commandTimeoutMs, maxBuffer: 8 * 1024 * 1024,
       encoding: "utf8", windowsHide: true, signal: ctx.signal, env: env ?? process.env }, (error, stdout, stderr) => {
       if (ctx.signal?.aborted) { reject(new DOMException("Session discovery was aborted.", "AbortError")); return; }
       if (error && typeof error.code !== "number") { reject(error); return; }

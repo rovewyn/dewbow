@@ -8,17 +8,21 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { discoverSessions, getParentSession, getForkSourceSession } from "../dist/index.js";
 import { readLineageHeader } from "../dist/lineage.js";
+import { nativeCommand } from "../dist/internal.js";
+import { isTrustedWindowsOwner } from "../dist/file-trust.js";
 
 const parent = "00000000-0000-4000-8000-000000000001";
 const child = "00000000-0000-4000-8000-000000000002";
 const fork = "00000000-0000-4000-8000-000000000003";
+const databases = new Map();
 async function home(t) {
   const path = await realpath(await mkdtemp(join(tmpdir(), "dewbow-test-")));
-  t.after(() => rm(path, { recursive: true, force: true }));
+  t.after(async () => { const db = databases.get(path); if (db?.isOpen) db.close(); databases.delete(path); await rm(path, { recursive: true, force: true }); });
   return path;
 }
 function database(path, ids = [parent]) {
   const db = new DatabaseSync(join(path, "state_5.sqlite"));
+  databases.set(path, db);
   db.exec("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT, title TEXT, archived INTEGER, source TEXT, rollout_path TEXT, first_user_message TEXT)");
   const insert = db.prepare("INSERT INTO threads VALUES(?,?,?,?,?,?)");
   for (const id of ids) insert.run(id, "Synthetic title", id === child ? 1 : 0, "cli", "PRIVATE_PATH_MARKER", "PRIVATE_PROMPT_MARKER");
@@ -27,10 +31,16 @@ function database(path, ids = [parent]) {
 async function digest(path) { return createHash("sha256").update(await readFile(path)).digest("hex"); }
 
 test("database and lineage discovery preserve WAL data, privacy, and distinct relationships", async t => {
+  const userSid = "S-1-5-21-1-2-3-1000", otherSid = "S-1-5-21-1-2-3-1001", administrators = "S-1-5-32-544";
+  assert.equal(isTrustedWindowsOwner(userSid, userSid, userSid), true);
+  assert.equal(isTrustedWindowsOwner(administrators, userSid, administrators), true);
+  assert.equal(isTrustedWindowsOwner(administrators, userSid, userSid), false);
+  assert.equal(isTrustedWindowsOwner(otherSid, userSid, administrators), false);
+  assert.equal(isTrustedWindowsOwner("S-1-5-32-545", userSid, "S-1-5-32-545"), false);
   const path = await home(t), other = await home(t);
   const db = database(path, [parent, child, fork]);
   const otherDb = database(other, [parent]);
-  t.after(() => { db.close(); otherDb.close(); });
+  t.after(() => { if (db.isOpen) db.close(); if (otherDb.isOpen) otherDb.close(); });
   db.exec("CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT)");
   db.prepare("INSERT INTO thread_spawn_edges VALUES(?,?)").run(parent, child);
   await mkdir(join(path, "sessions"));
@@ -79,9 +89,16 @@ test("lineage reads reject external symlinks, oversized headers, and self relati
   const path = await home(t), external = await home(t);
   const metadata = join(external, "rollout-external.jsonl");
   await writeFile(metadata, JSON.stringify({ type: "session_meta", payload: { id: child } }));
-  const link = join(path, "rollout-link.jsonl");
-  await symlink(metadata, link);
-  await assert.rejects(readLineageHeader(link, path));
+  await assert.rejects(readLineageHeader(metadata, path));
+  if (process.platform === "win32") {
+    const link = join(path, "linked");
+    await symlink(external, link, "junction");
+    await assert.rejects(readLineageHeader(join(link, "rollout-external.jsonl"), path));
+  } else {
+    const link = join(path, "rollout-link.jsonl");
+    await symlink(metadata, link);
+    await assert.rejects(readLineageHeader(link, path));
+  }
   const file = join(path, "rollout-local.jsonl");
   await writeFile(file, "x".repeat(65537));
   await assert.rejects(readLineageHeader(file, path));
@@ -90,7 +107,8 @@ test("lineage reads reject external symlinks, oversized headers, and self relati
 });
 
 test("CLI inspection uses report mode, filters private data, and exposes execution failures", async t => {
-  const path = await home(t), other = await home(t), executable = join(path, "synthetic-codex");
+  if (process.platform === "win32") assert.throws(() => nativeCommand("codex.js", ["app-server"]), /actual codex.exe/);
+  const path = await home(t), other = await home(t), executable = join(path, "synthetic-codex.cjs");
   await writeFile(executable, `#!${process.execPath}\nconst assert = require('node:assert/strict');
 assert.deepEqual(process.argv.slice(2), ['migrate-rollouts', '--json']);
 assert.ok(${JSON.stringify([path, other])}.includes(process.env.CODEX_HOME));

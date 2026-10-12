@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { checkAbort, object, report, uuid } from "./internal.js";
 import type { Context } from "./internal.js";
 import type { CodexSession, SourceReport } from "./types.js";
+import { isOwnedFile } from "./file-trust.js";
 
 const MAX_HEADER_BYTES = 65536;
 async function* files(root: string, signal?: AbortSignal): AsyncGenerator<string> {
@@ -18,12 +19,12 @@ async function* files(root: string, signal?: AbortSignal): AsyncGenerator<string
 }
 export async function readLineageHeader(path: string, root: string): Promise<{ id: string; parentId: string | null; forkedFromId: string | null }> {
   const rel = relative(root, await realpath(path));
-  if (isAbsolute(rel) || rel === ".." || rel.startsWith("../") || (await lstat(path)).isSymbolicLink()) throw new Error("Unsupported metadata path.");
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`) || (await lstat(path)).isSymbolicLink()) throw new Error("Unsupported metadata path.");
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   let line: Buffer;
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.uid !== process.getuid?.()) throw new Error("Unsupported metadata file.");
+    if (!isOwnedFile(path, info)) throw new Error("Unsupported metadata file.");
     // Read incrementally and stop at the first newline, without parsing later records.
     let buffer = Buffer.alloc(0);
     while (true) {
