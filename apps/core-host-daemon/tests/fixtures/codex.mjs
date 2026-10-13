@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Synthetic app-server. Never opens a native Codex home or uses model credentials.
 import { createInterface } from "node:readline";
-import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 const path = join(process.env.CODEX_HOME, "synthetic-threads.json");
@@ -49,6 +49,8 @@ createInterface({ input: process.stdin }).on("line", line => {
   else if (message.method === "thread/start") {
     const effective = configured(params);
     const thread = { id: randomUUID(), cwd: params.cwd, turns: [], status: { type: "idle" }, effective };
+    mkdirSync(join(process.env.CODEX_HOME,"sessions"),{recursive:true});
+    thread.path=join(process.env.CODEX_HOME,"sessions",`rollout-${thread.id}.jsonl`);
     threads[thread.id] = thread; persist(); reply({ thread, ...effective });
   } else if (message.method === "thread/resume") {
     const thread = threads[params.threadId];
@@ -56,6 +58,14 @@ createInterface({ input: process.stdin }).on("line", line => {
     if (thread.turns.at(-1)?.status === "inProgress") thread.turns.at(-1).status = "interrupted";
     thread.effective = configured(params, thread.effective); thread.cwd = thread.effective.cwd;
     thread.status = { type: "idle" }; persist(); reply({ thread, ...thread.effective });
+  } else if (message.method === "thread/read") {
+    const thread=threads[params.threadId];
+    reply({thread});
+  } else if (message.method === "thread/inject_items") {
+    const thread=threads[params.threadId];
+    if(!existsSync(thread.path))writeFileSync(thread.path,JSON.stringify({type:"session_meta",payload:{id:thread.id}})+"\n");
+    for(const item of params.items)appendFileSync(thread.path,JSON.stringify({type:"response_item",payload:item})+"\n");
+    reply({});
   } else if (message.method === "turn/start") {
     const thread = threads[params.threadId];
     if(params.input[0].text.includes("stale callback"))send({id:++callback,method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:thread.turns.at(-1).id,itemId:randomUUID(),command:"Expired callback"}});

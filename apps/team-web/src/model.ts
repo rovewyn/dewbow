@@ -12,6 +12,7 @@ export interface Route {
   page: "teams" | "definitions" | "sessions" | "channels";
   teamId?: string;
   bindingId?: string;
+  conversationId?: string;
 }
 
 export function readRoute(): Route {
@@ -19,5 +20,6 @@ export function readRoute(): Route {
   const page = params.get("page");
   return { page: page === "definitions" || page === "sessions" || page === "channels" ? page : "teams",
     ...(params.get("team") ? { teamId: params.get("team")! } : {}),
-    ...(params.get("session") ? { bindingId: params.get("session")! } : {}) };
+    ...(params.get("session") ? { bindingId: params.get("session")! } : {}),
+    ...(params.get("conversation") ? {conversationId:params.get("conversation")!} : {}) };
 }

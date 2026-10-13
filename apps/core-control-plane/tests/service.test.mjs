@@ -74,7 +74,7 @@ test("API and MCP share durable IDs, enforce interaction authority, and reconcil
     await service.start();
     assert.equal((await api("listHosts", {}, {})).error.code, "UNAUTHORIZED");
     const listed = (await mcp("tools/list")).result.tools;
-    assert.deepEqual(listed.map(tool=>tool.name),["listHosts","listWorkspaceProfiles","listSessions","createSession","connectSession","getSession","readSessionHistory","getSessionActivity","readSessionContent","sendMessage","steerTurn","answerQuestions","interruptTurn"]);
+    assert.deepEqual(listed.map(tool=>tool.name),["listHosts","listWorkspaceProfiles","listSessions","createSession","connectSession","pauseSessionExecution","resumeSessionExecution","appendSessionContext","getSession","readSessionHistory","getSessionActivity","readSessionContent","sendMessage","steerTurn","answerQuestions","interruptTurn"]);
     assert.deepEqual(listed.find(tool => tool.name === "createSession").inputSchema.required, ["hostId", "requestId"]);
     assert.equal(listed.find(tool => tool.name === "createSession").inputSchema.properties.sessionOptions.additionalProperties, false);
     assert.ok(listed.every(tool => Object.keys(tool.inputSchema.properties).every(key => /^[a-z][a-zA-Z0-9]*$/.test(key))));

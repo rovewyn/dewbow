@@ -83,4 +83,4 @@ export function canonicalJson(value: unknown): string {
 export { normalizeDefinitionId, validateInput } from "./validation.js";
 export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreInteraction, CoreSessionDetails, NativeMessage, SessionActivity, ContentRef, ContentPage, CoreHistory, BindingOperation, SessionBindingResult, SessionBindingDetails,UserQuestion,QuestionAnswer,InteractionDetails,TurnMode } from "./core.js";
 
-export type { Chatbot, ChannelConnection, ChannelConversation, ChannelDelivery, ChannelState } from "./channels.js";
+export type { Chatbot, ChannelConnection, ChannelConversation, ChannelDelivery, ChannelState, ChannelTakeover, ChannelContextRecord, ChannelConversationDetails } from "./channels.js";

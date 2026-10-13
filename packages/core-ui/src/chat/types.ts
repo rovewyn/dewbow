@@ -23,6 +23,7 @@ export interface ChatRequest {
 }
 export interface ChatModel {
   sessionKey: string; turns: ChatTurn[]; requests: ChatRequest[]; notices: string[];
+  contextRecords?: import("@dewbow/core-protocol").SessionContext[];
 }
 export interface ChatDraft { text: string; mode: TurnMode }
 export interface ChatContentState {
@@ -31,6 +32,7 @@ export interface ChatContentState {
 }
 /** The host owns permission checks, request IDs, original input and all I/O. */
 export interface ChatViewProps {
+  hideComposer?: boolean;
   model: ChatModel; draft: ChatDraft; onDraftChange: (draft: ChatDraft) => void;
   composer: { action: "send" | "steer" | "retry" | "disabled"; turnId: string | null; mode: TurnMode; modeLocked: boolean; busy: boolean; reason: string | null; retryRequestKey: string | null };
   history: { loading: boolean; hasOlder: boolean; loadingOlder: boolean; error: string | null };

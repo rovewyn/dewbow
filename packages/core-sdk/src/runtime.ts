@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { nativeCommand } from "./internal.js";
+import { hasInjectedContext } from "./context.js";
 export class CodexRuntimeError extends Error {
   constructor(readonly code: "EXECUTION_FAILED" | "DELIVERY_UNCERTAIN" | "SESSION_IN_USE", message: string) {
     super(message); this.name = "CodexRuntimeError";
@@ -72,6 +73,17 @@ export class CodexRuntime {
   }
   steerTurn(sessionId: string, turnId: string, text: string, clientUserMessageId: string): Promise<{turnId:string}> {
     return this.request("turn/steer",{threadId:sessionId,expectedTurnId:turnId,input:[{type:"text",text,text_elements:[]}],clientUserMessageId});
+  }
+  async hasSessionContext(sessionId: string, home: string, itemId: string, text: string): Promise<boolean> {
+    const result = await this.request("thread/read", {threadId:sessionId,includeTurns:false});
+    if (result.thread?.id !== sessionId) throw new CodexRuntimeError("DELIVERY_UNCERTAIN", "Native context history is unavailable.");
+    // A fresh persistent thread may not have materialized its rollout before its first item.
+    if (result.thread.path === null) return false;
+    if (typeof result.thread.path !== "string") throw new CodexRuntimeError("DELIVERY_UNCERTAIN", "Native context history is unavailable.");
+    return hasInjectedContext(home, result.thread.path, sessionId, itemId, text);
+  }
+  appendSessionContext(sessionId: string, itemId: string, text: string): Promise<unknown> {
+    return this.request("thread/inject_items", {threadId:sessionId,items:[{type:"message",id:itemId,role:"user",content:[{type:"input_text",text}]}]});
   }
   request(method: string, params: Record<string, unknown>): Promise<any> {
     const id = ++this.nextId;

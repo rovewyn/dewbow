@@ -7,6 +7,7 @@ const mutations: Record<string, CoreOperationName> = {
   createMemberSession: "createSession", createAgentSession: "createSession", connectSessionBinding: "connectSession",
   sendBindingMessage: "sendMessage", interruptBindingTurn: "interruptTurn",
   steerBindingTurn:"steerTurn",answerBindingQuestions:"answerQuestions",
+  pauseBindingExecution:"pauseSessionExecution",resumeBindingExecution:"resumeSessionExecution",appendBindingContext:"appendSessionContext",
 };
 
 function publicOperation(raw: CoreOperation): CoreOperation {
@@ -93,7 +94,9 @@ export class SessionService {
         if (!binding.sessionId) fail("SESSION_NOT_READY", "Session creation has not returned an ID.", true);
         coreInput = { sessionId: binding.sessionId, requestId: coreRequestId,
           ...(operation === "sendBindingMessage" ? {mode:input.mode??"default"} : ["interruptBindingTurn","steerBindingTurn","answerBindingQuestions"].includes(operation) ? {turnId:input.turnId} : {}),
-          ...(operation === "answerBindingQuestions" ? {interactionId:input.interactionId} : {}) };
+          ...(operation === "answerBindingQuestions" ? {interactionId:input.interactionId} : {}),
+          ...(operation === "resumeBindingExecution" ? {pauseId:input.pauseId} : {}),
+          ...(operation === "appendBindingContext" ? {contextId:input.contextId,segmentId:input.segmentId,source:input.source} : {}) };
       }
       const record: RequestRecord = { caller, operation, requestId, fingerprint, coreRequestId, coreUrl: this.core.url,
         coreInput, bindingId: binding.bindingId, result: null, error: null, createdAt: timestamp, updatedAt: timestamp };
@@ -117,7 +120,7 @@ export class SessionService {
   private async dispatch(record: RequestRecord, operation: CoreOperationName, input: Record<string, unknown>): Promise<SessionBindingResult> {
     let binding = this.store.getBinding(record.bindingId!);
     try {
-      const payload={...record.coreInput,...(["sendMessage","steerTurn"].includes(operation) ? {message:input.message} : {}),...(operation === "answerQuestions" ? {answers:input.answers} : {})};
+      const payload={...record.coreInput,...(["sendMessage","steerTurn"].includes(operation) ? {message:input.message} : {}),...(operation === "answerQuestions" ? {answers:input.answers} : {}),...(operation === "appendSessionContext" ? {text:input.text} : {})};
       const result = publicOperation(await this.core.call<CoreOperation>(operation, payload, true));
       if (result.requestId !== record.coreRequestId || result.operation !== operation || (binding.sessionId && result.sessionId !== binding.sessionId)) {
         fail("DELIVERY_UNCERTAIN", "Core returned an operation for a different request. Retry the original request.", true);

@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
-import { fail, type ChannelConversation, type ChannelDelivery, type Chatbot, type ChannelConnection } from "@dewbow/team-protocol";
+import { fail, type ChannelConversation, type ChannelDelivery, type Chatbot, type ChannelConnection, type ChannelTakeover, type ChannelContextRecord } from "@dewbow/team-protocol";
 import { TeamStore } from "../store.js";
 import type { ReplyAddress } from "./adapter.js";
 
 export const key = (...parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
-export interface Delivery extends ChannelDelivery { text: string | null; payload: Record<string, unknown> | null }
-export interface Conversation extends ChannelConversation { address: ReplyAddress }
+export interface Delivery extends ChannelDelivery { text: string | null; payload: Record<string, unknown> | null; deferredTakeoverId?: string }
+export interface Conversation extends ChannelConversation { address: ReplyAddress; sequence?: number }
+export interface ContextRecord extends Omit<ChannelContextRecord,"text"> { text: string | null }
 export interface Watch { watchId: string; conversationId: string; bindingId: string; turnId: string; eventCursor: number; updateCursor: string | null; beforeCursor: string | null; complete: boolean }
 export interface Question { token: string; conversationId: string; bindingId: string; turnId: string; interactionId: string; questionId: string; options: string[]; allowCustom: boolean; answer: string[] | null; expiresAt: number }
-type Table = "channel_chatbots" | "channel_connections" | "channel_conversations" | "channel_deliveries" | "channel_turns" | "channel_questions";
+type Table = "channel_chatbots" | "channel_connections" | "channel_conversations" | "channel_deliveries" | "channel_turns" | "channel_questions" | "channel_takeovers" | "channel_contexts";
 
 export class ChannelStore {
   constructor(readonly team: TeamStore) {
@@ -21,6 +22,8 @@ export class ChannelStore {
       CREATE TABLE IF NOT EXISTS channel_turns (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS channel_questions (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS channel_runtime_leases (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, lease_until INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS channel_takeovers (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS channel_contexts (id TEXT PRIMARY KEY, data_json TEXT NOT NULL);
     `);
   }
   list<T>(table: Table): T[] { return (this.team.db.prepare(`SELECT data_json FROM ${table} ORDER BY rowid`).all() as { data_json: string }[]).map(row => JSON.parse(row.data_json)); }
@@ -39,11 +42,23 @@ export class ChannelStore {
     if (old && old.conversation_id !== conversationId) fail("BINDING_IN_USE", "This session belongs to another channel identity.");
     this.team.db.prepare("INSERT OR IGNORE INTO channel_binding_claims VALUES(?,?)").run(bindingId, conversationId);
   }
-  output(conversation: Conversation, id: string, text: string, bindingId: string | null = null, turnId: string | null = null): void {
+  output(conversation: Conversation, id: string, text: string, bindingId: string | null = null, turnId: string | null = null, source: "agent" | "operator" = "agent", contextId?: string): void {
     if (this.get("channel_deliveries", id)) return;
+    if (source === "agent" && this.get<Conversation>("channel_conversations",conversation.conversationId)?.mode === "human") return;
     const timestamp = new Date().toISOString();
-    this.put("channel_deliveries", id, { deliveryId: id, conversationId: conversation.conversationId, direction: "output", status: "pending", text, payload: null, bindingId, turnId, operation: null, requestId: null, error: null, createdAt: timestamp, updatedAt: timestamp } satisfies Delivery);
+    this.put("channel_deliveries", id, { deliveryId: id, conversationId: conversation.conversationId, direction: "output", status: "pending", text, payload: null, bindingId, turnId, source, ...(contextId ? {contextId} : {}), operation: null, requestId: null, error: null, createdAt: timestamp, updatedAt: timestamp } satisfies Delivery);
   }
+  nextSequence(conversation: Conversation): number {
+    conversation.sequence = (conversation.sequence ?? 0) + 1;
+    this.put("channel_conversations",conversation.conversationId,conversation);
+    return conversation.sequence;
+  }
+  context(conversation: Conversation, contextId: string, source: ContextRecord["source"], text: string): ContextRecord {
+    const saved = this.get<ContextRecord>("channel_contexts",contextId); if (saved) return saved;
+    const record: ContextRecord = {contextId,conversationId:conversation.conversationId,bindingId:conversation.bindingId!,segmentId:conversation.takeoverId!,source,text,sequence:this.nextSequence(conversation),createdAt:new Date().toISOString(),syncStatus:"pending",error:null};
+    this.put("channel_contexts",contextId,record); return record;
+  }
+  takeover(conversation: Conversation): ChannelTakeover | null { return conversation.takeoverId ? this.get("channel_takeovers",conversation.takeoverId) : null; }
   recover(): void {
     for (const delivery of this.list<Delivery>("channel_deliveries")) if (delivery.status === "processing") {
       delivery.status = "unknown"; delivery.error = "Delivery was interrupted. Reconcile or retry the original request.";

@@ -14,9 +14,11 @@ import { WebSocketServer } from "ws";
 const credential = { credentialRef: "synthetic-app", clientId: "synthetic-client", clientSecret: "synthetic-secret", robotCode: "synthetic-robot", corpId: "synthetic-org" };
 class SyntheticCore {
   loseSend = false;
+  offline = false;
   url = "http://127.0.0.1:3000/"; sessions = new Map(); operations = new Map(); calls = []; loseCreate = false;
   async call(operation, input) {
     this.calls.push({ operation, input: structuredClone(input) });
+    if(this.offline)throw new Error("Synthetic Core offline");
     if (operation === "listHosts") return { hosts: [{ hostId: "host", name: "Host", status: "connected" }] };
     if (operation === "listWorkspaceProfiles") return { profiles: [{ profileId: "empty", name: "Empty", kind: "emptyDirectory" }] };
     if (operation === "getSession") return structuredClone(this.sessions.get(input.sessionId));
@@ -28,6 +30,9 @@ class SyntheticCore {
     const view = this.sessions.get(sessionId);
     const turnId = operation === "sendMessage" ? `turn-${input.requestId}` : input.turnId ?? null;
     const result = { commandId: id, operation, sessionId, turnId, requestId: input.requestId, status: "delivered", createdAt: new Date().toISOString(), error: null };
+    if(operation === "pauseSessionExecution")view.session.executionPause={pauseId:id,authority:"agent",createdAt:result.createdAt};
+    if(operation === "resumeSessionExecution"){assert.equal(input.pauseId,view.session.executionPause.pauseId);view.session.executionPause=null;}
+    if(operation === "appendSessionContext"){view.contextRecords??=[];if(!view.contextRecords.some(record=>record.contextId===input.contextId))view.contextRecords.push(structuredClone(input));}
     if (operation === "sendMessage") { view.session.activeTurnId = turnId; view.session.runtimeState = "running"; view.turns.push({ turnId, codexTurnId: `native-${turnId}`, state: "running" }); }
     if (operation === "connectSession") view.session.connectionState = "connected";
     if (operation === "answerQuestions") view.interactions.find(item => item.interactionId === input.interactionId).status = "resolved";
@@ -72,6 +77,72 @@ test("identities map to isolated sessions; duplicate input, steering, Web bindin
   await f.accept("m3", "user-a", "Continue Web session"); await f.runtime.tick(); assert.equal(f.core.calls.filter(value => value.operation === "sendMessage").at(-1).input.sessionId, direct.binding.sessionId);
   await f.runtime.execute("bindChannelConversation", { conversationId: a.conversationId, bindingId: direct.binding.bindingId, requestId: "bind-a" }, "operator");
   state = await f.runtime.execute("getChannels", {}, "operator"); assert.ok(!JSON.stringify(state).includes(credential.clientSecret)); assert.ok(!JSON.stringify(state).includes("sendBySession"));
+});
+
+test("takeover suppresses automatic output, synchronizes transcript only, permits offline human sending and resumes only on new input",async t=>{
+  const f=await fixture(t);
+  await f.accept("initial","user-a","Initial task");await f.runtime.tick();
+  const conversation=f.runtime.store.list("channel_conversations")[0],id=conversation.conversationId;
+  f.runtime.store.output(conversation,"old-reply","Old answer",conversation.bindingId);
+  await f.runtime.execute("beginChannelTakeover",{conversationId:id,requestId:"takeover"},"operator");
+  await f.runtime.tick();await f.runtime.tick();
+  let view=await f.runtime.execute("readChannelConversation",{conversationId:id},"operator");
+  assert.equal(view.takeovers[0].phase,"active");assert.equal(view.corePause,"paused");
+  const executionCount=f.core.calls.filter(c=>["sendMessage","steerTurn","answerQuestions"].includes(c.operation)).length;
+  for(const [index,text] of ["/new","/stop","/status","/answer fake 1"].entries())await f.accept(`human-${index}`,"user-a",text);
+  await f.runtime.tick();
+  assert.equal(f.core.calls.filter(c=>["sendMessage","steerTurn","answerQuestions"].includes(c.operation)).length,executionCount);
+  assert.equal(f.core.sessions.size,1);assert.ok(!f.sent.some(s=>s.text==="Old answer" || s.text==="Task interrupted."));
+  f.core.offline=true;
+  const sent=await f.runtime.execute("sendChannelMessage",{conversationId:id,message:"Human answer",requestId:"manual"},"operator");
+  await f.runtime.tick();assert.ok(f.sent.some(s=>s.text==="Human answer" && s.userId==="user-a"));
+  const retained=f.runtime.store.get("channel_contexts",sent.contextId);assert.equal(retained.text,"Human answer");
+  retained.createdAt="2000-01-01T00:00:00.000Z";f.runtime.store.put("channel_contexts",sent.contextId,retained);
+  await f.runtime.tick();assert.equal(f.runtime.store.get("channel_contexts",sent.contextId).text,"Human answer");
+  f.core.offline=false;
+  await f.runtime.execute("updateChannelConnection",{connectionId:f.connection.connectionId,enabled:false,requestId:"disable-takeover"},"operator");
+  const callsBeforeDisabledTick=f.core.calls.length;await f.runtime.tick();
+  assert.equal(f.core.calls.length,callsBeforeDisabledTick,"disabled connection stops takeover background calls");
+  assert.equal(f.runtime.store.get("channel_contexts",sent.contextId).text,"Human answer");
+  await f.runtime.execute("updateChannelConnection",{connectionId:f.connection.connectionId,enabled:true,requestId:"enable-takeover"},"operator");await f.runtime.tick();
+  assert.equal(f.runtime.store.get("channel_contexts",sent.contextId).text,null);
+  f.core.sessions.get("session-1").session.executionPause=null;
+  view=await f.runtime.execute("readChannelConversation",{conversationId:id},"operator");assert.equal(view.corePause,"externallyResumed");
+  assert.equal(view.conversation.mode,"human");
+  await f.runtime.execute("endChannelTakeover",{conversationId:id,requestId:"end"},"operator");await f.runtime.tick();
+  assert.equal(f.core.calls.filter(c=>["sendMessage","steerTurn"].includes(c.operation)).length,executionCount);
+  assert.deepEqual(f.core.sessions.get("session-1").contextRecords.map(r=>r.source),["takeoverStart","user","user","user","user","operator","takeoverEnd"]);
+  await f.accept("after","user-a","New task");await f.runtime.tick();
+  assert.equal(f.core.calls.filter(c=>c.operation==="sendMessage").length,2);
+  assert.equal(f.runtime.store.get("channel_deliveries","old-reply").status,"suppressed");
+});
+
+test("end boundary queues new input while context or delivery is unresolved; retries never rerun the agent",async t=>{
+  const f=await fixture(t);await f.accept("initial","user-a","Task");await f.runtime.tick();
+  const conversationId=f.runtime.store.list("channel_conversations")[0].conversationId;
+  await f.runtime.execute("beginChannelTakeover",{conversationId,requestId:"begin"},"operator");await f.runtime.tick();await f.runtime.tick();
+  f.failReply();await f.runtime.execute("sendChannelMessage",{conversationId,message:"Pending human send",requestId:"manual"},"operator");await f.runtime.tick();
+  await f.runtime.execute("endChannelTakeover",{conversationId,requestId:"end"},"operator");
+  await f.accept("queued","user-a","After boundary");await f.runtime.tick();
+  assert.equal(f.core.calls.filter(c=>c.operation==="sendMessage").length,1);
+  const uncertain=f.runtime.store.list("channel_deliveries").find(d=>d.source==="operator" && d.status==="unknown");
+  await f.runtime.execute("retryChannelDelivery",{deliveryId:uncertain.deliveryId,requestId:"retry"},"operator");await f.runtime.tick();await f.runtime.tick();
+  assert.equal(f.core.calls.filter(c=>c.operation==="sendMessage").length,2);
+  assert.equal(f.core.calls.filter(c=>c.operation==="resumeSessionExecution").length,1);
+  assert.equal(f.core.sessions.get("session-1").contextRecords.filter(r=>r.source==="operator").length,1);
+});
+
+test("takeover during a platform send keeps suppression after an uncertain result and can close it without claiming success",async t=>{
+  const f=await fixture(t);await f.accept("task","user-a","Task");await f.runtime.tick();f.core.finish("session-1","Old response");
+  const conversation=f.runtime.store.list("channel_conversations")[0];
+  let release,entered;const waiting=new Promise(resolve=>entered=resolve);
+  f.runtime.factory=()=>({run:async()=>{},send:async()=>{entered();await new Promise(resolve=>release=resolve);throw new DeliveryError(true);}});
+  const tick=f.runtime.tick();await waiting;
+  await f.runtime.execute("beginChannelTakeover",{conversationId:conversation.conversationId,requestId:"begin-during-send"},"operator");release();await tick;
+  const unknown=f.runtime.store.list("channel_deliveries").find(d=>d.direction==="output" && d.status==="unknown");assert.equal(unknown.suppressed,true);
+  await assert.rejects(f.runtime.execute("retryChannelDelivery",{deliveryId:unknown.deliveryId,requestId:"forbidden-retry"},"operator"),e=>e.detail.code==="DELIVERY_SUPPRESSED");
+  await f.runtime.execute("closeChannelDelivery",{deliveryId:unknown.deliveryId,requestId:"close"},"operator");
+  const closed=f.runtime.store.get("channel_deliveries",unknown.deliveryId);assert.equal(closed.outcomeUnknown,true);assert.equal(closed.status,"suppressed");
 });
 
 test("ordinary question tokens require exact identity and current interaction; operator context blocks retained replies", async t => {

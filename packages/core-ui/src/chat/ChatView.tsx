@@ -1,11 +1,17 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage, ChatViewProps } from "./types.js";
-import type { SessionActivity } from "@dewbow/core-protocol";
+import type { SessionActivity, SessionContext } from "@dewbow/core-protocol";
 import { Badge, Button, NativeSelect, NativeSelectOption, Textarea } from "../ui/index.js";
 import { ContentView } from "./ContentView.js";
 import { InteractionCard } from "./InteractionCard.js";
 
 const messageLabels = { user: "You", instruction: "Additional instruction", progress: "Codex · progress", final: "Codex" };
+function Context({record}:{record:SessionContext}) {
+  const boundary=record.source === "takeoverStart" || record.source === "takeoverEnd";
+  return <article className={boundary ? "chat-notice" : "chat-message chat-message-user"} data-chat-entry={`context:${record.contextId}`}>
+    {boundary ? <strong>{record.source === "takeoverStart" ? "Human takeover started" : "Human takeover ended"}</strong> : <><div className="chat-message-heading"><strong>{record.source === "operator" ? "Operator · human takeover" : "User · human takeover"}</strong></div><div className="chat-message-body">{record.availability === "restricted" ? "This context requires the Core operator." : record.text}</div></>}
+  </article>;
+}
 function Message({ message }: { message: ChatMessage }) {
   return <article className={`chat-message chat-message-${message.kind}`} data-message-id={message.id}>
     <div className="chat-message-heading"><strong>{messageLabels[message.kind]}</strong>{!message.complete && <span className="chat-muted">In progress</span>}</div>
@@ -45,6 +51,7 @@ export function ChatView(view: ChatViewProps) {
   }, [view.model, view.history.loadingOlder]);
   const enabled = view.composer.action !== "disabled" && !view.composer.busy;
   const attention = view.model.turns.flatMap(turn => turn.interactions.filter(item => ["pending", "requested", "delivered"].includes(item.status)));
+  const contextRecords=view.model.contextRecords??[], nativeTurns=new Set(view.model.turns.map(turn=>turn.nativeTurnId));
   return <div className="dewbow-chat">
     {attention.length > 0 && <div className="chat-attention" role="status"><strong>{attention.length} {attention.length === 1 ? "response needs" : "responses need"} attention</strong><Button variant="outline" onClick={() => {
       const target = [...(list.current?.querySelectorAll<HTMLElement>("[data-interaction-id]") ?? [])].find(item => item.dataset.interactionId === attention[0]!.interactionId);
@@ -62,8 +69,9 @@ export function ChatView(view: ChatViewProps) {
           prepend.current = { height: element.scrollHeight, top: element.scrollTop, anchor: anchor?.dataset.chatEntry ?? null, offset: anchor ? anchor.getBoundingClientRect().top - edge : 0, restoreFocus: event.currentTarget === document.activeElement }; }
         follow.current = false; view.onLoadOlder();
       }}>{view.history.loadingOlder ? "Loading older history…" : "Load older history"}</Button></div>}
-      {!view.model.turns.length && <p className="chat-empty" role="status">{view.history.loading ? "Loading conversation…" : "No messages yet."}</p>}
-      {view.model.turns.map(turn => <section className="chat-turn" key={turn.key} aria-label="Conversation turn" data-turn-key={turn.key}>
+      {!view.model.turns.length && !contextRecords.length && <p className="chat-empty" role="status">{view.history.loading ? "Loading conversation…" : "No messages yet."}</p>}
+      {contextRecords.filter(record=>!record.afterTurnId || !nativeTurns.has(record.afterTurnId)).map(record=><Context key={record.contextId} record={record} />)}
+      {view.model.turns.map(turn => <Fragment key={turn.key}><section className="chat-turn" aria-label="Conversation turn" data-turn-key={turn.key}>
         <div className="chat-turn-heading">{turn.mode && <Badge variant="outline">{turn.mode === "plan" ? "Plan" : "Default"}</Badge>}{turn.state && <span>{turn.state.replaceAll("_", " ")}</span>}</div>
         {turn.entries.map((entry, index) => {
           if (entry.kind === "activity" && turn.entries[index - 1]?.kind === "activity") return null;
@@ -73,13 +81,13 @@ export function ChatView(view: ChatViewProps) {
         })}
         {turn.interactions.some(item => ["resolved", "invalidated"].includes(item.status)) && <details className="chat-activities"><summary>Interaction history</summary><div className="chat-activity-list">{turn.interactions.filter(item => ["resolved", "invalidated"].includes(item.status)).map(item => <InteractionCard interaction={item} view={view} key={item.interactionId} />)}</div></details>}
         {turn.orderIncomplete && <p className="chat-order-note">Some activity is still live or has incomplete source order.</p>}
-      </section>)}
+      </section>{contextRecords.filter(record=>record.afterTurnId && record.afterTurnId===turn.nativeTurnId).map(record=><Context key={record.contextId} record={record} />)}</Fragment>)}
     </div>
     {!atBottom && <Button className="chat-jump" variant="outline" onClick={() => { follow.current = true; if (list.current) list.current.scrollTop = list.current.scrollHeight; setAtBottom(true); }}>Jump to latest</Button>}
     {view.model.requests.length > 0 && <details className="chat-requests"><summary>Request delivery ({view.model.requests.length})</summary><ul>
       {view.model.requests.map(request => <li key={request.key}><div className="chat-content-heading"><strong>{request.label}</strong><Badge variant="outline">{request.status}</Badge></div><code>{request.requestId}</code>{request.error && <p role="alert">{request.error}</p>}{request.canRetry && <Button variant="outline" onClick={() => view.onRetry(request.key)}>Retry original request</Button>}</li>)}
     </ul></details>}
-    <form className="chat-composer" onSubmit={event => {
+    {!view.hideComposer && <form className="chat-composer" onSubmit={event => {
       event.preventDefault(); if (!enabled || !view.draft.text.trim()) return;
       if (view.composer.action === "steer" && view.composer.turnId) view.onSteer({ turnId: view.composer.turnId, message: view.draft.text });
       else if (view.composer.action === "retry" && view.composer.retryRequestKey) view.onRetryMessage({ requestKey: view.composer.retryRequestKey, message: view.draft.text });
@@ -95,6 +103,6 @@ export function ChatView(view: ChatViewProps) {
         {view.onInterrupt && <Button variant="outline" type="button" disabled={view.composer.busy} onClick={view.onInterrupt}>Interrupt turn</Button>}
       </div>
       <p className="chat-muted">{view.composer.reason ?? (view.composer.action === "steer" ? "Instructions keep the active turn's mode." : "Ctrl/⌘ + Enter to send. Draft stays in this session until refresh or sign-out.")}</p>
-    </form>
+    </form>}
   </div>;
 }

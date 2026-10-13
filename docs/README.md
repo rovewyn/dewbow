@@ -17,6 +17,8 @@ Dewbow has two applications: Core is the Codex execution platform, and Team is t
 
 Team's backend holds the Core management credential and calls the authenticated Core HTTP API. Its Web client never receives that credential or imports Core server or SDK implementations. Shared public protocol types do not transfer domain ownership.
 
+Team Channels also owns human takeover and robot message sending. Core supplies daemon execution admission pause/resume and passive native context append. Shared history presentation keeps passive human intervals separate from execution turns; ordinary chat remains unchanged. See [Channels](team/channels.md#human-takeover) and the [Core contract](interfaces.md#execution-admission-and-passive-context).
+
 Creating a member session freezes the selected definition's revision and requested options. Core records the actual resolved execution configuration. Changing the definition affects future sessions. Existing sessions reconnect using their original configuration. Core treats `agentRef` as provenance and does not resolve Team definitions or memberships.
 
 Core can be used directly by an external API or MCP client without Team. Team can manage definitions, teams, and members without Core, while session execution requires Core. Current Team behavior organizes members and their sessions; Channels adds direct IM access to definitions; task scheduling, member-to-member handoffs, and shared task state are outside its current scope.

@@ -7,7 +7,7 @@ import { WebSocket } from "ws";
 import { discoverSessions, readSessionHistory, readSessionItems, readSessionItem, readSessionToolOrigin, SessionHistoryError } from "@dewbow/core-sdk";
 import type { DiscoverOptions, DiscoverySnapshot, ReadSessionHistoryOptions } from "@dewbow/core-sdk";
 import { canonicalJson, fail, LiveReplies, ManagementError, maskPrivateMessages, maskPrivateActivity, maskPrivateEvents, now, terminal, validateInput } from "@dewbow/core-protocol";
-import type { AgentRef, Interaction, Command, ContentPage, Event, EventHistory, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionActivity, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
+import type { AgentRef, Interaction, Command, ContentPage, Event, EventHistory, ExecutionPause, SessionContext, HostQuery, HostReport, NativeHistory, NativeInventory, OperationResult, Session, SessionActivity, SessionOptions, Turn, ToHost, ToControlPlane } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
 import type { HostDaemonConfig } from "./config.js";
 import { Runtime } from "./runtime.js";
@@ -19,6 +19,7 @@ import {approvalResponse,builtinQuestion,createInteraction,interactionDetails,pu
 
 import { Workspaces } from "./workspaces.js";
 interface Journal { command: Command; fingerprint: string; result: OperationResult }
+interface SavedContext { record: SessionContext; fingerprint: string; itemId: string; nativeText: string; confirmed: boolean; commandId: string }
 export class HostDaemon {
   private store: Store | undefined;
   private contents: SessionContent | undefined;
@@ -37,6 +38,7 @@ export class HostDaemon {
   private readonly liveReplies = new LiveReplies();
   private syncedCursors: Record<string, number> = {};
   private readonly inFlight = new Set<string>();
+  private readonly contextWrites = new Map<string, Promise<void>>();
   private inventory: { expires: number; snapshot: Promise<DiscoverySnapshot> } | undefined;
   private readonly reads = new AbortController();
   constructor(readonly config: HostDaemonConfig) {}
@@ -60,8 +62,18 @@ export class HostDaemon {
       this.connect();
     } catch (error) { await this.stop(); throw error; }
   }
-  private session(id: string): Session { return this.store!.get<Session>("session", id) ?? fail("NOT_FOUND", "Managed session not found.", false, { sessionId: id }); }
+  private session(id: string): Session {
+    const session = this.store!.get<Session>("session", id) ?? fail("NOT_FOUND", "Managed session not found.", false, { sessionId: id });
+    session.executionPause = this.store!.get<ExecutionPause>("pause",id) ?? null;
+    return session;
+  }
+  private requireExecution(sessionId: string): void {
+    if (this.store!.get("pause",sessionId)) fail("SESSION_PAUSED","Execution submissions are paused on this host daemon.",false,{sessionId});
+    if (this.contextWrites.has(sessionId)) fail("SESSION_BUSY","Context append is still being confirmed.",true,{sessionId});
+  }
   private emit(session: Session, type: string, payload: Record<string, unknown> = {}, turn?: Turn, observation = true): void {
+    session.executionPause = this.store!.get<ExecutionPause>("pause",session.sessionId) ?? null;
+    session.latestCursor = Math.max(session.latestCursor,this.store!.get<Session>("session",session.sessionId)?.latestCursor ?? 0);
     if (observation && session.runtimeState !== "unknown") { session.observedAt = now(); session.lastKnownState = session.runtimeState; session.lastKnownAt = session.observedAt; }
     session.latestCursor++;
     const event: Event = { eventId: `${session.sessionId}:${session.latestCursor}`, cursor: session.latestCursor, sessionId: session.sessionId,
@@ -83,7 +95,7 @@ export class HostDaemon {
   }
   private send(frame: ToControlPlane): void { if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(frame)); }
   private report(): HostReport {
-    return { sessions:this.store!.list<Session>("session"),turns:this.store!.list<Turn>("turn"),interactions:this.store!.list<NativeInteraction>("interaction").map(publicInteraction),operations:this.store!.list<Journal>("command").map(j=>j.result) };
+    return { sessions:this.store!.list<Session>("session").map(s=>this.session(s.sessionId)),turns:this.store!.list<Turn>("turn"),interactions:this.store!.list<NativeInteraction>("interaction").map(publicInteraction),operations:this.store!.list<Journal>("command").map(j=>j.result) };
   }
   private connect(): void {
     const url = new URL("/hosts/connect", this.config.controlPlaneUrl); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -198,15 +210,33 @@ export class HostDaemon {
           const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId
             && (!queryHome || (process.platform === "win32" ? s.codexHome?.toLowerCase() === queryHome.toLowerCase() : s.codexHome === queryHome)));
           // Codex may not index a newly created conversation until its first turn.
+          const hasContext=session && this.store!.list<SavedContext>("context").some(c=>c.record.sessionId===session.sessionId && c.confirmed);
+          if (cause instanceof SessionHistoryError && hasContext) {
+            result = {observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,messages:[],activities:[],historyError:{code:cause.code,message:"Native turn history is unavailable; passive context is shown separately.",retryable:true}};
+          } else {
           if (!(cause instanceof SessionHistoryError) || cause.code !== "SESSION_NOT_FOUND" || query.input.beforeCursor || query.input.afterCursor || query.input.updateCursor
             || !session?.sessionConfig?.resolved || session.connectionState !== "connected" || session.runtimeState !== "idle"
             || this.store!.list<Turn>("turn").some(turn => turn.sessionId === session.sessionId)) throw cause;
           result = { observedAt:now(),beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,messages:[],activities:[] };
+          }
         }
       } else fail("INVALID_INPUT", "Unknown host query.");
       if (query.operation === "readSessionHistory") {
         const session = this.store!.list<Session>("session").find(s => s.codexThreadId === query.input.codexThreadId);
-        if (session) this.liveReplies.saved(session.sessionId, (result as NativeHistory).messages);
+        if (session) {
+          this.liveReplies.saved(session.sessionId, (result as NativeHistory).messages);
+          const restricted = query.authority !== "operator" && this.privateConversation(session.codexThreadId!);
+          const all = this.store!.list<SavedContext>("context").filter(c=>c.record.sessionId===session.sessionId && c.confirmed).map(c=>restricted ? {...c.record,text:"",availability:"restricted" as const} : c.record).sort((a,b)=>a.sequence-b.sequence);
+          const forward=query.input.contextCursor!==undefined;
+          const candidates=all.filter(record=>query.input.beforeContextCursor!==undefined ? record.sequence<query.input.beforeContextCursor : !forward || record.sequence>query.input.contextCursor!);
+          const records:SessionContext[]=[];let bytes=0;
+          for(const record of forward ? candidates : [...candidates].reverse()) {
+            const size=Buffer.byteLength(JSON.stringify(record));if(records.length >= (query.input.limit??50) || bytes+size>2*1024*1024)break;
+            records.push(record);bytes+=size;
+          }
+          records.sort((a,b)=>a.sequence-b.sequence);
+          Object.assign(result,{contextRecords:records,contextCursor:records.at(-1)?.sequence??query.input.contextCursor??0,beforeContextCursor:records[0] && all.some(r=>r.sequence<records[0]!.sequence) ? records[0].sequence : null,hasMoreContexts:forward && candidates.length>records.length});
+        }
       }
       const response={queryId:query.queryId,result:this.redact(result) as typeof result};
       if(Buffer.byteLength(JSON.stringify(response))>8*1024*1024)fail("LIMIT_EXCEEDED","Host read exceeds the response limit. Use a smaller page or separate content reads.");
@@ -238,7 +268,7 @@ export class HostDaemon {
       }
       return;
     }
-    const { message:_message,answers:_answers,...metadata } = command.input;
+    const { message:_message,answers:_answers,text:_text,...metadata } = command.input;
     const journal: Journal = { command: { ...command, input: metadata }, fingerprint, result: { commandId: command.commandId, status: "unknown", error: { code: "DELIVERY_UNCERTAIN", message: "Command has no confirmed result yet.", retryable: true, sessionId: command.sessionId } } };
     this.store!.put("command", command.commandId, journal); this.inFlight.add(command.commandId);
     try {
@@ -265,7 +295,9 @@ export class HostDaemon {
     const command=journal.command,session=this.store!.get<Session>("session",command.sessionId);
     if(!session?.codexThreadId)return;
     let confirmed=false;
-    if(["sendMessage","steerTurn"].includes(command.operation)) {
+    if (["pauseSessionExecution","resumeSessionExecution"].includes(command.operation)) {
+      confirmed = Boolean(this.store!.get("pauseResult",command.commandId));
+    } else if(["sendMessage","steerTurn"].includes(command.operation)) {
       try {
         const page=await readSessionItems(session.codexThreadId,{codexHome:session.codexHome!,limit:500,signal:this.reads.signal});
         const item=page.items.find(record=>record.item.type === "userMessage" && record.item.clientId === command.commandId);
@@ -276,6 +308,14 @@ export class HostDaemon {
     } else if(["answerQuestions","decideApproval"].includes(command.operation)) {
       const item=this.store!.get<NativeInteraction>("interaction",String(command.input.interactionId));
       confirmed=Boolean(item && item.requestId === command.input.requestId && ["delivered","resolved"].includes(item.status));
+    } else if (command.operation === "appendSessionContext") {
+      const saved = this.store!.get<SavedContext>("context",JSON.stringify([session.sessionId,command.input.contextId]));
+      if (saved) {
+        try {
+          confirmed = saved.confirmed || await this.runtime.hasSessionContext(session.codexThreadId,session.codexHome!,saved.itemId,saved.nativeText);
+          if (confirmed && !saved.confirmed) this.confirmContext(session,saved);
+        } catch { /* An uncertain append is verified, never replayed. */ }
+      }
     }
     if(confirmed){journal.result={commandId:command.commandId,status:"delivered",error:null};this.store!.put("command",command.commandId,journal);}
   }
@@ -337,9 +377,33 @@ export class HostDaemon {
       this.inventory = undefined; this.emit(session, "session_connected"); return;
     }
     const session = this.session(command.sessionId);
+    if (command.operation === "pauseSessionExecution") {
+      if (session.executionPause) fail("SESSION_PAUSED","The session already has an execution pause.");
+      this.store!.transaction(()=>{
+        this.store!.put("pause",session.sessionId,{pauseId:command.commandId,authority:command.authority,createdAt:now()} satisfies ExecutionPause);
+        this.store!.put("pauseResult",command.commandId,true);
+      });
+      this.emit(session,"execution_paused"); return;
+    }
+    if (command.operation === "resumeSessionExecution") {
+      const pause = session.executionPause;
+      if (!pause || pause.pauseId !== command.input.pauseId) fail("STALE_PAUSE","The exact execution pause is no longer current.");
+      if (command.input.force && command.authority !== "operator") fail("FORBIDDEN","Only the Core operator can force a resume.");
+      if (pause.authority !== command.authority && !command.input.force) fail("FORBIDDEN","The pause belongs to a different authority class.");
+      this.store!.transaction(()=>{this.store!.remove("pause",session.sessionId);this.store!.put("pauseResult",command.commandId,true);});
+      this.emit(session,"execution_resumed"); return;
+    }
+    if (command.operation === "appendSessionContext") {
+      const previous = this.contextWrites.get(session.sessionId) ?? Promise.resolve();
+      const write = previous.catch(()=>{}).then(()=>this.appendContext(command));
+      this.contextWrites.set(session.sessionId,write);
+      try { await write; } finally { if (this.contextWrites.get(session.sessionId) === write) this.contextWrites.delete(session.sessionId); }
+      return;
+    }
     if (session.workspace && ["sendMessage", "steerTurn", "answerQuestions"].includes(command.operation)) await new Workspaces(this.config.workspaces).verify(session);
     if (!session.codexThreadId) fail("SESSION_NOT_READY", "Codex conversation has not been created.");
     if(command.authority!=="operator" && ["sendMessage","steerTurn","answerQuestions"].includes(command.operation) && this.privateConversation(session.codexThreadId))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
+    if (["sendMessage","steerTurn","answerQuestions","decideApproval"].includes(command.operation)) this.requireExecution(session.sessionId);
     if (command.operation === "sendMessage") {
       if (session.activeTurnId) fail("SESSION_BUSY", "Session already has an active or unresolved turn.");
       if (session.runtimeState === "unknown" || session.connectionState !== "connected") fail("RECOVERY_REQUIRED", "Conversation recovery is unresolved.");
@@ -391,6 +455,40 @@ export class HostDaemon {
         this.emit(this.session(session.sessionId),"interaction_response_delivered",{interaction:publicInteraction(current)},this.store!.get<Turn>("turn",turn.turnId)!);
       } else fail("INVALID_INPUT", "Unknown host command.");
     }
+  }
+  private confirmContext(session: Session, saved: SavedContext): void {
+    saved.confirmed = true;
+    this.store!.put("context",JSON.stringify([session.sessionId,saved.record.contextId]),saved);
+    this.emit(this.session(session.sessionId),"context_appended",{contextId:saved.record.contextId,source:saved.record.source,segmentId:saved.record.segmentId});
+  }
+  private async appendContext(command: Command): Promise<void> {
+    const session = this.session(command.sessionId);
+    if (!session.codexThreadId || session.connectionState !== "connected" || session.runtimeState === "unknown") fail("SESSION_NOT_READY","Context append requires a connected, confirmed conversation.");
+    if (session.activeTurnId) fail("SESSION_BUSY","Wait for the active turn to stop before appending context.");
+    if (command.authority !== "operator" && this.privateConversation(session.codexThreadId)) fail("FORBIDDEN","This conversation requires the Core operator.");
+    const {contextId,segmentId,source,text} = command.input;
+    const key = JSON.stringify([session.sessionId,contextId]), fingerprint = canonicalJson([segmentId,source,text]);
+    const existing = this.store!.get<SavedContext>("context",key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) fail("REQUEST_CONFLICT","Context ID was already used with different content.");
+      if (existing.confirmed) return;
+      if (await this.runtime.hasSessionContext(session.codexThreadId,session.codexHome!,existing.itemId,existing.nativeText)) { this.confirmContext(session,existing); return; }
+      fail("DELIVERY_UNCERTAIN","The original context append has not been confirmed. Reconcile its original request.",true);
+    }
+    if (this.store!.list<SavedContext>("context").some(c=>c.record.sessionId===session.sessionId && !c.confirmed)) fail("DELIVERY_UNCERTAIN","Reconcile the earlier context append before adding another record.",true);
+    const saved: SavedContext = {
+      record:{contextId:String(contextId),sessionId:session.sessionId,segmentId:String(segmentId),source:source as SessionContext["source"],text:String(text),createdAt:now(),sequence:session.latestCursor+1,afterTurnId:this.store!.list<Turn>("turn").filter(t=>t.sessionId===session.sessionId && t.codexTurnId).at(-1)?.codexTurnId??null},
+      fingerprint,itemId:`dewbow-context-${createHash("sha256").update(key).digest("hex")}`,
+      nativeText:JSON.stringify({kind:"externalConversationHistory",contextId,segmentId,source,text}),confirmed:false,commandId:command.commandId,
+    };
+    const present = await this.runtime.hasSessionContext(session.codexThreadId,session.codexHome!,saved.itemId,saved.nativeText);
+    if (!present) {
+      if (this.session(session.sessionId).activeTurnId) fail("SESSION_BUSY","A turn started before context append.");
+      this.store!.put("context",key,saved);
+      await this.runtime.appendSessionContext(session.codexThreadId,saved.itemId,saved.nativeText);
+    }
+    if (!await this.runtime.hasSessionContext(session.codexThreadId,session.codexHome!,saved.itemId,saved.nativeText)) fail("DELIVERY_UNCERTAIN","Native context persistence has not been confirmed.",true);
+    this.confirmContext(session,saved);
   }
   private rememberMode(session:Session,result:{model?:string;reasoningEffort?:string|null}):void {
     const saved=session.sessionConfig?.resolved,model=saved?.model??result.model,reasoningEffort=saved ? saved.reasoningEffort : result.reasoningEffort??null;

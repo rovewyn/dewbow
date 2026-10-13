@@ -15,11 +15,11 @@ export function useCoreHistory(sessionId: string) {
       try {
         for (let count = 0; count < 25; count++) {
           const snapshot = saved.current, updateCursor = snapshot.updateCursor;
-          const page = await api<History>("readSessionHistory", { sessionId, cursor: snapshot.eventCursor, limit: 50, ...(updateCursor ? { updateCursor } : {}) }, abort.signal);
+          const page = await api<History>("readSessionHistory", { sessionId, cursor: snapshot.eventCursor, limit: 50, ...(snapshot.contextCursor!==undefined ? {contextCursor:snapshot.contextCursor} : {}), ...(updateCursor ? { updateCursor } : {}) }, abort.signal);
           if (abort.signal.aborted) return;
-          saved.current = mergeHistory(saved.current, page, updateCursor ? "newer" : "initial"); setHistory(saved.current);
+          saved.current = mergeHistory(saved.current, page, updateCursor || snapshot.contextCursor!==undefined ? "newer" : "initial"); setHistory(saved.current);
           setError([page.historyError, page.eventsError].filter(Boolean).map(item => `${item!.code}: ${item!.message}`).join(" · ") || null);
-          if (page.historyError || page.eventsError || !page.hasMore && !page.hasMoreUpdates) break;
+          if (page.historyError || page.eventsError || !page.hasMore && !page.hasMoreUpdates && !page.hasMoreContexts) break;
         }
       } catch (cause) { if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : "History could not be read."); }
       finally { if (!abort.signal.aborted) { setLoading(false); timer = setTimeout(() => void poll(), 1500); } }
@@ -28,11 +28,13 @@ export function useCoreHistory(sessionId: string) {
   }, [sessionId]);
   async function loadOlder() {
     const abort = controller.current, cursor = saved.current.beforeCursor;
-    if (!abort || abort.signal.aborted || !cursor || olderRead.current) return;
+    if (!abort || abort.signal.aborted || !cursor && !saved.current.beforeContextCursor || olderRead.current) return;
     olderRead.current = true; setLoadingOlder(true);
     try {
-      const page = await api<History>("readSessionHistory", { sessionId, beforeCursor: cursor, cursor: saved.current.eventCursor, limit: 50 }, abort.signal);
+      const page = await api<History>("readSessionHistory", { sessionId, ...(cursor ? {beforeCursor:cursor} : {}), ...(saved.current.beforeContextCursor ? {beforeContextCursor:saved.current.beforeContextCursor} : {}), cursor: saved.current.eventCursor, limit: 50 }, abort.signal);
       if (abort.signal.aborted) return;
+      if (!cursor) page.beforeCursor=saved.current.beforeCursor;
+      if (!saved.current.beforeContextCursor) page.beforeContextCursor=saved.current.beforeContextCursor??null;
       saved.current = mergeHistory(saved.current, page, "older"); setHistory(saved.current);
       setError([page.historyError, page.eventsError].filter(Boolean).map(item => `${item!.code}: ${item!.message}`).join(" · ") || null);
     } catch (cause) { if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : "Older history could not be read."); }

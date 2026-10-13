@@ -8,7 +8,7 @@ import { TeamStore } from "./store.js";
 
 const sessionOperations = new Set(["createAgentSession", "listWorkspaceProfiles", "listHosts","createMemberSession","listSessionBindings","getSessionBinding","retrySessionBindingCreation","connectSessionBinding","sendBindingMessage","steerBindingTurn","answerBindingQuestions","interruptBindingTurn","readBindingHistory","getBindingActivity","readBindingContent"]);
 
-const channelOperations = new Set(["getChannels", "createChatbot", "updateChatbot", "createChannelConnection", "updateChannelConnection", "bindChannelConversation", "retryChannelDelivery"]);
+const channelOperations = new Set(["getChannels", "createChatbot", "updateChatbot", "createChannelConnection", "updateChannelConnection", "bindChannelConversation", "retryChannelDelivery", "closeChannelDelivery", "readChannelConversation", "beginChannelTakeover", "endChannelTakeover", "sendChannelMessage"]);
 export class TeamApi {
   readonly channels: ChannelRuntime;
   private readonly management: TeamManagement;
