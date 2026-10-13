@@ -25,6 +25,8 @@ Core can be used directly by an external API or MCP client without Team. Team ca
 
 All npm packages share the `@dewbow` scope. Core directories and package names use the `core-` prefix; Team directories and package names use `team-`. The private root coordinator is `@dewbow/workspace`. Root application commands use `core:*` or `team:*`; commands that load local environment files use `local:core:*` or `local:team:*`. Contract versions remain `v1`.
 
+The root `local:up`, `local:status` and `local:down` commands coordinate a real local Core/Team stack and its owned Codex runtime. Per-service commands remain independent; isolated demos select their own private state directory and ports.
+
 | Project | Package | Responsibility |
 | --- | --- | --- |
 | `packages/core-protocol` | `@dewbow/core-protocol` | Core management contracts and service journal |

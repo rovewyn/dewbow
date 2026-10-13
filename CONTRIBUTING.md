@@ -16,6 +16,8 @@ Run `npm run build` to build all workspaces in dependency order, then `npm run t
 
 Write only the necessary unit tests described in `AGENTS.md`. Use synthetic temporary fixtures. Keep real discovery results in ignored local directories and out of package contents.
 
+`mise exec -- npm run local:up` builds and starts the real Core, Team and Codex stack after checking the configured CLI and login. Use `local:status` to inspect readiness and `local:down` to close its owned services and runtime. All three commands accept `-- --state-dir <directory>`; use separate ignored directories and ports for demos. On Windows, pass `--codex-executable <standalone-codex.exe>` to `up` or configure the private daemon environment file. Existing per-service commands remain independent. See `docs/operations.md` for options, private controller state and recovery.
+
 `npm run team:backend` starts the independent Team backend after building its prerequisites; `npm run team:check` validates its configuration with `DEWBOW_TEAM_OPERATOR_TOKEN` set. `npm run team:web` starts Team UI development at `http://127.0.0.1:5174`; `npm run team:web:preview` serves its built assets at `http://127.0.0.1:4174`. For a complete preview, use Team's backend origin at `http://127.0.0.1:3100`. `npm run local:init` adds a separate Team credential and configuration while preserving existing Core values, then `npm run local:team:backend` starts the built backend. See [Team workspace](docs/team/workspace.md) for configuration and [local operations](docs/operations.md) for both applications.
 
 ## Enable commit checks

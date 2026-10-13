@@ -88,6 +88,18 @@ export function ensurePrivateFile(path: string): void {
   secure([resolve(path)]);
 }
 
+/** Protect a reader's existing file without recreating concurrently removed state. */
+export function protectExistingPrivateFile(path: string): void {
+  const info = lstatSync(path);
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("Private state must be a regular file.");
+  try { secure([resolve(path)]); }
+  catch (error) {
+    // Surface ENOENT if a controller removed its record during Windows ACL validation.
+    lstatSync(path);
+    throw error;
+  }
+}
+
 /** Exclusive creation preserves credentials when initializers race or are rerun. */
 export function createPrivateFile(path: string, content: string): boolean {
   ensurePrivateDirectory(dirname(path));
