@@ -12,3 +12,5 @@ Dewbow-owned contracts remain `v1` during early development.
 - [Data model and management API](data-model.md)
 - [Member sessions and Core integration](sessions.md)
 - [Operator Web interface](web.md)
+
+- [Agent chat channels and isolated workspaces](channels.md)

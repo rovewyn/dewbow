@@ -10,7 +10,7 @@ Create a team, add members, and select a definition for each member. An empty se
 
 ## Sessions
 
-Choose New session on a member, select a connected Core host, and enter an absolute working directory on that host. This starts a new native conversation. Open an existing session to return to earlier work. Session configuration shows both the frozen requested overrides and Core's resolved snapshot. Definition edits do not change existing sessions.
+Choose New session on a member, select a connected Core host, and choose an isolated workspace profile or an existing absolute working directory on that host. This starts a new native conversation. Open an existing session to return to earlier work. Session configuration shows both the frozen requested overrides and Core's resolved snapshot. Definition edits do not change existing sessions.
 
 Opening a session polls binding details and history without connecting it. Connection state and runtime state appear separately. Select Connect session explicitly to resume the original Core session. Interruption targets the observed active turn. Approval decisions remain in Core; the interface provides a link to Core when a turn needs approval.
 
@@ -31,3 +31,5 @@ Confirmed host unavailability disables session mutations and content loads even 
 `npm run team:web` starts the Vite development server on port 5174 with the documented API proxy. Use the Team backend on port 3100 for a production-build preview; this exercises its authentication, static-file handling, and content security policy together. `npm run team:web:preview` serves static assets only and does not provide the Team API.
 
 The Web interface supports desktop and narrow mobile viewports, labeled native forms, keyboard focus indicators, modal dialogs, and conversation and configuration views with shared request delivery disclosure. Shared model and existing history tests protect independent cursors, retained final-page polling, message deduplication, terminal-message precedence, and failed-read preservation. Validate mutations and connection recovery with synthetic local data before using real hosts.
+
+Sessions offers New agent session without a member or IM connection, using a host-owned isolated workspace profile. Channels manages chatbots, DingTalk connections, identity mappings and retained delivery retries. Both entrances open the same Core-backed session view. See [Channels](channels.md) for activation, controls and binding requirements.

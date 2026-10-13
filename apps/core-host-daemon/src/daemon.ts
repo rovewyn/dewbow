@@ -17,6 +17,7 @@ import { SessionContent } from "./content.js";
 import { projectItem } from "./history.js";
 import {approvalResponse,builtinQuestion,createInteraction,interactionDetails,publicInteraction,validateAnswers,type NativeInteraction} from "./interactions.js";
 
+import { Workspaces } from "./workspaces.js";
 interface Journal { command: Command; fingerprint: string; result: OperationResult }
 export class HostDaemon {
   private store: Store | undefined;
@@ -132,8 +133,8 @@ export class HostDaemon {
   }
   private async query(query: HostQuery): Promise<void> {
     try {
-      let result: NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | {interactions:Interaction[]};
-      if (query.operation === "discoverSessions") {
+      let result: { profiles: import("@dewbow/core-protocol").WorkspaceProfile[] } | NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | {interactions:Interaction[]};
+      if (query.operation === "listWorkspaceProfiles") { result = new Workspaces(this.config.workspaces).list(); } else if (query.operation === "discoverSessions") {
         if (!this.inventory || this.inventory.expires < Date.now()) {
           this.inventory = { expires: Date.now() + 10000, snapshot: this.discoverSessions({ codexExecutable: this.config.codexExecutable, signal: AbortSignal.any([this.reads.signal, AbortSignal.timeout(20000)]) }) };
         }
@@ -284,16 +285,19 @@ export class HostDaemon {
       const input = validateInput("createSession", command.input);
       if (command.input.hostId !== this.config.hostId) fail("INVALID_INPUT", "Session targets another host.");
       const timestamp = now();
-      const session: Session = { sessionId: command.sessionId, hostId: this.config.hostId, workDir: String(command.input.workDir), codexThreadId: null,
+      const session: Session = { sessionId: command.sessionId, hostId: this.config.hostId, workDir: typeof command.input.workDir === "string" ? command.input.workDir : null, codexThreadId: null,
         sessionConfig: { overrides: (input.sessionOptions ?? {}) as SessionOptions, resolved: null, ...(input.agentRef ? { agentRef: input.agentRef as AgentRef } : {}) },
         codexHome: await realpath(this.config.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex")),
         connectionState: "connecting", createdAt: timestamp, runtimeState: "unknown", observedAt: timestamp, lastKnownState: "unknown", lastKnownAt: timestamp, activeTurnId: null, latestCursor: 0 };
       this.store!.put("session", session.sessionId, session);
+      if (input.workspaceProfileId) {
+        session.workDir = await new Workspaces(this.config.workspaces).prepare(session, String(input.workspaceProfileId), () => this.emit(session, "workspace_updated", {}, undefined, false));
+      }
       try {
-        if (!isAbsolute(session.workDir) || !(await stat(session.workDir)).isDirectory()) throw new Error("Invalid directory");
+        if (!session.workDir || !isAbsolute(session.workDir) || !(await stat(session.workDir)).isDirectory()) throw new Error("Invalid directory");
         await access(session.workDir, constants.R_OK | constants.W_OK | constants.X_OK); session.workDir = await realpath(session.workDir);
       } catch { fail("INVALID_WORKDIR", "Working directory must be an existing readable and writable absolute directory on this host."); }
-      session.sessionConfig!.resolved = await resolveSessionConfig(this.runtime, session.workDir, session.sessionConfig!.overrides, this.config.model);
+      session.sessionConfig!.resolved = await resolveSessionConfig(this.runtime, session.workDir, session.sessionConfig!.overrides, this.config.model, Boolean(session.workspace));
       this.emit(session, "session_configured", {}, undefined, false);
       const result = await this.runtime.request("thread/start", { ...this.threadOptions(session),ephemeral:false,experimentalRawEvents:true });
       session.codexThreadId = result.thread.id; this.store!.put("session", session.sessionId, session);
@@ -304,6 +308,7 @@ export class HostDaemon {
     }
     if (command.operation === "connectSession") {
       let session = this.store!.get<Session>("session", command.sessionId);
+      if (session?.workspace) await new Workspaces(this.config.workspaces).verify(session);
       if (session?.activeTurnId) fail("SESSION_BUSY", "Session already has an active or unresolved turn.");
       if (session?.connectionState === "connected" && session.runtimeState !== "unknown") { this.emit(session, "session_connected"); return; }
       if (!session) {
@@ -332,6 +337,7 @@ export class HostDaemon {
       this.inventory = undefined; this.emit(session, "session_connected"); return;
     }
     const session = this.session(command.sessionId);
+    if (session.workspace && ["sendMessage", "steerTurn", "answerQuestions"].includes(command.operation)) await new Workspaces(this.config.workspaces).verify(session);
     if (!session.codexThreadId) fail("SESSION_NOT_READY", "Codex conversation has not been created.");
     if(command.authority!=="operator" && ["sendMessage","steerTurn","answerQuestions"].includes(command.operation) && this.privateConversation(session.codexThreadId))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
     if (command.operation === "sendMessage") {
@@ -393,9 +399,9 @@ export class HostDaemon {
   }
   private threadOptions(session: Session): import("@dewbow/core-sdk").ConnectSessionOptions {
     if (session.sessionConfig === undefined || (session.sessionConfig !== null && !session.sessionConfig.resolved)) fail("RECOVERY_REQUIRED", "Session configuration snapshot is missing. Start with fresh Dewbow state.");
-    if (session.sessionConfig) return sessionThreadOptions(session.workDir, session.sessionConfig.resolved!);
+    if (session.sessionConfig) return sessionThreadOptions(session.workDir!, session.sessionConfig.resolved!);
     // Native adoption has no Team definition. Preserve its native model and instructions.
-    return { cwd: session.workDir, approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" };
+    return { cwd: session.workDir!, approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" };
   }
   private confirmTurnStarted(session: Session, turn: Turn): void {
     // The RPC response and notification confirm the same start in either order.
@@ -511,7 +517,7 @@ export class HostDaemon {
   private async refreshQuestionOrigin(session:Session,turn:Turn,interaction:NativeInteraction):Promise<void> {
     try {
       // Rollout ownership is not provenance if the active sandbox may write it.
-      const overlap=relative(session.workDir,session.codexHome!);
+      const overlap=relative(session.workDir!,session.codexHome!);
       if((!isAbsolute(overlap) && overlap!==".." && !overlap.startsWith(`..${sep}`)) || !session.sessionConfig?.resolved || session.sessionConfig.resolved.sandbox.type!=="workspaceWrite" || session.sessionConfig.resolved.sandbox.writableRoots.length)return;
       const sandbox=session.sessionConfig.resolved.sandbox;
       for(const root of [...(!sandbox.excludeTmpdirEnvVar ? [tmpdir()] : []),...(!sandbox.excludeSlashTmp && process.platform!=="win32" ? ["/tmp"] : [])]) {
@@ -562,6 +568,7 @@ export class HostDaemon {
       if (!session.codexThreadId || (!session.connectionConfirmedAt && !session.activeTurnId)) continue;
       const active = session.activeTurnId ? this.store!.get<Turn>("turn", session.activeTurnId) : undefined;
       try {
+        if (session.workspace) await new Workspaces(this.config.workspaces).verify(session);
         if (session.sessionConfig?.resolved) await checkSavedModel(this.runtime, session.sessionConfig.resolved);
         const result = await this.runtime.connectSession(session.codexThreadId, { ...this.threadOptions(session), excludeTurns: false });
         this.rememberMode(session,result);

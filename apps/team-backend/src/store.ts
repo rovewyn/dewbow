@@ -32,7 +32,7 @@ export class TeamStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
     const version = this.db.prepare("PRAGMA user_version").get() as Row;
-    if (version.user_version !== 0 && version.user_version !== 1) {
+    if (version.user_version !== 0 && version.user_version !== 2) {
       this.db.close();
       fail("RECOVERY_REQUIRED", "Use a fresh Team database for the v1 contract.");
     }
@@ -53,8 +53,9 @@ export class TeamStore {
       );
       CREATE INDEX IF NOT EXISTS team_members_team_id ON team_members(team_id);
       CREATE TABLE IF NOT EXISTS session_bindings (
-        binding_id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES team_members(member_id),
-        session_id TEXT UNIQUE, host_id TEXT NOT NULL, work_dir TEXT NOT NULL,
+        binding_id TEXT PRIMARY KEY, member_id TEXT REFERENCES team_members(member_id),
+        create_caller TEXT NOT NULL, create_operation TEXT NOT NULL, workspace_profile_id TEXT,
+        session_id TEXT UNIQUE, host_id TEXT NOT NULL, work_dir TEXT,
         agent_ref_json TEXT NOT NULL, create_request_id TEXT NOT NULL, created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS session_bindings_member_id ON session_bindings(member_id);
@@ -65,7 +66,7 @@ export class TeamStore {
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         PRIMARY KEY (caller, operation, request_id)
       );
-      PRAGMA user_version = 1;
+      PRAGMA user_version = 2;
     `);
   }
 
@@ -111,6 +112,7 @@ export class TeamStore {
   }
 
   deleteDefinition(definitionId: string): void {
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='channel_chatbots'").get() && this.db.prepare("SELECT 1 FROM channel_chatbots WHERE definition_id=? LIMIT 1").get(definitionId)) fail("DEFINITION_IN_USE", "A chatbot still references this definition.");
     if (this.db.prepare("SELECT 1 FROM team_members WHERE definition_id = ? LIMIT 1").get(definitionId)) fail("DEFINITION_IN_USE", "A team member still references this definition.");
     this.db.prepare("DELETE FROM agent_definitions WHERE definition_id = ?").run(definitionId);
   }
@@ -165,9 +167,9 @@ export class TeamStore {
   }
 
   putBinding(value: SessionBinding): void {
-    this.db.prepare(`INSERT INTO session_bindings VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(binding_id) DO UPDATE SET session_id=excluded.session_id`)
-      .run(value.bindingId, value.memberId, value.sessionId, value.hostId, value.workDir,
+    this.db.prepare(`INSERT INTO session_bindings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(binding_id) DO UPDATE SET session_id=excluded.session_id, work_dir=excluded.work_dir`)
+      .run(value.bindingId, value.memberId, value.createCaller, value.createOperation, value.workspaceProfileId, value.sessionId, value.hostId, value.workDir,
         JSON.stringify(value.agentRef), value.createRequestId, value.createdAt);
   }
 
@@ -179,23 +181,23 @@ export class TeamStore {
 
   private binding(row: Row): SessionBinding {
     return {
-      bindingId: row.binding_id as string, memberId: row.member_id as string,
-      sessionId: row.session_id as string | null, hostId: row.host_id as string, workDir: row.work_dir as string,
+      bindingId: row.binding_id as string, memberId: row.member_id as string | null, createCaller: row.create_caller as string, createOperation: row.create_operation as SessionBinding["createOperation"], workspaceProfileId: row.workspace_profile_id as string | null,
+      sessionId: row.session_id as string | null, hostId: row.host_id as string, workDir: row.work_dir as string | null,
       agentRef: JSON.parse(row.agent_ref_json as string), createRequestId: row.create_request_id as string,
       createdAt: row.created_at as string,
     };
   }
 
   listBindings(teamId?: string, memberId?: string): SessionBinding[] {
-    const rows = this.db.prepare(`SELECT b.* FROM session_bindings b JOIN team_members m ON b.member_id = m.member_id
+    const rows = this.db.prepare(`SELECT b.* FROM session_bindings b LEFT JOIN team_members m ON b.member_id = m.member_id
       WHERE (? IS NULL OR m.team_id = ?) AND (? IS NULL OR b.member_id = ?) ORDER BY b.created_at, b.binding_id`)
       .all(teamId ?? null, teamId ?? null, memberId ?? null, memberId ?? null) as Row[];
     return rows.map(row => this.binding(row));
   }
 
   bindingRequests(caller: string, bindingId: string): RequestRecord[] {
-    const keys = this.db.prepare("SELECT operation, request_id FROM operation_requests WHERE caller = ? AND binding_id = ? ORDER BY created_at, rowid").all(caller, bindingId) as Row[];
-    return keys.map(row => this.findRequest(caller, row.operation as string, row.request_id as string)!);
+    const keys = this.db.prepare("SELECT caller, operation, request_id FROM operation_requests WHERE binding_id = ? ORDER BY created_at, rowid").all(bindingId) as Row[];
+    return keys.map(row => this.findRequest(row.caller as string, row.operation as string, row.request_id as string)!);
   }
 
   findRequest(caller: string, operation: string, requestId: string, fingerprint?: string): RequestRecord | null {

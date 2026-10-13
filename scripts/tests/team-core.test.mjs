@@ -89,7 +89,7 @@ test("independent Team and Core HTTP services preserve frozen requests and execu
   await until(() => commands.length === 1);
   assert.deepEqual(commands[0].input.sessionOptions, options);
   await teamCall("updateAgentDefinition", { definitionId: definition.definitionId, expectedRevision: "1", sessionOptions: { instructionsAppend: "Changed instructions." }, requestId: "edit" });
-  const retry = (await teamCall("retryMemberSessionCreation", { bindingId: first.binding.bindingId })).result;
+  const retry = (await teamCall("retrySessionBindingCreation", { bindingId: first.binding.bindingId })).result;
   assert.equal(retry.binding.sessionId, first.binding.sessionId);
   assert.equal(retry.operation.requestId, first.operation.requestId);
   assert.equal(commands.length, 1);

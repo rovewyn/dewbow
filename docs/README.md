@@ -10,7 +10,7 @@ Dewbow has two applications: Core is the Codex execution platform, and Team is t
 | Conversation execution, turns, interruption, and recovery | Core | Team requests actions for a member's bound session; Core owns runtime state and recovery. |
 | Effective execution configuration | Core | Core resolves and persists the creation snapshot and reuses it when reconnecting. |
 | Agent definitions and revisions | Team | A reusable definition supplies the model, reasoning effort, and additional instructions requested for a new session. |
-| Teams, members, and session bindings | Team | A member is an agent position. Its bindings associate that position with Core sessions. |
+| Teams, members, chatbots, channels, and session bindings | Team | A member is an agent position. Bindings associate members or direct definitions with Core sessions; Channels maps external identities to those bindings. |
 | Conversation history | Core and native Codex storage | Team reads history through Core rather than keeping another conversation store. |
 | Execution approval decisions | Core | Team shows pending state and links to Core. Team administration grants no approval authority. |
 | Service storage and operator authentication | Each application | Core and Team retain separate databases, credentials, startup commands, and login flows. |
@@ -19,7 +19,7 @@ Team's backend holds the Core management credential and calls the authenticated 
 
 Creating a member session freezes the selected definition's revision and requested options. Core records the actual resolved execution configuration. Changing the definition affects future sessions. Existing sessions reconnect using their original configuration. Core treats `agentRef` as provenance and does not resolve Team definitions or memberships.
 
-Core can be used directly by an external API or MCP client without Team. Team can manage definitions, teams, and members without Core, while session execution requires Core. Current Team behavior organizes members and their sessions; task scheduling, member-to-member handoffs, and shared task state are outside its current scope.
+Core can be used directly by an external API or MCP client without Team. Team can manage definitions, teams, and members without Core, while session execution requires Core. Current Team behavior organizes members and their sessions; Channels adds direct IM access to definitions; task scheduling, member-to-member handoffs, and shared task state are outside its current scope.
 
 ## Projects and names
 

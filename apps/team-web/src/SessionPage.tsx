@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ApiError, ContentPage, ContentRef, InteractionDetails, MemberOperation, MemberSessionResult, SessionBinding } from "@dewbow/team-protocol";
+import type { ApiError, ContentPage, ContentRef, InteractionDetails, BindingOperation, SessionBindingResult, SessionBinding } from "@dewbow/team-protocol";
 import { ChatView, type ChatContentState, type ChatDraft, type ChatRequest } from "@dewbow/core-ui/chat";
 import { buildChatModel, projectHistoryWindow } from "@dewbow/core-ui/chat/model";
 import { ApiClientError, call, errorDetail, readInteractionDetails } from "./api.js";
@@ -7,18 +7,18 @@ import type { Catalog, Route } from "./model.js";
 import { Badge, ErrorNotice, PageHeading, shortId } from "./ui.js";
 import { useSession } from "./useSession.js";
 
-interface PendingInput { operation: string; input: Record<string, unknown>; result: MemberSessionResult | null }
+interface PendingInput { operation: string; input: Record<string, unknown>; result: SessionBindingResult | null }
 export interface TeamChatMemory { drafts: Map<string, ChatDraft>; inputs: Map<string, PendingInput> }
 export const createTeamChatMemory = (): TeamChatMemory => ({ drafts: new Map(), inputs: new Map() });
-const labels: Record<string, string> = { createMemberSession: "Create session", connectMemberSession: "Connect session", sendMemberMessage: "Send message", steerMemberTurn: "Add instruction", answerMemberQuestions: "Answer questions", interruptMemberTurn: "Interrupt turn" };
-const isMessage = (operation: string) => ["sendMemberMessage", "steerMemberTurn"].includes(operation);
-const logicalOperation = (operation: string) => operation === "retryMemberSessionCreation" ? "createMemberSession" : operation;
-const requestKey = (bindingId: string, operation: string, requestId: string) => JSON.stringify([bindingId, logicalOperation(operation), requestId]);
-function unresolved(request: MemberOperation) { return request.result ? ["accepted", "unknown"].includes(request.result.status) : !request.error || request.error.retryable; }
+const labels: Record<string, string> = { createMemberSession: "Create session", createAgentSession: "Create agent session", connectSessionBinding: "Connect session", sendBindingMessage: "Send message", steerBindingTurn: "Add instruction", answerBindingQuestions: "Answer questions", interruptBindingTurn: "Interrupt turn" };
+const isMessage = (operation: string) => ["sendBindingMessage", "steerBindingTurn"].includes(operation);
+function unresolved(request: BindingOperation) { return request.result ? ["accepted", "unknown"].includes(request.result.status) : !request.error || request.error.retryable; }
 
 export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, memory }: { bindingId: string; catalog: Catalog; navigate: (route: Route) => void; onBindingChanged: (binding: SessionBinding) => void; memory: TeamChatMemory }) {
   const observed = useSession(bindingId), details = observed.details;
   const binding = details?.binding ?? catalog.bindings.find(item => item.bindingId === bindingId);
+  const logicalOperation = (operation: string) => operation === "retrySessionBindingCreation" ? binding?.createOperation ?? "createMemberSession" : operation;
+  const requestKey = (bindingId: string, operation: string, requestId: string) => JSON.stringify([bindingId, logicalOperation(operation), requestId]);
   const member = catalog.members.find(item => item.memberId === binding?.memberId);
   const session = details?.core?.session, display = details?.core ?? observed.lastCore, requests = details?.requests ?? [];
   const [tab, setTab] = useState<"conversation" | "configuration">("conversation");
@@ -57,7 +57,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
     const requestId = String(input.requestId ?? binding?.createRequestId), key = requestKey(bindingId, operation, requestId), pending: PendingInput = { operation, input, result: null };
     memory.inputs.set(key, pending);
     try {
-      const result = await call<MemberSessionResult>(operation, input, abort.signal); pending.result = result;
+      const result = await call<SessionBindingResult>(operation, input, abort.signal); pending.result = result;
       const terminal = result.operation ? ["delivered", "error"].includes(result.operation.status) : result.error && !result.error.retryable;
       if (terminal) release(key, pending, result.operation?.status === "delivered");
       if (abort.signal.aborted) return;
@@ -87,7 +87,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
     const baseline: ChatContentState = action === "more" && previous ? previous : { status: "ready", text: "", nextCursor: null, bytesLoaded: 0, completeness: ref.completeness, error: null };
     contentReads.current.add(contentId); updateContent(contentId, { ...baseline, status: "loading", error: null });
     try {
-      const page = await call<ContentPage>("readMemberSessionContent", { bindingId, contentId, limitBytes: 65536, ...(cursor ? { contentCursor: cursor } : {}) }, abort.signal);
+      const page = await call<ContentPage>("readBindingContent", { bindingId, contentId, limitBytes: 65536, ...(cursor ? { contentCursor: cursor } : {}) }, abort.signal);
       if (abort.signal.aborted || privacy.current) return;
       const bytes = new TextEncoder().encode(page.text).length;
       if (page.contentId !== contentId || page.byteOffset !== baseline.bytesLoaded || page.nextCursor && (!bytes || page.nextCursor === cursor)) throw new Error("Content read did not advance from the expected position.");
@@ -98,12 +98,12 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
   function retry(key: string) {
     const cached = memory.inputs.get(key); if (cached) { void command(cached.operation, cached.input); return; }
     const request = requests.find(item => requestKey(bindingId, item.operation, item.requestId) === key); if (!request) return;
-    if (request.operation === "createMemberSession") { void command("retryMemberSessionCreation", { bindingId }); return; }
+    if (request.operation === "createMemberSession" || request.operation === "createAgentSession") { void command("retrySessionBindingCreation", { bindingId }); return; }
     if (isMessage(request.operation)) { setRetryKey(key); setNotice("Enter the exact original message. Retry preserves the original Team request and its Core mapping."); setTab("conversation"); return; }
     const interaction = details?.core?.interactions.find(item => item.interactionId === request.interactionId && item.turnId === request.turnId);
     const retained = interaction?.details ?? interactionDetails.get(interaction?.content.contentId ?? "");
-    if (request.operation === "answerMemberQuestions" && !retained?.answers) { setError({ code: "ORIGINAL_INPUT_REQUIRED", message: privacy.current ? "The original answers are unavailable in Team. Inspect the original interaction in Core." : "Load the original interaction answers before retrying.", retryable: false }); if (interaction?.content.contentId) void loadInteraction(interaction.content.contentId); return; }
-    void command(request.operation, { bindingId, requestId: request.requestId, ...(request.turnId ? { turnId: request.turnId } : {}), ...(request.operation === "answerMemberQuestions" ? { interactionId: request.interactionId, answers: retained!.answers } : {}) });
+    if (request.operation === "answerBindingQuestions" && !retained?.answers) { setError({ code: "ORIGINAL_INPUT_REQUIRED", message: privacy.current ? "The original answers are unavailable in Team. Inspect the original interaction in Core." : "Load the original interaction answers before retrying.", retryable: false }); if (interaction?.content.contentId) void loadInteraction(interaction.content.contentId); return; }
+    void command(request.operation, { bindingId, requestId: request.requestId, ...(request.turnId ? { turnId: request.turnId } : {}), ...(request.operation === "answerBindingQuestions" ? { interactionId: request.interactionId, answers: retained!.answers } : {}) });
   }
   const pendingMessage = requests.some(item => isMessage(item.operation) && unresolved(item)) || [...memory.inputs.values()].some(item => item.input.bindingId === bindingId && isMessage(item.operation));
   const canSteer = !privateContext && ready && !pendingMessage && active?.codexTurnId && ["running", "awaiting_input", "awaiting_approval"].includes(active.state);
@@ -114,12 +114,12 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
   for (const [key, pending] of memory.inputs) if (pending.input.bindingId === bindingId && !chatRequests.some(item => item.key === key)) chatRequests.push({ key, requestId: String(pending.input.requestId ?? binding?.createRequestId), label: labels[logicalOperation(pending.operation)] ?? pending.operation, status: pending.result?.operation?.status ?? "unknown", error: pending.result?.error?.message ?? "Delivery is not confirmed. Retry the original request.", canRetry: !unavailable && !busy });
   const interactions = (display?.interactions ?? []).map(item => ({ ...item, ...(item.details ?? interactionDetails.get(item.content.contentId ?? "") ? { details: item.details ?? interactionDetails.get(item.content.contentId ?? "")! } : {}) }));
   const model = buildChatModel({ sessionKey: bindingId, turns: display?.turns ?? [], ...projectHistoryWindow(observed.history, display?.turns ?? [], session?.activeTurnId ?? null), interactions, requests: chatRequests, restricted: privateContext });
-  const creation = requests.find(item => item.operation === "createMemberSession"), connect = requests.find(item => item.operation === "connectMemberSession" && unresolved(item));
+  const creation = requests.find(item => item.operation === binding?.createOperation), connect = requests.find(item => item.operation === "connectSessionBinding" && unresolved(item));
   return <>
-    <PageHeading eyebrow="MEMBER SESSION" title={member?.name ?? "Member session"} description={binding?.workDir ?? "Loading session…"} actions={<button className="button secondary" onClick={() => navigate(member ? { page: "teams", teamId: member.teamId } : { page: "sessions" })}>← Back</button>} />
+    <PageHeading eyebrow="AGENT SESSION" title={member?.name ?? catalog.definitions.find(item => item.definitionId === binding?.agentRef.id)?.name ?? "Agent session"} description={binding?.workDir ?? "Loading session…"} actions={<button className="button secondary" onClick={() => navigate(member ? { page: "teams", teamId: member.teamId } : { page: "sessions" })}>← Back</button>} />
     <div className="session-toolbar"><div className="status-group"><Badge tone={ready ? "good" : "warning"}>{!unavailable && session ? session.connectionState : "Connection unknown"}</Badge><Badge tone={!unavailable && session?.runtimeState === "running" ? "purple" : "neutral"}>{!unavailable && session ? session.runtimeState.replaceAll("_", " ") : "Runtime unknown"}</Badge><span className="muted">{binding?.hostId} · {shortId(binding?.sessionId ?? null)}</span></div><div className="heading-actions">
-      {creation && unresolved(creation) && (!binding?.sessionId || creation.result?.status === "unknown" || creation.error) && <button className="button secondary small" disabled={busy} onClick={() => void command("retryMemberSessionCreation", { bindingId })}>Retry creation</button>}
-      <button className="button secondary small" disabled={busy || unavailable || !binding?.sessionId || Boolean(session?.activeTurnId) || ready} onClick={() => void command("connectMemberSession", { bindingId, requestId: connect?.requestId ?? crypto.randomUUID() })}>{connect ? "Retry connection" : "Connect session"}</button>
+      {creation && unresolved(creation) && (!binding?.sessionId || creation.result?.status === "unknown" || creation.error) && <button className="button secondary small" disabled={busy} onClick={() => void command("retrySessionBindingCreation", { bindingId })}>Retry creation</button>}
+      <button className="button secondary small" disabled={busy || unavailable || !binding?.sessionId || Boolean(session?.activeTurnId) || ready} onClick={() => void command("connectSessionBinding", { bindingId, requestId: connect?.requestId ?? crypto.randomUUID() })}>{connect ? "Retry connection" : "Connect session"}</button>
     </div></div>
     <ErrorNotice error={observed.error ?? details?.coreError ?? null} /><ErrorNotice error={error} />{notice && <p className="notice" role="status">{notice}</p>}
     {privateContext && <div className="notice warning"><p>This conversation contains private operator input. Continue in Core.</p>{operatorUrl && <a href={operatorUrl} target="_blank" rel="noreferrer">Open Core ↗</a>}</div>}
@@ -133,9 +133,9 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
         composer={{ action: original && !unavailable ? "retry" : canSteer ? "steer" : canSend ? "send" : "disabled", turnId: active?.turnId ?? null, mode: original?.mode ?? originalTurn?.mode ?? active?.mode ?? draft.mode, modeLocked: Boolean(active || original), retryRequestKey: retryKey, busy, reason: original ? "Retry preserves the original request, mode and Core mapping." : privateContext ? "Continue this private conversation in Core." : unavailable || !ready ? "Reconnect the session to send. Your draft stays in this binding." : pendingMessage ? "An earlier message is unresolved. Inspect request delivery." : null }}
         history={{ loading: !details, hasOlder: Boolean(observed.history.beforeCursor), loadingOlder: observed.loadingOlder, error: [observed.historyError, display?.interactionsError].filter(Boolean).map(item => item!.message).join(" · ") || null }}
         contents={contents} loadingInteractions={loadingInteractions} canReadContent={ref => !privateContext && ref.authority === "agent"} contentReadsAvailable={!unavailable} canRespond={item => !privateContext && item.kind === "questions" && item.authority === "agent" && !item.sensitive} canSubmitInteraction={item => Boolean(ready && item.status === "pending" && item.turnId === session?.activeTurnId)} {...(operatorUrl ? { operatorUrl } : {})}
-        onSend={input => run("sendMemberMessage", input)} onSteer={input => run("steerMemberTurn", input)} onAnswer={input => run("answerMemberQuestions", input)} onDecideApproval={() => setError({ code: "FORBIDDEN", message: "Decide approvals in Core.", retryable: false })}
-        onInterrupt={ready && session?.activeTurnId ? () => run("interruptMemberTurn", { turnId: session.activeTurnId }) : null}
-        onRetry={retry} onRetryMessage={({ requestKey: key, message }) => { const target = requests.find(item => requestKey(bindingId, item.operation, item.requestId) === key && isMessage(item.operation)); if (target) void command(target.operation, { bindingId, requestId: target.requestId, message, ...(target.operation === "steerMemberTurn" ? { turnId: target.turnId } : { mode: target.mode ?? "default" }) }); }} onCancelRetry={retryKey ? () => setRetryKey(null) : null}
+        onSend={input => run("sendBindingMessage", input)} onSteer={input => run("steerBindingTurn", input)} onAnswer={input => run("answerBindingQuestions", input)} onDecideApproval={() => setError({ code: "FORBIDDEN", message: "Decide approvals in Core.", retryable: false })}
+        onInterrupt={ready && session?.activeTurnId ? () => run("interruptBindingTurn", { turnId: session.activeTurnId }) : null}
+        onRetry={retry} onRetryMessage={({ requestKey: key, message }) => { const target = requests.find(item => requestKey(bindingId, item.operation, item.requestId) === key && isMessage(item.operation)); if (target) void command(target.operation, { bindingId, requestId: target.requestId, message, ...(target.operation === "steerBindingTurn" ? { turnId: target.turnId } : { mode: target.mode ?? "default" }) }); }} onCancelRetry={retryKey ? () => setRetryKey(null) : null}
         onLoadOlder={() => void observed.loadOlder()} onLoadContent={(ref, action) => void loadContent(ref, action)} onLoadInteraction={item => { if (item.content.authority === "agent" && item.content.contentId) void loadInteraction(item.content.contentId); }} />
     </section>
     {tab === "configuration" && <section className="card configuration-panel" id="panel-configuration" role="tabpanel" aria-labelledby="tab-configuration"><div className="section-heading"><h2>Session configuration</h2><Badge tone="purple">Fixed at creation</Badge></div><p className="muted">Definition {binding?.agentRef.id === "default" ? "Default Codex" : shortId(binding?.agentRef.id ?? null)} · revision {binding?.agentRef.revision}</p>

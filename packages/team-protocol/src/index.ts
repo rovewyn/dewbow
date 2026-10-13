@@ -46,10 +46,13 @@ export interface TeamMember {
 
 export interface SessionBinding {
   bindingId: string;
-  memberId: string;
+  memberId: string | null;
+  createCaller: string;
+  createOperation: "createMemberSession" | "createAgentSession";
+  workspaceProfileId: string | null;
   sessionId: string | null;
   hostId: string;
-  workDir: string;
+  workDir: string | null;
   agentRef: AgentRef;
   createRequestId: string;
   createdAt: string;
@@ -78,4 +81,6 @@ export function canonicalJson(value: unknown): string {
 }
 
 export { normalizeDefinitionId, validateInput } from "./validation.js";
-export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreInteraction, CoreSessionDetails, NativeMessage, SessionActivity, ContentRef, ContentPage, CoreHistory, MemberOperation, MemberSessionResult, SessionBindingDetails,UserQuestion,QuestionAnswer,InteractionDetails,TurnMode } from "./core.js";
+export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreInteraction, CoreSessionDetails, NativeMessage, SessionActivity, ContentRef, ContentPage, CoreHistory, BindingOperation, SessionBindingResult, SessionBindingDetails,UserQuestion,QuestionAnswer,InteractionDetails,TurnMode } from "./core.js";
+
+export type { Chatbot, ChannelConnection, ChannelConversation, ChannelDelivery, ChannelState } from "./channels.js";

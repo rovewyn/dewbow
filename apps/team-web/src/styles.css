@@ -207,4 +207,13 @@ fieldset:disabled { opacity: .65; }
   .login-boundary { margin-top: 25px; padding-top: 18px; }
   .login-card { padding: 32px 30px; }
 }
+
+.channel-conversation { padding: 20px; }
+.channel-conversation p { overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .sidebar nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .sidebar nav a { flex-direction: column; padding: 9px 4px; gap: 4px; font-size: 11px; text-align: center; }
+  .section-heading { flex-wrap: wrap; gap: 8px; }
+  .channel-conversation { padding: 16px; }
+}
 .dewbow-chat select { width: auto; }

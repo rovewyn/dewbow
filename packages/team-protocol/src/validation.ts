@@ -40,18 +40,27 @@ export const inputSchemas: Record<string, Field> = {
   archiveTeamMember: object({ memberId: id, requestId: id }, ["memberId", "requestId"]),
   getServiceInfo: object({}),
   listHosts: object({}),
-  createMemberSession: object({ memberId: id, hostId: workDir, workDir, requestId: id }, ["memberId", "hostId", "workDir", "requestId"]),
+  getChannels: object({}, []),
+  createChatbot: object({name:id,definitionId:id,hostId:id,workspaceProfileId:id,enabled:{type:"boolean"},requestId:id},["name","definitionId","hostId","workspaceProfileId","requestId"]),
+  updateChatbot: object({chatbotId:id,name:id,definitionId:id,hostId:id,workspaceProfileId:id,enabled:{type:"boolean"},requestId:id},["chatbotId","requestId"]),
+  createChannelConnection: object({chatbotId:id,credentialRef:id,enabled:{type:"boolean"},requestId:id},["chatbotId","credentialRef","requestId"]),
+  updateChannelConnection: object({connectionId:id,enabled:{type:"boolean"},requestId:id},["connectionId","enabled","requestId"]),
+  bindChannelConversation: object({conversationId:id,bindingId:id,requestId:id},["conversationId","bindingId","requestId"]),
+  retryChannelDelivery: object({deliveryId:id,requestId:id},["deliveryId","requestId"]),
+  listWorkspaceProfiles: object({ hostId: id }, ["hostId"]),
+  createAgentSession: object({ definitionId: id, hostId: id, workspaceProfileId: id, requestId: id }, ["definitionId", "hostId", "workspaceProfileId", "requestId"]),
+  createMemberSession: object({ memberId: id, hostId: workDir, workDir, workspaceProfileId: id, requestId: id }, ["memberId", "hostId", "requestId"]),
   listSessionBindings: object({ teamId: id, memberId: id }),
   getSessionBinding: object({ bindingId: id }, ["bindingId"]),
-  retryMemberSessionCreation: object({ bindingId: id }, ["bindingId"]),
-  connectMemberSession: object({ bindingId: id, requestId: id }, ["bindingId", "requestId"]),
-  sendMemberMessage: object({ bindingId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id,mode:{type:"string",enum:["default","plan"]} },["bindingId","message","requestId"]),
-  steerMemberTurn: object({bindingId:id,turnId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id},["bindingId","turnId","message","requestId"]),
-  answerMemberQuestions: object({bindingId:id,turnId:id,interactionId:id,requestId:id,answers:{type:"array",minItems:1,maxItems:20,items:object({questionId:id,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},["questionId","answers"])}},["bindingId","turnId","interactionId","requestId","answers"]),
-  interruptMemberTurn: object({ bindingId: id, turnId: id, requestId: id }, ["bindingId", "turnId", "requestId"]),
-  readMemberSessionHistory: object({ bindingId:id,cursor:{ type:"integer",minimum:0 },beforeCursor:workDir,afterCursor:workDir,updateCursor:workDir,limit:{ type:"integer",minimum:1,maximum:500 } },["bindingId"]),
-  getMemberSessionActivity: object({ bindingId:id,itemId:workDir },["bindingId","itemId"]),
-  readMemberSessionContent: object({ bindingId:id,contentId:workDir,contentCursor:workDir,limitBytes:{ type:"integer",minimum:4,maximum:262144 } },["bindingId","contentId"]),
+  retrySessionBindingCreation: object({ bindingId: id }, ["bindingId"]),
+  connectSessionBinding: object({ bindingId: id, requestId: id }, ["bindingId", "requestId"]),
+  sendBindingMessage: object({ bindingId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id,mode:{type:"string",enum:["default","plan"]} },["bindingId","message","requestId"]),
+  steerBindingTurn: object({bindingId:id,turnId:id,message:{type:"string",minLength:1,maxLength:100000},requestId:id},["bindingId","turnId","message","requestId"]),
+  answerBindingQuestions: object({bindingId:id,turnId:id,interactionId:id,requestId:id,answers:{type:"array",minItems:1,maxItems:20,items:object({questionId:id,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},["questionId","answers"])}},["bindingId","turnId","interactionId","requestId","answers"]),
+  interruptBindingTurn: object({ bindingId: id, turnId: id, requestId: id }, ["bindingId", "turnId", "requestId"]),
+  readBindingHistory: object({ bindingId:id,cursor:{ type:"integer",minimum:0 },beforeCursor:workDir,afterCursor:workDir,updateCursor:workDir,limit:{ type:"integer",minimum:1,maximum:500 } },["bindingId"]),
+  getBindingActivity: object({ bindingId:id,itemId:workDir },["bindingId","itemId"]),
+  readBindingContent: object({ bindingId:id,contentId:workDir,contentCursor:workDir,limitBytes:{ type:"integer",minimum:4,maximum:262144 } },["bindingId","contentId"]),
 };
 
 function validate(field: Field, value: unknown, path: string): unknown {
@@ -82,7 +91,8 @@ export function validateInput(operation: string, input: unknown): Record<string,
   const schema = Object.hasOwn(inputSchemas, operation) ? inputSchemas[operation] : undefined;
   if (!schema) fail("NOT_FOUND", "Unknown operation.");
   const validated=validate(schema,input,"input") as Record<string,unknown>;
-  if(operation === "sendMemberMessage")validated.mode??="default";
+  if (operation === "createMemberSession" && Boolean(validated.workDir) === Boolean(validated.workspaceProfileId)) fail("INVALID_INPUT", "Choose exactly one workDir or workspaceProfileId.");
+  if(operation === "sendBindingMessage")validated.mode??="default";
   return validated;
 }
 

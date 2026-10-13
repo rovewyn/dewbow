@@ -1,6 +1,9 @@
 import { resolve } from "node:path";
 
+import { readChannelCredentials } from "./channels/runtime.js";
+import type { ChannelCredentials } from "./channels/adapter.js";
 export interface Config {
+  channelCredentials?: ChannelCredentials[];
   host: string;
   port: number;
   publicOrigin: string;
@@ -27,6 +30,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid DEWBOW_CORE_URL.");
   }
   return {
+    channelCredentials: readChannelCredentials(env.DEWBOW_TEAM_CHANNEL_CREDENTIALS),
     host: env.DEWBOW_TEAM_HOST ?? "127.0.0.1", port, publicOrigin, operatorToken,
     databasePath: resolve(env.DEWBOW_TEAM_DATABASE ?? "state/team.sqlite"),
     webDir: resolve(env.DEWBOW_TEAM_WEB_DIR ?? "apps/team-web/dist"), coreUrl, coreToken,

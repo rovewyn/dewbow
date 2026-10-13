@@ -9,7 +9,7 @@ export interface Catalog {
 }
 
 export interface Route {
-  page: "teams" | "definitions" | "sessions";
+  page: "teams" | "definitions" | "sessions" | "channels";
   teamId?: string;
   bindingId?: string;
 }
@@ -17,7 +17,7 @@ export interface Route {
 export function readRoute(): Route {
   const params = new URLSearchParams(location.hash.slice(1));
   const page = params.get("page");
-  return { page: page === "definitions" || page === "sessions" ? page : "teams",
+  return { page: page === "definitions" || page === "sessions" || page === "channels" ? page : "teams",
     ...(params.get("team") ? { teamId: params.get("team")! } : {}),
     ...(params.get("session") ? { bindingId: params.get("session")! } : {}) };
 }
