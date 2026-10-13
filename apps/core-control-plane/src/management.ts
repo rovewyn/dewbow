@@ -42,7 +42,7 @@ export class Management {
     const existing = this.store.get<Operation>("operation", commandId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) fail("REQUEST_CONFLICT", "Request ID was already used with different input.", false, { sessionId: existing.sessionId, ...(existing.turnId ? { turnId: existing.turnId } : {}) });
-      if (["sendMessage","steerTurn","answerQuestions","decideApproval"].includes(existing.operation) && (existing.status === "unknown" || existing.status === "accepted")) {
+      if (["sendMessage","steerTurn","answerQuestions","decideApproval","pauseSessionExecution","resumeSessionExecution","appendSessionContext"].includes(existing.operation) && (existing.status === "unknown" || existing.status === "accepted")) {
         const session = this.session(existing.sessionId);
         this.available(session.hostId);
         this.pendingInputs.set(commandId, input);
@@ -54,7 +54,8 @@ export class Management {
       }
       return publicOperation(existing);
     }
-    if(!caller.operator && ["sendMessage","steerTurn","answerQuestions"].includes(name) && this.privateConversation(String(input.sessionId)))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
+    if(!caller.operator && ["sendMessage","steerTurn","answerQuestions","appendSessionContext"].includes(name) && this.privateConversation(String(input.sessionId)))fail("FORBIDDEN","This conversation contains private operator input and requires the Core operator.");
+    if (name === "resumeSessionExecution" && input.force && !caller.operator) fail("FORBIDDEN","Only the Core operator can force a resume.");
     let session: Session;
     let turnId: string | null = null;
     if (name === "connectSession" && source) {
@@ -73,6 +74,7 @@ export class Management {
     } else {
       session = this.session(String(input.sessionId));
       this.available(session.hostId);
+      if (session.executionPause && ["sendMessage","steerTurn","answerQuestions","decideApproval"].includes(name)) fail("SESSION_PAUSED","Execution submissions are paused on this host daemon.");
       if (name === "connectSession") {
         if (session.activeTurnId) fail("SESSION_BUSY", "Session has an active or unresolved turn.");
         if (this.store.list<Operation>("operation").some(o => o.sessionId === session.sessionId && o.operation === "connectSession" && ["accepted", "unknown"].includes(o.status))) fail("SESSION_NOT_READY", "The previous connection request is unresolved. Inspect it or retry its original request ID.", true);
@@ -110,7 +112,7 @@ export class Management {
       this.store.put("session", session.sessionId, session);
       this.store.put("operation", commandId, operation);
     });
-    if (["sendMessage","steerTurn","answerQuestions"].includes(name)) this.pendingInputs.set(commandId,input);
+    if (["sendMessage","steerTurn","answerQuestions","appendSessionContext"].includes(name)) this.pendingInputs.set(commandId,input);
     this.dispatch(session.hostId, operation);
     return publicOperation(operation);
   }
@@ -199,6 +201,7 @@ export class Management {
   }
   private privateConversation(sessionId:string):boolean {return this.store.list<Interaction>("interaction").some(item=>item.sessionId===sessionId && item.sensitive);}
   private async history(input: Record<string, unknown>,caller:Caller) {
+    if (input.contextCursor!==undefined && input.beforeContextCursor!==undefined) fail("INVALID_INPUT","Choose one context history cursor.");
     if ([input.beforeCursor,input.afterCursor,input.updateCursor].filter(value=>value !== undefined).length > 1) fail("INVALID_INPUT","Choose one history cursor.");
     const session = await this.view(String(input.sessionId)), cursor = Number(input.cursor ?? 0), limit = Number(input.limit ?? 50);
     const empty: EventHistory = { events: [], nextCursor: cursor, hasMore: false, liveMessages: [] };
@@ -206,7 +209,7 @@ export class Management {
       Promise.resolve().then(() => session.managed ? this.query(session.hostId, "readEvents", { sessionId: session.sessionId, cursor, limit },caller.operator ? "operator" : "agent") : empty),
       Promise.resolve().then(() => session.codexThreadId ? this.query(session.hostId, "readSessionHistory", { codexThreadId: session.codexThreadId,
         ...(session.native || session.codexHome ? { codexHome: session.native?.codexHome ?? session.codexHome! } : {}), limit,
-        ...(input.beforeCursor ? { beforeCursor:String(input.beforeCursor) } : {}),...(input.afterCursor ? { afterCursor:String(input.afterCursor) } : {}),...(input.updateCursor ? { updateCursor:String(input.updateCursor) } : {}) },caller.operator ? "operator" : "agent") : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() }),
+        ...(input.beforeCursor ? { beforeCursor:String(input.beforeCursor) } : {}),...(input.afterCursor ? { afterCursor:String(input.afterCursor) } : {}),...(input.updateCursor ? { updateCursor:String(input.updateCursor) } : {}),...(input.contextCursor!==undefined ? {contextCursor:Number(input.contextCursor)} : {}),...(input.beforeContextCursor!==undefined ? {beforeContextCursor:Number(input.beforeContextCursor)} : {}) },caller.operator ? "operator" : "agent") : { messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,observedAt:now() }),
     ]);
     const error = (cause: unknown, message: string) => cause instanceof ManagementError ? cause.detail : { code: "READ_FAILED", message, retryable: true };
     const events = eventRead.status === "fulfilled" ? eventRead.value as EventHistory : empty;
@@ -216,8 +219,10 @@ export class Management {
     const live=this.liveReplies.get(session.sessionId);
     const privateTurns=caller.operator || !this.privateConversation(session.sessionId) ? new Set<string>() : new Set([...this.privateTurns(session.sessionId),...native.messages.map(item=>item.turnId),...native.activities.map(item=>item.turnId),...live.map(item=>item.turnId),...events.events.flatMap(event=>[event.turnId??"",(event.payload.turn as Turn|undefined)?.codexTurnId??""])]);
     return { events: caller.operator ? events.events : maskPrivateEvents(events.events,privateTurns), nextCursor: events.nextCursor, hasMore: events.hasMore,
+      contextRecords:(native.contextRecords??[]).map(record=>!caller.operator && this.privateConversation(session.sessionId) ? {...record,text:"",availability:"restricted"} : record),
+      contextCursor:native.contextCursor,beforeContextCursor:native.beforeContextCursor,hasMoreContexts:native.hasMoreContexts,
       messages:maskPrivateMessages(native.messages,privateTurns),activities:native.activities.map(item=>privateTurns.has(item.turnId) ? maskPrivateActivity(item) : item),beforeCursor:native.beforeCursor,afterCursor:native.afterCursor,updateCursor:native.updateCursor,hasMoreUpdates:native.hasMoreUpdates,liveMessages:maskPrivateMessages(live,privateTurns),
-      historyError: nativeRead.status === "rejected" ? error(nativeRead.reason, "Native saved messages could not be read.") : null,
+      historyError: nativeRead.status === "rejected" ? error(nativeRead.reason, "Native saved messages could not be read.") : native.historyError ?? null,
       eventsError: eventRead.status === "rejected" ? error(eventRead.reason, "Host event history could not be read.") : null };
   }
   private async readContent(operation: "getSessionActivity" | "readSessionContent", input: Record<string,unknown>,caller:Caller) {
@@ -248,6 +253,13 @@ export class Management {
     if (operation.operation === "connectSession" && result.status === "error" && session.connectionState === "connecting") {
       session.connectionState = "error";
       this.store.put("session", session.sessionId, session);
+    }
+    if (operation.operation === "sendMessage" && result.status === "error" && session.activeTurnId===operation.turnId) {
+      const turn=this.store.get<Turn>("turn",operation.turnId!);
+      if (turn && !turn.codexTurnId && !terminal(turn.state)) {
+        turn.state="error";turn.error=result.error;turn.observedAt=now();session.activeTurnId=null;
+        this.store.put("turn",turn.turnId,turn);this.store.put("session",session.sessionId,session);
+      }
     }
     if (result.status !== "unknown") this.pendingInputs.delete(operation.commandId);
     if (result.status === "error" && ["answerQuestions","decideApproval"].includes(operation.operation)) {
@@ -344,7 +356,7 @@ export class Management {
     for (const operation of this.store.list<Operation>("operation")) {
       if (this.session(operation.sessionId).hostId !== hostId || operation.status === "delivered" || operation.status === "error") continue;
       if (seen.has(operation.commandId)) continue;
-      const input = ["sendMessage","steerTurn","answerQuestions"].includes(operation.operation) ? this.pendingInputs.get(operation.commandId) : operation.input;
+      const input = ["sendMessage","steerTurn","answerQuestions","appendSessionContext"].includes(operation.operation) ? this.pendingInputs.get(operation.commandId) : operation.input;
       if (!input) continue; // A restart requires the client to retry its original message and request ID.
       if (operation.operation === "sendMessage") {
         const session = this.session(operation.sessionId); session.activeTurnId = operation.turnId;

@@ -58,6 +58,8 @@ async function status() {
   const coreReady = checks[0].status === "fulfilled";
   const connected = coreReady && checks[0].value.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected");
   const teamReady = checks[1].status === "fulfilled" && checks[1].value.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected");
+  // Shutdown can finish while the readiness reads are in flight.
+  if (phase !== "ready") return {...value,status:phase};
   return { ...value, status: coreReady && connected && teamReady ? "ready" : "degraded", services: { core: coreReady ? "ready" : "unavailable", team: teamReady ? "ready" : "unavailable", daemon: connected ? "connected" : "unavailable" } };
 }
 

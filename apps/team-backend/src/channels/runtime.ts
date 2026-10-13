@@ -7,6 +7,7 @@ import { DeliveryError, type ChannelAdapter, type ChannelCredentials, type Incom
 import { ChannelStore, key, type Conversation, type Delivery, type Question, type Watch } from "./store.js";
 import { DingTalkSender, makeAck, parseMessage, splitText } from "./dingtalk/messages.js";
 import { runStream } from "./dingtalk/stream.js";
+import { Takeovers } from "./takeover.js";
 
 export function readChannelCredentials(path?: string): ChannelCredentials[] {
   if (!path) return [];
@@ -46,9 +47,11 @@ export class ChannelRuntime {
   private leaseHeld = false;
   private ticking: Promise<void> | null = null;
   private readonly sendAfter = new Map<string, number>();
+  private readonly takeovers: Takeovers;
 
   constructor(team: TeamStore, private readonly sessions: SessionService, private readonly credentials: ChannelCredentials[] = [], private readonly factory?: (connection: ChannelConnection) => ChannelAdapter, private readonly options: { sendIntervalMs?: number } = {}) {
     this.store = new ChannelStore(team);
+    this.takeovers = new Takeovers(this.store,sessions,conversation=>!this.stopSignal.signal.aborted && this.active(this.connection(conversation.connectionId)));
   }
   start(): void {
     if (this.timer) return;
@@ -58,7 +61,7 @@ export class ChannelRuntime {
     }, 5000);
     this.store.recover();
     // A previous process may have accepted input but not started its task. Startup observes only.
-    for (const delivery of this.store.list<Delivery>("channel_deliveries")) if (delivery.direction === "input" && delivery.status === "pending") {
+    for (const delivery of this.store.list<Delivery>("channel_deliveries")) if (delivery.direction === "input" && delivery.status === "pending" && !delivery.deferredTakeoverId) {
       delivery.status = "unknown"; delivery.error = "Input retained after restart. Retry the original delivery from Team."; this.save(delivery);
     }
     this.timer = setInterval(() => { void this.tick().catch(() => {}); }, 1000);
@@ -71,7 +74,12 @@ export class ChannelRuntime {
     await this.ticking?.catch(() => {});
     if (this.leaseHeld) { this.store.releaseLease(this.ownerId); this.leaseHeld = false; }
   }
-  private save(delivery: Delivery): void { delivery.updatedAt = timestamp(); this.store.put("channel_deliveries", delivery.deliveryId, delivery); }
+  private save(delivery: Delivery): void {
+    const current=this.store.get<Delivery>("channel_deliveries",delivery.deliveryId);
+    if(current?.direction==="input" && current.contextId && current.status==="completed")Object.assign(delivery,current);
+    if(current?.suppressed)delivery.suppressed=true;
+    delivery.updatedAt = timestamp(); this.store.put("channel_deliveries", delivery.deliveryId, delivery);
+  }
   private connection(id: string): ChannelConnection { return this.store.get<ChannelConnection>("channel_connections", id) ?? fail("NOT_FOUND", "Channel connection not found."); }
   private bot(id: string): Chatbot { return this.store.get<Chatbot>("channel_chatbots", id) ?? fail("NOT_FOUND", "Chatbot not found."); }
   private secret(connection: ChannelConnection): ChannelCredentials {
@@ -82,6 +90,13 @@ export class ChannelRuntime {
   private active(connection: ChannelConnection): boolean { return connection.enabled && this.bot(connection.chatbotId).enabled; }
 
   async execute(operation: string, input: Record<string, unknown>, caller: string): Promise<unknown> {
+    if (operation === "readChannelConversation") return this.takeovers.read(String(input.conversationId));
+    if (["beginChannelTakeover","endChannelTakeover","sendChannelMessage"].includes(operation)) return this.store.team.mutate(caller,operation,input,()=>{
+      const id=String(input.conversationId);
+      if (operation === "beginChannelTakeover") return this.takeovers.begin(id,String(input.requestId));
+      if (operation === "endChannelTakeover") return this.takeovers.end(id);
+      return this.takeovers.send(id,String(input.message),String(input.requestId));
+    });
     if (operation === "getChannels") {
       const state: ChannelState = {
         chatbots: this.store.list("channel_chatbots"),
@@ -95,6 +110,7 @@ export class ChannelRuntime {
       const prior = this.store.team.findRequest(caller, operation, String(input.requestId), fingerprintInput(input));
       if (prior?.result) return prior.result;
       const conversation = this.store.get<Conversation>("channel_conversations", String(input.conversationId)) ?? fail("NOT_FOUND", "Conversation not found.");
+      if (conversation.mode === "human") fail("TAKEOVER_ACTIVE","End takeover before changing the binding.");
       if (this.store.list<Delivery>("channel_deliveries").some(item => item.conversationId === conversation.conversationId && item.direction === "input" && ["pending", "processing", "unknown"].includes(item.status))) fail("SESSION_BUSY", "Resolve pending input before changing the binding.");
       const details = await this.details(String(input.bindingId));
       if (details.binding.agentRef.id !== conversation.definitionId || details.core!.contextAuthority !== "agent" || details.core!.session.workspace?.status !== "ready"
@@ -104,6 +120,7 @@ export class ChannelRuntime {
           || this.store.list<Watch>("channel_turns").some(item => item.conversationId === conversation.conversationId && !item.complete)) fail("SESSION_BUSY", "Resolve current channel execution before changing the binding.");
         this.store.claim(details.binding.bindingId, conversation.conversationId);
         const current = this.store.get<Conversation>("channel_conversations", conversation.conversationId)!;
+        if (current.mode === "human") fail("TAKEOVER_ACTIVE","End takeover before changing the binding.");
         current.bindingId = details.binding.bindingId; current.pendingBindingId = null; current.updatedAt = timestamp();
         this.store.put("channel_conversations", current.conversationId, current); return { conversation: this.publicConversation(current) };
       });
@@ -125,13 +142,22 @@ export class ChannelRuntime {
       }
       if (operation === "retryChannelDelivery") {
         const delivery = this.store.get<Delivery>("channel_deliveries", String(input.deliveryId)) ?? fail("NOT_FOUND", "Delivery not found.");
+        if (delivery.suppressed) fail("DELIVERY_SUPPRESSED","This automatic delivery permanently lost sending eligibility at takeover.");
         if (!["unknown", "error"].includes(delivery.status) || !delivery.text) fail("INVALID_INPUT", "This delivery has no retryable retained body.");
         delivery.status = "pending"; delivery.error = null; this.save(delivery); return { deliveryId: delivery.deliveryId };
+      }
+      if (operation === "closeChannelDelivery") {
+        const delivery=this.store.get<Delivery>("channel_deliveries",String(input.deliveryId)) ?? fail("NOT_FOUND","Delivery not found.");
+        if (delivery.direction!=="output" || !["unknown","error"].includes(delivery.status)) fail("INVALID_INPUT","Only an unresolved outgoing delivery can be closed.");
+        delivery.outcomeUnknown=delivery.status==="unknown";delivery.closedAt=timestamp();delivery.suppressed=true;delivery.status="suppressed";delivery.text=null;delivery.payload=null;
+        delivery.error=delivery.outcomeUnknown ? "Closed without retry by the operator; the platform outcome remains unknown." : "Failed delivery closed without retry by the operator.";
+        this.save(delivery);return {deliveryId:delivery.deliveryId};
       }
       fail("NOT_FOUND", "Unknown channel operation.");
     });
   }
-  private publicConversation({ address: _address, ...conversation }: Conversation) { return conversation; }
+  private publicConversation({ address: _address, sequence:_sequence, ...conversation }: Conversation) { return conversation; }
+  private automatic(id: string): boolean { return this.store.get<Conversation>("channel_conversations",id)?.mode !== "human"; }
 
   async accept(connectionId: string, message: IncomingMessage): Promise<void> {
     const connection = this.connection(connectionId), bot = this.bot(connection.chatbotId), credentials = this.secret(connection);
@@ -144,7 +170,9 @@ export class ChannelRuntime {
       const deliveryId = key(connectionId, message.corpId, message.userId, message.messageId);
       const existing = this.store.get<Delivery>("channel_deliveries", deliveryId);
       if (existing) { if (existing.text && existing.text !== message.text) fail("REQUEST_CONFLICT", "Platform message ID changed its content."); return; }
-      this.store.put("channel_deliveries", deliveryId, { deliveryId, conversationId: id, direction: "input", status: "pending", bindingId: null, turnId: null, operation: null, requestId: null, text: message.text, payload: null, error: null, createdAt: timestamp(), updatedAt: timestamp() } satisfies Delivery);
+      const delivery: Delivery = { deliveryId, conversationId: id, direction: "input", status: "pending", bindingId: null, turnId: null, operation: null, requestId: null, text: message.text, payload: null, error: null, createdAt: timestamp(), updatedAt: timestamp() };
+      this.store.put("channel_deliveries", deliveryId, delivery);
+      this.takeovers.receive(conversation,delivery);
     });
   }
   tick(): Promise<void> {
@@ -165,7 +193,8 @@ export class ChannelRuntime {
       }
     }
     const blocked = new Set<string>();
-    for (const delivery of this.store.list<Delivery>("channel_deliveries")) if (delivery.text && Date.now() - Date.parse(delivery.createdAt) > 24 * 60 * 60 * 1000) { delivery.text = null; delivery.payload = null; delivery.status = "error"; delivery.error = "Retained body expired after 24 hours. Submit a new request explicitly."; this.save(delivery); }
+    await this.takeovers.tick();
+    for (const delivery of this.store.list<Delivery>("channel_deliveries")) if (delivery.text && !delivery.deferredTakeoverId && delivery.source !== "operator" && this.automatic(delivery.conversationId) && Date.now() - Date.parse(delivery.createdAt) > 24 * 60 * 60 * 1000) { delivery.text = null; delivery.payload = null; delivery.status = "error"; delivery.error = "Retained body expired after 24 hours. Submit a new request explicitly."; this.save(delivery); }
     for (const delivery of this.store.list<Delivery>("channel_deliveries")) {
       if (this.stopSignal.signal.aborted) return;
       if (delivery.direction !== "input" || !["pending", "processing", "unknown"].includes(delivery.status)) continue;
@@ -173,6 +202,7 @@ export class ChannelRuntime {
       const conversation = this.store.get<Conversation>("channel_conversations", delivery.conversationId)!;
       if (!this.active(this.connection(conversation.connectionId))) continue;
       if (delivery.status === "unknown") { await this.reconcile(delivery); if (delivery.status === "unknown") blocked.add(delivery.conversationId); continue; }
+      if (this.takeovers.receive(conversation,delivery)) continue;
       await this.input(conversation, delivery);
       if (["pending", "unknown", "processing"].includes(delivery.status)) blocked.add(delivery.conversationId);
     }
@@ -180,7 +210,7 @@ export class ChannelRuntime {
     const blockedReplies = new Set<string>();
     for (const delivery of this.store.list<Delivery>("channel_deliveries")) {
       if (this.stopSignal.signal.aborted) return;
-      if (delivery.direction !== "output" || delivery.status === "completed" || !delivery.text || blockedReplies.has(delivery.conversationId)) continue;
+      if (delivery.direction !== "output" || ["completed","suppressed"].includes(delivery.status) || delivery.suppressed || !delivery.text || blockedReplies.has(delivery.conversationId)) continue;
       if (delivery.status === "pending") await this.output(delivery);
       if (!["completed"].includes(delivery.status)) blockedReplies.add(delivery.conversationId);
     }
@@ -196,6 +226,7 @@ export class ChannelRuntime {
   private notice(conversation: Conversation, delivery: Delivery, text: string): void { this.store.output(conversation, key(delivery.deliveryId, "notice"), text); }
 
   private async ready(conversation: Conversation, delivery: Delivery, replace: boolean): Promise<string | null> {
+    if (!this.automatic(conversation.conversationId)) return null;
     if (conversation.bindingId && !replace) return conversation.bindingId;
     const connection = this.connection(conversation.connectionId), bot = this.bot(connection.chatbotId);
     if (this.stopSignal.signal.aborted || !this.active(connection)) return null;
@@ -218,6 +249,7 @@ export class ChannelRuntime {
 
   private async input(conversation: Conversation, delivery: Delivery): Promise<void> {
     try {
+      if (this.takeovers.receive(conversation,delivery)) return;
       const text = delivery.text!;
       if (text === "/unsupported") { this.notice(conversation, delivery, "Only text messages are supported."); this.finish(delivery); return; }
       if (text === "/status") {
@@ -247,7 +279,8 @@ export class ChannelRuntime {
       delivery.bindingId = bindingId;
       if (text === "/new") { this.notice(conversation, delivery, "A new isolated session is ready. Previous files and sessions are retained."); this.finish(delivery); return; }
       let details = await this.details(bindingId);
-      if (this.stopSignal.signal.aborted || !this.active(this.connection(conversation.connectionId))) return;
+      if (!this.automatic(conversation.conversationId)) {this.takeovers.receive(conversation,delivery);return;}
+      if (this.stopSignal.signal.aborted || !this.active(this.connection(conversation.connectionId)) || !this.automatic(conversation.conversationId)) return;
       if (details.core!.contextAuthority !== "agent") fail("FORBIDDEN", "This session requires the Core operator. Continue in Core.");
       if (!delivery.operation && details.core!.session.connectionState !== "connected" && !details.core!.session.activeTurnId) {
         const result = await this.sessions.execute("connectSessionBinding", { bindingId, requestId: key(delivery.deliveryId, "connect") }, "channel") as SessionBindingResult;
@@ -271,11 +304,15 @@ export class ChannelRuntime {
         }
         delivery.requestId = key(delivery.deliveryId, delivery.operation);
       }
+      if (!this.automatic(conversation.conversationId)) {this.takeovers.receive(conversation,delivery);return;}
       if (this.stopSignal.signal.aborted || !this.active(this.connection(conversation.connectionId))) return;
       delivery.status = "processing"; this.save(delivery);
       const result = await this.sessions.execute(delivery.operation, { bindingId, ...delivery.payload, requestId: delivery.requestId }, "channel") as SessionBindingResult;
       if (result.operation?.turnId) delivery.turnId = result.operation.turnId;
       if (result.error) {
+        if (!this.automatic(conversation.conversationId) && !["accepted","unknown"].includes(result.operation?.status??"") && ["SESSION_PAUSED","SESSION_BUSY","STALE_TURN"].includes(result.error.code)) {
+          delivery.operation=null;delivery.requestId=null;delivery.payload=null;this.takeovers.receive(conversation,delivery);return;
+        }
         if (result.operation?.status === "error" && ["STALE_TURN", "SESSION_BUSY"].includes(result.error.code)) {
           details = await this.details(bindingId);
           if (details.core!.contextAuthority === "agent" && details.core!.session.connectionState === "connected" && !details.core!.interactionsError && !details.core!.interactions.some(value => value.status === "pending" && value.blocking)) {
@@ -303,7 +340,7 @@ export class ChannelRuntime {
 
   private watch(conversation: Conversation, bindingId: string, turnId: string): void {
     const watchId = key(conversation.conversationId, bindingId, turnId);
-    if (!this.store.get("channel_turns", watchId)) this.store.put("channel_turns", watchId, { watchId, conversationId: conversation.conversationId, bindingId, turnId, eventCursor: 0, updateCursor: null, beforeCursor: null, complete: false } satisfies Watch);
+    if (!this.store.get("channel_turns", watchId)) this.store.put("channel_turns", watchId, { watchId, conversationId: conversation.conversationId, bindingId, turnId, eventCursor: 0, updateCursor: null, beforeCursor: null, complete: !this.automatic(conversation.conversationId) } satisfies Watch);
   }
   private async reconcile(delivery: Delivery): Promise<void> {
     if (!delivery.bindingId || !delivery.requestId || !delivery.operation) return;
@@ -314,7 +351,12 @@ export class ChannelRuntime {
         if (request.result.turnId) this.watch(this.store.get<Conversation>("channel_conversations", delivery.conversationId)!, delivery.bindingId, request.result.turnId);
         if (delivery.operation === "answerBindingQuestions") this.store.clearAnswers(delivery.conversationId, String(delivery.payload?.interactionId));
         this.finish(delivery);
-      } else if (request?.result?.status === "error") { delivery.status = "error"; delivery.error = request.error?.message ?? "Core rejected this input."; this.save(delivery); }
+      } else if (request?.result?.status === "error") {
+        if (!this.automatic(delivery.conversationId) && ["SESSION_PAUSED","SESSION_BUSY"].includes(request.error?.code??"")) {
+          delivery.operation=null;delivery.requestId=null;delivery.payload=null;
+          this.takeovers.receive(this.store.get<Conversation>("channel_conversations",delivery.conversationId)!,delivery);
+        } else {delivery.status = "error"; delivery.error = request.error?.message ?? "Core rejected this input."; this.save(delivery);}
+      }
     } catch { /* Unknown input never becomes a new task. */ }
   }
   private async answer(conversation: Conversation, bindingId: string, text: string, details: SessionBindingDetails): Promise<Record<string, unknown> | null> {
@@ -352,8 +394,9 @@ export class ChannelRuntime {
   }
   private async observe(watch: Watch): Promise<void> {
     const conversation = this.store.get<Conversation>("channel_conversations", watch.conversationId)!;
-    if (!this.active(this.connection(conversation.connectionId))) return;
+    if (!this.active(this.connection(conversation.connectionId)) || !this.automatic(watch.conversationId)) return;
     const details = await this.details(watch.bindingId);
+    if (!this.automatic(watch.conversationId) || this.store.get<Watch>("channel_turns",watch.watchId)?.complete) return;
     const turn = details.core!.turns.find(value => value.turnId === watch.turnId);
     if (details.core!.contextAuthority !== "agent") {
       if (turn && terminal(turn.state)) { watch.complete = true; this.store.put("channel_turns", watch.watchId, watch); this.store.output(conversation, key(watch.watchId, "restricted"), `This conversation requires the Core operator. ${this.sessions.core.url ?? "Open Core to continue."}`); }
@@ -365,6 +408,7 @@ export class ChannelRuntime {
     if (turn.state !== "completed") { this.store.output(conversation, key(watch.watchId, "ended"), `Task ${turn.state}.`, watch.bindingId, watch.turnId); watch.complete = true; this.store.put("channel_turns", watch.watchId, watch); return; }
     if (!turn.codexTurnId) return;
     const page = await this.sessions.execute("readBindingHistory", { bindingId: watch.bindingId, cursor: watch.eventCursor, limit: 500, ...(watch.beforeCursor ? { beforeCursor: watch.beforeCursor } : watch.updateCursor ? { updateCursor: watch.updateCursor } : {}) }, "channel") as CoreHistory;
+    if (!this.automatic(watch.conversationId) || this.store.get<Watch>("channel_turns",watch.watchId)?.complete) return;
     if (page.historyError || page.eventsError) return;
     watch.eventCursor = Math.max(watch.eventCursor, page.nextCursor); if (!watch.beforeCursor) watch.updateCursor = page.updateCursor;
     const messages = [...page.messages, ...page.liveMessages].filter(value => value.turnId === turn.codexTurnId && value.role === "assistant" && value.availability !== "restricted" && value.text && value.itemComplete === true);
@@ -379,12 +423,14 @@ export class ChannelRuntime {
   private async output(delivery: Delivery): Promise<void> {
     const conversation = this.store.get<Conversation>("channel_conversations", delivery.conversationId)!, connection = this.connection(conversation.connectionId);
     if (!this.active(connection) || (this.sendAfter.get(connection.connectionId) ?? 0) > Date.now()) return;
-    if (delivery.bindingId) {
+    if (delivery.suppressed || (delivery.source !== "operator" && !this.automatic(delivery.conversationId))) return;
+    if (delivery.bindingId && delivery.source !== "operator") {
       try { const details = await this.details(delivery.bindingId); if (details.core!.contextAuthority !== "agent") { delivery.status = "error"; delivery.text = null; delivery.error = "Content requires the Core operator."; this.save(delivery); return; } if (details.core!.interactionsError) return; }
       catch { return; }
     }
     const adapter = this.running.get(connection.connectionId)?.adapter ?? this.factory?.(connection);
     if (!adapter || this.stopSignal.signal.aborted || !this.active(this.connection(connection.connectionId))) return;
+    if (this.store.get<Delivery>("channel_deliveries",delivery.deliveryId)?.suppressed || (delivery.source !== "operator" && !this.automatic(delivery.conversationId))) return;
     delivery.status = "processing"; this.save(delivery); this.sendAfter.set(connection.connectionId, Date.now() + (this.options.sendIntervalMs ?? 3000));
     try { const connectionSignal = this.running.get(connection.connectionId)?.controller.signal; await adapter.send(this.secret(connection), conversation.address, delivery.text!, connectionSignal ? AbortSignal.any([this.stopSignal.signal, connectionSignal]) : this.stopSignal.signal); this.finish(delivery); }
     catch (error) { delivery.status = error instanceof DeliveryError && !error.uncertain ? "error" : "unknown"; delivery.error = "Platform delivery was not confirmed. Retry only this retained reply after review."; this.save(delivery); }

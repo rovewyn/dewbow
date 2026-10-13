@@ -4,8 +4,20 @@ import { buildChatModel, mergeNativeMessages, mergeActivities, emptyHistory, mer
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { InteractionCard } from "../dist/chat/InteractionCard.js";
+import { ChatView } from "../dist/chat/ChatView.js";
 
 const date = "2026-01-01T00:00:00Z";
+test("passive takeover context stays outside turns, follows its exact turn anchor, and respects restricted history",()=>{
+  const records=[{contextId:"start",sessionId:"session",segmentId:"human",source:"takeoverStart",text:"",sequence:2,createdAt:date,afterTurnId:"native-turn"},{contextId:"human",sessionId:"session",segmentId:"human",source:"operator",text:"Human transcript",sequence:3,createdAt:date,afterTurnId:"native-turn"}];
+  let state=mergeHistory(emptyHistory(),{messages:[],liveMessages:[],activities:[],events:[],nextCursor:0,updateCursor:null,beforeCursor:null,contextRecords:records});
+  state=mergeHistory(state,{messages:[],liveMessages:[],activities:[],events:[],nextCursor:0,updateCursor:null,beforeCursor:null,contextRecords:records});
+  assert.equal(state.contextRecords.length,2);
+  const model=buildChatModel({sessionKey:"session",turns:[],interactions:[],...projectHistoryWindow(state,[],null)});
+  assert.equal(model.turns.length,0);assert.equal(model.contextRecords.length,2);
+  const html=renderToStaticMarkup(createElement(ChatView,{model,draft:{text:"",mode:"default"},onDraftChange:()=>{},composer:{action:"disabled",busy:false},history:{loading:false},contents:new Map(),loadingInteractions:new Set(),hideComposer:true}));
+  assert.ok(html.includes("Human takeover started"));assert.ok(html.includes("Operator · human takeover"));assert.ok(!html.includes("Conversation turn"));
+  assert.equal(restrictHistory(state).contextRecords[1].text,"");
+});
 const message = (id, ordinal, role, text, extra = {}) => ({ id, ordinal, updatedOrdinal: ordinal, turnId: "native-turn", role, text, phase: role === "assistant" ? "commentary" : null, createdAt: date, itemComplete: false, ...extra });
 const turn = { turnId: "core-turn", sessionId: "session", codexTurnId: "native-turn", requestId: "request", mode: "plan", state: "running", createdAt: date, observedAt: date, error: null };
 const event = (cursor, type, payload, turnId = turn.turnId) => ({ eventId: `event:${cursor}`, sessionId: "session", turnId, cursor, type, timestamp: date, payload: { turn, ...payload } });

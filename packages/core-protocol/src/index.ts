@@ -20,6 +20,11 @@ export interface SessionConfig {
 }
 export interface WorkspaceProfile { profileId: string; name: string; kind: "emptyDirectory" | "gitWorktree" }
 export interface SessionWorkspace { profileId: string; kind: WorkspaceProfile["kind"]; workDir: string; directoryIdentity: string | null; repository: string | null; baseCommit: string | null; branch: string | null; status: "preparing" | "ready" | "error" }
+export interface ExecutionPause { pauseId: string; authority: "agent" | "operator"; createdAt: string }
+export interface SessionContext {
+  contextId: string; sessionId: string; segmentId: string; source: "takeoverStart" | "user" | "operator" | "takeoverEnd";
+  text: string; createdAt: string; sequence: number; afterTurnId?: string | null; availability?: "available" | "restricted";
+}
 export interface Session {
   sessionId: string; hostId: string; workDir: string | null; workspace?: SessionWorkspace; codexThreadId: string | null;
   /** Null for native conversations connected without an agent definition. */
@@ -28,6 +33,7 @@ export interface Session {
   connectionConfirmedAt?: string;
   createdAt: string; runtimeState: SessionState; observedAt: string; lastKnownState: SessionState;
   lastKnownAt: string; activeTurnId: string | null; latestCursor: number;
+  executionPause?: ExecutionPause | null;
 }
 /** Read-only native metadata. Discovered conversations are not execution-owned. */
 export interface NativeSession {
@@ -66,6 +72,9 @@ export interface ContentPage {
 }
 export interface NativeHistory {
   messages: NativeMessage[]; activities: SessionActivity[]; beforeCursor: string | null; afterCursor: string | null;
+  contextRecords?: SessionContext[];
+  contextCursor?: number; beforeContextCursor?: number | null; hasMoreContexts?: boolean;
+  historyError?: ManagementErrorData;
   updateCursor: string | null; hasMoreUpdates: boolean; observedAt: string;
 }
 /** Protect a secret-bearing native turn across saved and volatile reads. */
@@ -95,7 +104,7 @@ export interface NativeInventory {
 export interface EventHistory { events: Event[]; nextCursor: number; hasMore: boolean; liveMessages: NativeMessage[] }
 export interface HostQuery {
   queryId: string; operation: "listWorkspaceProfiles" | "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
-  input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
+  input: { sessionId?: string; cursor?: number; contextCursor?:number; beforeContextCursor?:number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
   authority: "agent" | "operator";
 }
 export interface InteractionPage { interactions: Interaction[] }
@@ -133,7 +142,7 @@ export function fail(code: string, message: string, retryable = false, refs: { s
   throw new ManagementError({ code, message, retryable, ...refs });
 }
 export interface Command {
-  commandId: string; operation: "createSession" | "connectSession" | "sendMessage" | "steerTurn" | "answerQuestions" | "interruptTurn" | "decideApproval";
+  commandId: string; operation: "createSession" | "connectSession" | "sendMessage" | "steerTurn" | "answerQuestions" | "interruptTurn" | "decideApproval" | "pauseSessionExecution" | "resumeSessionExecution" | "appendSessionContext";
   sessionId: string; turnId: string | null; input: Record<string, unknown>;
   authority: "operator" | "agent";
 }
@@ -167,8 +176,11 @@ export const tools = [
   tool("listSessions", "List SDK-discovered Codex conversations with optional managed execution metadata.", { hostId: text }, []),
   tool("createSession", "Create a session with optional agent overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, workspaceProfileId: request, requestId: request, agentRef, sessionOptions }, ["hostId", "requestId"]),
   tool("connectSession", "Connect an SDK-discovered native conversation without creating a new thread. Poll getSession for readiness.", { sessionId: text, requestId: request }, ["sessionId", "requestId"]),
+  tool("pauseSessionExecution", "Pause execution submissions through this host daemon without interrupting the active turn.", { sessionId:text,requestId:request }, ["sessionId","requestId"]),
+  tool("resumeSessionExecution", "Release an exact pause without starting execution. Force requires Core operator authority.", { sessionId:text,pauseId:request,force:{type:"boolean"},requestId:request }, ["sessionId","pauseId","requestId"]),
+  tool("appendSessionContext", "Persist external conversation context without starting a turn. Reuse the original request and context IDs after an uncertain result.", { sessionId:text,contextId:request,segmentId:request,source:{type:"string",enum:["takeoverStart","user","operator","takeoverEnd"]},text:{type:"string",minLength:0,maxLength:100000},requestId:request }, ["sessionId","contextId","segmentId","source","text","requestId"]),
   tool("getSession", "Read state, turns, requests, and unified interactions. Delivery is separate from turn completion.", { sessionId: text }, ["sessionId"]),
-  tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
+  tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },contextCursor:{type:"integer",minimum:0},beforeContextCursor:{type:"integer",minimum:1},beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
   tool("getSessionActivity", "Read activity metadata and private content references for an exact conversation item.", { sessionId: text, itemId: text }, ["sessionId", "itemId"]),
   tool("readSessionContent", "Read a UTF-8 chunk from host-private output or diff content. The default chunk is 64 KiB.", { sessionId: text, contentId: text, contentCursor: text, limitBytes: { type: "integer", minimum: 4, maximum: 262144 } }, ["sessionId", "contentId"]),
   tool("sendMessage", "Record a new Default or Plan turn. Default is used when mode is omitted.", { sessionId: text, message: { ...text, maxLength: 100000 }, requestId: request, mode:{ type:"string",enum:["default","plan"] } }, ["sessionId", "message", "requestId"]),
@@ -209,6 +221,7 @@ function validateField(schema: InputSchema, value: unknown, path: string): unkno
   }
   if (schema.type === "string" && (typeof value !== "string" || ((schema.minLength ?? 1) > 0 && !value.trim()) || value.length < (schema.minLength ?? 0) || (schema.maxLength !== undefined && value.length > schema.maxLength) || (schema.enum && !schema.enum.includes(value)))) fail("INVALID_INPUT", `Invalid ${path}.`);
   if (schema.type === "integer" && (typeof value !== "number" || !Number.isSafeInteger(value) || value < schema.minimum! || (schema.maximum !== undefined && value > schema.maximum))) fail("INVALID_INPUT", `Invalid ${path}.`);
+  if (schema.type === "boolean" && typeof value !== "boolean") fail("INVALID_INPUT", `Invalid ${path}.`);
   return value;
 }
 /** Stable fingerprints include nested configuration without depending on object key order. */

@@ -46,7 +46,7 @@ export class Store {
     if (kind === "operation" || kind === "command") {
       const record = JSON.parse(encoded);
       const input = kind === "command" ? record.command.input : record.input;
-      delete input.message; delete input.answers;
+      delete input.message; delete input.answers; delete input.text;
       encoded = JSON.stringify(record);
     }
     if (kind === "interaction") {

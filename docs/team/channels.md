@@ -2,6 +2,32 @@
 
 Channels is a Dewbow Team feature. A chatbot selects an agent definition and a default host/workspace profile. A DingTalk connection exposes that chatbot to people. Core continues to own the actual session, native execution, history, recovery and approval authority.
 
+## Human takeover
+
+Open **Channels → Open workbench** for an identified conversation. **Take over** immediately records Team's speaking restriction and permanently suppresses unsent automatic answers, questions and notices. Team requests Core's execution pause, interrupts an exact active turn when present, and waits for confirmed terminal state. Progress remains visible until the session is actually taken over. Pause itself is admission control through the owning daemon, not a global native Codex pause.
+
+During confirmed takeover, incoming text and **Send to user** messages are appended to the same session as passive context. The agent does not run, suggest answers or call tools. `/new`, `/stop`, `/status` and `/answer` are ordinary text in this interval. Human messages are sent as the original chatbot to the stored identity with the existing splitting budget and delivery queue; no source prefixes or handover notices are sent to DingTalk.
+
+Core being offline does not prevent human sending after takeover is confirmed. Delivery and context synchronization have independent records. Pending synchronization bodies are retained without a 24-hour expiry, even after platform sending succeeds; confirmed synchronization releases those bodies from Team. Core supplies complete confirmed history. The workbench lists unresolved synchronization and delivery state; uncertain sends require review before retry because the platform may already have accepted them. Retrying delivery never reruns the agent.
+
+**End takeover** durably records an ordering boundary. Earlier human context must be confirmed, pending sends must be handled, and the end marker must be appended before resuming. New input after that boundary waits until Core resume is confirmed, then follows the ordinary automatic path. Ending with no new input starts zero execution and sends zero replies. Already unresolved automatic submissions must be reconciled before accepting the end boundary. A pending session replacement must be resolved before starting takeover.
+
+Only takeover intervals have start/end and human-source markers in Core and Team history; ordinary chat retains its existing display. The normal session composer always targets the agent and is disabled while Core execution is paused. In the takeover workbench a separate composer says **Send to user**.
+
+`beginChannelTakeover({conversationId, requestId})`, `endChannelTakeover({conversationId, requestId})`, `sendChannelMessage({conversationId, message, requestId})`, and `readChannelConversation({conversationId})` use the existing Team operator authentication and v1 contract. Reuse mutation IDs with the original input on retry. The backend resolves the source, robot, binding and recipient; Web cannot impersonate an agent output or choose another identity.
+
+Core's pause is owned by the existing authenticated authority class. Normal resume requires its exact `pauseId` and matching class; a Core operator can explicitly force resume with that exact ID. Force resume does not end Team takeover, replay channel input or automatically re-pause Core. The workbench reports that Core was externally resumed, while Team remains in human mode until an explicit end operation completes. Independent native execution paths remain outside this restriction.
+
+Restart observes original operations and verifies uncertain context instead of replacing them with new tasks. Old automatic outputs permanently remain ineligible after takeover ends. A platform send already in progress retains its actual completed, failed or unknown result. Suppressed unknown automatic output cannot be retried as a new eligible reply; resolve its actual outcome before ending the takeover. No pause stacks, leases for pause ownership, personal operator accounts or automatic timeout resumes are introduced.
+
+The delivery manager can **Close without retry** using `closeChannelDelivery({deliveryId, requestId})` after reviewing an unknown or failed outgoing send. This stops further sending attempts, retains the original failure or unknown platform outcome, and allows ending takeover without inventing a successful delivery. It does not affect context synchronization. It cannot close a send still in progress or an unresolved execution input.
+
+### Validation procedure
+
+Use fresh synthetic Core and Team databases and a separate native home/workspace. Verify passive injection persists across native restart, deduplicates by exact item identity, and creates no turn, tool call or model execution. Run the repository build, typecheck and tests; daemon fixtures cover persisted pause, authority and stale-ID checks, passive reconciliation, and execution/interaction admission. Channel fixtures cover slash text, offline human sending, separate retention, permanent suppression and the end boundary.
+
+For native acceptance, record pause → append → restart → resume with no execution, then send a new synthetic user message that requires the previously appended reference. Check that only the new input starts a turn and that its result uses the human history. For real DingTalk acceptance, use the existing authorized identity, compare an ordinary message, a human interval and a subsequent automatic message, and record platform and native observations separately. Keep credentials, raw observations, databases and measurements in ignored local output directories. Preserve existing real sessions and state; do not reset them to validate this contract.
+
 ## Configure host workspaces
 
 Copy `docs/examples/host-workspaces.example.json` to a private host configuration file and replace the synthetic paths. Set `DEWBOW_HOST_WORKSPACE_CONFIG` to that file in the daemon environment. Profiles are host-owned; Team receives their IDs, names and kinds, not their source repository paths.

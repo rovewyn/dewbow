@@ -1,4 +1,4 @@
-import type { Event, Interaction, NativeMessage, SessionActivity, Turn } from "@dewbow/core-protocol";
+import type { Event, Interaction, NativeMessage, SessionActivity, SessionContext, Turn } from "@dewbow/core-protocol";
 import { maskPrivateActivity, maskPrivateEvents, maskPrivateMessages } from "@dewbow/core-protocol";
 import type { ChatEntry, ChatMessage, ChatModel, ChatOrder, ChatRequest, ChatTurn } from "./types.js";
 export type * from "./types.js";
@@ -58,10 +58,14 @@ export function visibleMessages(saved: NativeMessage[], live: NativeMessage[]): 
 }
 
 export interface ChatHistoryState {
+  contextRecords?: SessionContext[];
+  contextCursor?: number; beforeContextCursor?: number | null;
   saved: Record<string, NativeMessage>; live: Record<string, NativeMessage>; activities: Record<string, SessionActivity>;
   events: Event[]; eventCursor: number; updateCursor: string | undefined; beforeCursor: string | null; restricted: boolean;
 }
 export interface ChatHistoryPage {
+  contextRecords?: SessionContext[];
+  contextCursor?: number; beforeContextCursor?: number | null; hasMoreContexts?: boolean;
   messages: NativeMessage[]; liveMessages: NativeMessage[]; activities: SessionActivity[]; events: Event[];
   nextCursor: number; updateCursor: string | null; beforeCursor: string | null;
   historyError?: unknown; eventsError?: unknown;
@@ -71,6 +75,7 @@ export const emptyHistory = (): ChatHistoryState => ({ saved: Object.create(null
 export function restrictHistory(state: ChatHistoryState): ChatHistoryState {
   const protect = (rows: Record<string, NativeMessage>) => Object.assign(Object.create(null), Object.fromEntries(Object.values(rows).map(item => [item.id, { ...item, text: "", availability: "restricted" as const }])));
   return { ...state, restricted: true, saved: protect(state.saved), live: protect(state.live),
+    contextRecords:(state.contextRecords??[]).map(record=>({...record,text:"",availability:"restricted"})),
     activities: Object.assign(Object.create(null), Object.fromEntries(Object.values(state.activities).map(item => [item.id, maskPrivateActivity(item)]))),
     events: maskPrivateEvents(state.events, new Set(state.events.flatMap(event => [event.turnId ?? "", (event.payload.turn as Turn | undefined)?.codexTurnId ?? ""]))),
   };
@@ -80,6 +85,9 @@ export function mergeHistory(state: ChatHistoryState, page: ChatHistoryPage, dir
   const events = new Map(state.events.map(event => [event.eventId, event]));
   if (!page.eventsError) for (const event of page.events) events.set(event.eventId, event);
   const merged: ChatHistoryState = {
+    contextRecords:[...new Map([...(state.contextRecords??[]),...(page.contextRecords??[])].map(record=>[record.contextId,record])).values()].sort((a,b)=>a.sequence-b.sequence),
+    contextCursor:Math.max(state.contextCursor??0,page.contextCursor??0),
+    beforeContextCursor:direction === "newer" ? state.beforeContextCursor ?? null : page.beforeContextCursor ?? null,
     saved: page.historyError ? state.saved : record(mergeNativeMessages(Object.values(state.saved), page.messages)),
     activities: page.historyError ? state.activities : record(mergeActivities(Object.values(state.activities), page.activities)),
     live: page.eventsError || page.nextCursor < state.eventCursor ? state.live : record(page.liveMessages),
@@ -102,10 +110,11 @@ export function projectHistoryWindow(history: ChatHistoryState, turns: Turn[], a
     const turn = turns.find(turn => turn.turnId === event.turnId);
     if (turn && observed?.turnId === turn.turnId && observed.sessionId === turn.sessionId && event.sessionId === turn.sessionId && observed.codexTurnId && loaded.has(observed.codexTurnId) && (!turn.codexTurnId || turn.codexTurnId === observed.codexTurnId)) visible.add(turn.turnId);
   }
-  return { messages, liveMessages, activities, events: history.events.filter(event => event.type === "history_gap" || event.turnId && visible.has(event.turnId)) };
+  return { messages, liveMessages, activities, contextRecords:history.contextRecords??[], events: history.events.filter(event => event.type === "history_gap" || event.turnId && visible.has(event.turnId)) };
 }
 
 export interface BuildChatModelInput {
+  contextRecords?: SessionContext[];
   sessionKey: string; turns: Turn[]; messages: NativeMessage[]; liveMessages?: NativeMessage[];
   activities?: SessionActivity[]; events?: Event[]; interactions: Interaction[]; requests?: ChatRequest[];
   restricted?: boolean;
@@ -252,5 +261,5 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
     let index = 0; for (let slot = 0; slot < visible.length; slot++) if (visible[slot]!.order.source === source) visible[slot] = ordered[index++]!;
   }
   for (const group of visible) group.interactions.sort((a, b) => Number(active(b)) - Number(active(a)));
-  return { sessionKey: input.sessionKey, turns: visible, requests: input.requests ?? [], notices: [...new Set(notices)] };
+  return { sessionKey: input.sessionKey, turns: visible, contextRecords:(input.contextRecords??[]).map(record=>input.restricted ? {...record,text:"",availability:"restricted"} : record), requests: input.requests ?? [], notices: [...new Set(notices)] };
 }
