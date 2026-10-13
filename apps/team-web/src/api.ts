@@ -1,7 +1,19 @@
 import type { ApiError,ContentPage,InteractionDetails } from "@dewbow/team-protocol";
 
 export class ApiClientError extends Error {
-  constructor(readonly detail: ApiError) { super(detail.message); this.name = "ApiClientError"; }
+  readonly detail: ApiError;
+  constructor(detail: ApiError) { super(detail.message); this.detail = detail; this.name = "ApiClientError"; }
+}
+const authFailures = new Set<() => void>();
+let authEpoch = 0;
+export function onAuthFailure(listener: () => void): () => void { authFailures.add(listener); return () => { authFailures.delete(listener); }; }
+async function confirmAuthFailure(): Promise<void> {
+  const epoch = authEpoch;
+  try {
+    const response = await fetch("/auth/session", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(5000) });
+    const value = await response.json() as { result?: { authenticated?: boolean } };
+    if (epoch === authEpoch && response.ok && value.result?.authenticated === false) for (const listener of authFailures) listener();
+  } catch { /* Failed verification leaves authentication unknown instead of clearing authorized state. */ }
 }
 
 async function request<T>(path: string, method: string, input?: unknown, signal?: AbortSignal): Promise<T> {
@@ -12,7 +24,10 @@ async function request<T>(path: string, method: string, input?: unknown, signal?
       ...(input === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) }),
     });
     const value = await response.json() as { result: T; error?: ApiError };
-    if (value.error) throw new ApiClientError(value.error);
+    if (value.error) {
+      if (value.error.code === "UNAUTHORIZED" && path.startsWith("/api/")) await confirmAuthFailure();
+      throw new ApiClientError(value.error);
+    }
     if (!response.ok || !Object.hasOwn(value, "result")) throw new Error("Invalid response.");
     return value.result;
   } catch (error) {
@@ -33,7 +48,7 @@ export async function readInteractionDetails(bindingId:string,contentId:string,s
   return JSON.parse(text) as InteractionDetails;
 }
 export const readAuth = (): Promise<{ authenticated: boolean }> => request("/auth/session", "GET");
-export const signIn = (token: string): Promise<{ authenticated: boolean }> => request("/auth/login", "POST", { token });
-export const signOut = (): Promise<unknown> => request("/auth/logout", "POST", {});
+export async function signIn(token: string): Promise<{ authenticated: boolean }> { const result = await request<{ authenticated: boolean }>("/auth/login", "POST", { token }); authEpoch++; return result; }
+export async function signOut(): Promise<unknown> { const result = await request("/auth/logout", "POST", {}); authEpoch++; return result; }
 export const errorDetail = (error: unknown): ApiError => error instanceof ApiClientError ? error.detail
   : { code: "REQUEST_FAILED", message: "The request could not be completed.", retryable: false };

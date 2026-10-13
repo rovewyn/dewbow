@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyHistory, mergeHistory, visibleMessages } from "../src/history.ts";
+import { emptyHistory, mergeHistory, visibleMessages as projectMessages } from "@dewbow/core-ui/chat/model";
+const visibleMessages = state => projectMessages(Object.values(state.saved), Object.values(state.live));
 
 const message = (id, text, extra = {}) => ({ id, text, turnId: "turn-example", role: "assistant", phase: null, createdAt: "2026-01-01T00:00:00.000Z", turnStatus: "running", ...extra });
 const page = extra => ({ events:[],nextCursor:0,hasMore:false,messages:[],activities:[],beforeCursor:null,afterCursor:null,updateCursor:null,hasMoreUpdates:false,liveMessages:[],historyError:null,...extra });

@@ -1,24 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
 import { call, errorDetail } from "./api.js";
-import { emptyHistory, mergeHistory, restrictHistory, type HistoryState } from "./history.js";
+import { emptyHistory, mergeHistory, restrictHistory, type ChatHistoryState } from "@dewbow/core-ui/chat/model";
 
 export function useSession(bindingId: string) {
   const [details, setDetails] = useState<SessionBindingDetails | null>(null);
   const [lastCore, setLastCore] = useState<CoreSessionDetails | null>(null);
-  const [history, setHistory] = useState<HistoryState>(emptyHistory);
+  const [history, setHistory] = useState<ChatHistoryState>(emptyHistory);
   const [error, setError] = useState<ApiError | null>(null);
   const [historyError, setHistoryError] = useState<ApiError | null>(null);
   const savedRef = useRef(emptyHistory());
   const controllerRef = useRef<AbortController|null>(null);
   const [loadingOlder,setLoadingOlder] = useState(false);
+  const olderRead = useRef(false);
   useEffect(() => {
     const controller = new AbortController();
     controllerRef.current = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
     savedRef.current = emptyHistory();
     let saved = savedRef.current;
-    setLoadingOlder(false);
+    setLoadingOlder(false); olderRead.current = false;
     setDetails(null); setLastCore(null); setHistory(saved); setError(null); setHistoryError(null);
     async function poll() {
       try {
@@ -50,14 +51,15 @@ export function useSession(bindingId: string) {
   }, [bindingId]);
   async function loadOlder() {
     const controller = controllerRef.current, cursor = savedRef.current.beforeCursor;
-    if (!controller || !cursor || loadingOlder) return;
+    if (!controller || controller.signal.aborted || !cursor || olderRead.current) return;
+    olderRead.current = true;
     setLoadingOlder(true);
     try {
       const page = await call<CoreHistory>("readBindingHistory",{bindingId,beforeCursor:cursor,cursor:savedRef.current.eventCursor,limit:50},controller.signal);
       if (controller.signal.aborted) return;
       savedRef.current = mergeHistory(savedRef.current,page,"older"); setHistory(savedRef.current); setHistoryError(page.historyError ?? page.eventsError ?? null);
     } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }
-    finally { if (!controller.signal.aborted) setLoadingOlder(false); }
+    finally { if (!controller.signal.aborted) { olderRead.current = false; setLoadingOlder(false); } }
   }
   return { details,lastCore,history,error,historyError,loadOlder,loadingOlder };
 }

@@ -1,9 +1,10 @@
 import type { Event, Interaction, NativeMessage, SessionActivity, Turn } from "@dewbow/core-protocol";
 import { maskPrivateActivity, maskPrivateEvents, maskPrivateMessages } from "@dewbow/core-protocol";
-import type { ChatMessage, ChatModel, ChatOrder, ChatRequest, ChatTurn } from "./types.js";
+import type { ChatEntry, ChatMessage, ChatModel, ChatOrder, ChatRequest, ChatTurn } from "./types.js";
 export type * from "./types.js";
 
 export const isMessageComplete = (message: NativeMessage): boolean => message.itemComplete === true || ["completed", "interrupted", "failed"].includes(message.turnStatus ?? "");
+const isFinalReply = (message: NativeMessage): boolean => message.phase === "final_answer" || message.phase === "plan" && (message.itemComplete === true || message.turnStatus === "completed");
 
 /** Source versions and completion protect final text; text length is never a version. */
 export function mergeNativeMessages(previous: NativeMessage[], incoming: NativeMessage[]): NativeMessage[] {
@@ -91,6 +92,19 @@ export function mergeHistory(state: ChatHistoryState, page: ChatHistoryPage, dir
   return state.restricted ? restrictHistory(merged) : merged;
 }
 
+/** Replay supplements loaded native turns and the active turn, never unloaded historical fragments. */
+export function projectHistoryWindow(history: ChatHistoryState, turns: Turn[], activeTurnId: string | null) {
+  const messages = Object.values(history.saved), liveMessages = Object.values(history.live), activities = Object.values(history.activities);
+  const loaded = new Set([...messages, ...liveMessages, ...activities].map(item => item.turnId));
+  const visible = new Set(turns.filter(turn => turn.codexTurnId && loaded.has(turn.codexTurnId) || turn.turnId === activeTurnId).map(turn => turn.turnId));
+  for (const event of history.events) {
+    const observed = event.payload.turn as Turn | undefined;
+    const turn = turns.find(turn => turn.turnId === event.turnId);
+    if (turn && observed?.turnId === turn.turnId && observed.sessionId === turn.sessionId && event.sessionId === turn.sessionId && observed.codexTurnId && loaded.has(observed.codexTurnId) && (!turn.codexTurnId || turn.codexTurnId === observed.codexTurnId)) visible.add(turn.turnId);
+  }
+  return { messages, liveMessages, activities, events: history.events.filter(event => event.type === "history_gap" || event.turnId && visible.has(event.turnId)) };
+}
+
 export interface BuildChatModelInput {
   sessionKey: string; turns: Turn[]; messages: NativeMessage[]; liveMessages?: NativeMessage[];
   activities?: SessionActivity[]; events?: Event[]; interactions: Interaction[]; requests?: ChatRequest[];
@@ -114,7 +128,7 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
   const notices: string[] = [];
   const coreSources = new Map(input.turns.map(turn => [turn.turnId, turn]));
   const create = (key: string, turnId: string | null, nativeTurnId: string | null): ChatTurn => {
-    const group: ChatTurn = { key, turnId, nativeTurnId, state: null, mode: null, messages: [], progress: [], activities: [], activityOrders: new Map(), interactions: [], order: unavailableOrder(), orderIncomplete: false };
+    const group: ChatTurn = { key, turnId, nativeTurnId, state: null, mode: null, messages: [], progress: [], activities: [], activityOrders: new Map(), interactions: [], entries: [], order: unavailableOrder(), orderIncomplete: false };
     groups.set(key, group); return group;
   };
   const candidates = new Map(input.turns.map(turn => [turn.turnId, new Set(turn.codexTurnId ? [turn.codexTurnId] : [])]));
@@ -155,11 +169,11 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
     const group = byNative(item.turnId);
     const matching = (input.events ?? []).filter(event => eventMatches(event, group) && (item.role === "user" ? event.type === "user_message" && item.clientId != null && event.payload.clientId === item.clientId : event.payload.itemId === item.id && ["assistant_message", "assistant_delta"].includes(event.type)));
     const uniqueUser = matching.length === 1 && messages.filter(message => message.turnId === item.turnId && message.clientId === item.clientId).length === 1;
-    const event = item.role === "user" ? uniqueUser ? matching[0] : undefined : item.phase === "final_answer" ? matching.findLast(event => event.payload.stage === "completed") ?? matching[0] : matching[0];
+    const event = item.role === "user" ? uniqueUser ? matching[0] : undefined : isFinalReply(item) ? matching.findLast(event => event.payload.stage === "completed") ?? matching[0] : matching[0];
     if (item.role === "user" && event) matchedUserEvents.add(event.eventId);
-    if (event) eventPositions.set(item.id, event.cursor);
+    if (event) eventPositions.set(`message:${item.id}`, event.cursor);
     const order: ChatOrder = item.ordinal !== undefined ? { source: "native", value: item.ordinal } : event ? { source: "event", value: event.cursor } : unavailableOrder();
-    const message: ChatMessage = { id: item.id, kind: item.role === "user" ? event?.payload.steering === true ? "instruction" : "user" : item.phase === "final_answer" ? "final" : "progress", text: item.text, createdAt: item.createdAt, complete: isMessageComplete(item), restricted: item.availability === "restricted", order };
+    const message: ChatMessage = { id: item.id, kind: item.role === "user" ? event?.payload.steering === true ? "instruction" : "user" : isFinalReply(item) ? "final" : "progress", text: item.text, createdAt: item.createdAt, complete: isMessageComplete(item), restricted: item.availability === "restricted", order };
     group.messages.push(message); if (group.state === null) group.state = item.turnStatus;
   }
   for (const item of mergeActivities([], input.activities ?? [])) {
@@ -186,6 +200,8 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
       const priorOrder = activityGroup.activityOrders.get(item.id);
       const eventOrder: ChatOrder = { source: "event", value: Math.min(event.cursor, priorOrder?.source === "event" ? priorOrder.value! : event.cursor) };
       (activityGroup.activityOrders as Map<string, ChatOrder>).set(item.id, current.ordinal === null ? eventOrder : { source: "native", value: current.ordinal });
+      const activityKey = `activity:${item.id}`;
+      eventPositions.set(activityKey, Math.min(event.cursor, eventPositions.get(activityKey) ?? event.cursor));
     }
     if (event.type === "history_gap") notices.push(`Unavailable events ${event.payload.fromCursor}–${event.payload.toCursor}.`);
   }
@@ -199,12 +215,12 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
     const observed = group.messages.filter(item => item.order.source !== "native").sort((a, b) => (a.order.value ?? Infinity) - (b.order.value ?? Infinity));
     group.messages = [...nativeMessages];
     for (const item of observed) {
-      const next = group.messages.findIndex(message => eventPositions.has(message.id) && eventPositions.get(message.id)! > (item.order.value ?? Infinity));
-      const previous = group.messages.findLastIndex(message => eventPositions.has(message.id) && eventPositions.get(message.id)! <= (item.order.value ?? -Infinity));
+      const next = group.messages.findIndex(message => eventPositions.has(`message:${message.id}`) && eventPositions.get(`message:${message.id}`)! > (item.order.value ?? Infinity));
+      const previous = group.messages.findLastIndex(message => eventPositions.has(`message:${message.id}`) && eventPositions.get(`message:${message.id}`)! <= (item.order.value ?? -Infinity));
       const finalIndex = group.messages.findIndex(message => message.kind === "final");
       const slot = next >= 0 ? next : previous >= 0 ? previous + 1 : finalIndex >= 0 ? finalIndex : group.messages.length;
       group.messages.splice(slot, 0, item);
-      if (item.order.value !== null) eventPositions.set(item.id, item.order.value);
+      if (item.order.value !== null) eventPositions.set(`message:${item.id}`, item.order.value);
     }
     let users = 0;
     for (const message of group.messages) if (message.kind === "user" && users++ > 0) message.kind = "instruction";
@@ -212,6 +228,22 @@ export function buildChatModel(input: BuildChatModelInput): ChatModel {
     const cursors = [...observed.flatMap(item => item.order.value === null ? [] : [item.order.value]), ...group.progress.map(item => item.order.value!), ...[...group.activityOrders.values()].flatMap(order => order.source === "event" ? [order.value!] : [])];
     group.order = ordinals.length ? { source: "native", value: Math.min(...ordinals) } : cursors.length ? { source: "event", value: Math.min(...cursors) } : unavailableOrder();
     group.orderIncomplete = group.messages.some(item => item.order.source !== "native") || group.activities.some(item => item.ordinal === null) || group.progress.length > 0;
+    const entries: { entry: ChatEntry; order: ChatOrder; cursor: number | null }[] = group.messages.map(message => ({ entry: { kind: "message", id: `message:${message.id}`, message }, order: message.order, cursor: eventPositions.get(`message:${message.id}`) ?? null }));
+    for (const activity of group.activities) entries.push({ entry: { kind: "activity", id: `activity:${activity.id}`, activity }, order: group.activityOrders.get(activity.id) ?? unavailableOrder(), cursor: eventPositions.get(`activity:${activity.id}`) ?? null });
+    const progress = group.progress.at(-1);
+    if (progress) entries.push({ entry: { kind: "progress", id: `progress:${progress.id}`, progress }, order: progress.order, cursor: progress.order.value });
+    for (const interaction of group.interactions.filter(active)) {
+      const event = input.events?.find(event => event.turnId === interaction.turnId && event.sessionId === interaction.sessionId && (event.payload.interaction as Interaction | undefined)?.interactionId === interaction.interactionId);
+      entries.push({ entry: { kind: "interaction", id: `interaction:${interaction.interactionId}`, interaction }, order: event ? { source: "event", value: event.cursor } : unavailableOrder(), cursor: event?.cursor ?? null });
+    }
+    const ordered = entries.filter(item => item.order.source === "native").sort((a, b) => a.order.value! - b.order.value! || compareNativeIds(a.entry.id.split(":").slice(1).join(":"), b.entry.id.split(":").slice(1).join(":")));
+    for (const item of entries.filter(item => item.order.source !== "native").sort((a, b) => (a.order.value ?? Infinity) - (b.order.value ?? Infinity))) {
+      const next = item.cursor === null ? -1 : ordered.findIndex(value => value.cursor !== null && value.cursor > item.cursor!);
+      const previous = item.cursor === null ? -1 : ordered.findLastIndex(value => value.cursor !== null && value.cursor <= item.cursor!);
+      const final = ordered.findIndex(value => value.entry.kind === "message" && value.entry.message.kind === "final");
+      ordered.splice(next >= 0 ? next : previous >= 0 ? previous + 1 : final >= 0 ? final : ordered.length, 0, item);
+    }
+    group.entries = ordered.map(item => item.entry);
   }
   const visible = [...groups.values()].filter(group => group.messages.length || group.activities.length || group.progress.length || group.interactions.length || group.state && !["completed", "interrupted", "error"].includes(group.state));
   // Compare positions only within the same source; mixed sources retain stable slots.
