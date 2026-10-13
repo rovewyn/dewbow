@@ -26,7 +26,7 @@ export class DingTalkAdapter implements ChannelAdapter {
   constructor(private readonly sender = new DingTalkSender(), private readonly state: (status: string) => void = () => {}) {}
   async run(credentials: ChannelCredentials, receive: (message: IncomingMessage) => Promise<void>, signal: AbortSignal): Promise<void> {
     await runStream(credentials, { signal, log: message => this.state(message.startsWith("Stream connected.") ? "connected" : "reconnecting"), handle: async frame => {
-      try { const message = parseMessage(frame, credentials); if (message) await receive(message); return makeAck(frame, 200, "Accepted"); }
+      try { const message = parseMessage(frame, credentials); if (message) await receive(message); return makeAck(frame, 200, "OK"); }
       catch { return makeAck(frame, 400, "Rejected"); }
     } });
   }

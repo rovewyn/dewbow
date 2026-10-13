@@ -195,11 +195,11 @@ test("loopback Stream callbacks acknowledge durable receipt and retain deduplica
     socket.send(JSON.stringify({ type: "SYSTEM", headers: { messageId: `ping-${round}`, topic: "ping" }, data: '{"opaque":"synthetic"}' }));
     socket.send(JSON.stringify({ type: "CALLBACK", headers: { messageId: `callback-${round}`, topic: "/v1.0/im/bot/messages/get" }, data: JSON.stringify({ conversationType: "1", senderCorpId: credential.corpId, senderStaffId: "user-a", robotCode: credential.robotCode, conversationId: "external-user-a", msgId: "same-platform-message", msgtype: "text", text: { content: "Synthetic stream task" }, sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=synthetic", sessionWebhookExpiredTime: Date.now() + 100000 }) }));
   });
-  const stream = runStream(credential, { signal: controller.signal, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, retryDelayMs: 1, handle: async frame => { await f.runtime.accept(f.connection.connectionId, parseMessage(frame, credential)); return { code: 200, headers: { messageId: frame.headers.messageId, contentType: "application/json" }, message: "Accepted", data: '{"response":null}' }; } });
+  const stream = runStream(credential, { signal: controller.signal, gatewayUrl: `http://127.0.0.1:${gateway.address().port}`, retryDelayMs: 1, handle: async frame => { await f.runtime.accept(f.connection.connectionId, parseMessage(frame, credential)); return { code: 200, headers: { messageId: frame.headers.messageId, contentType: "application/json" }, message: "OK", data: '{"response":null}' }; } });
   try {
     const end = Date.now() + 5000;
     while (!acknowledgements.some(value => value.headers.messageId === "callback-2") && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.ok(acknowledgements.some(value => value.headers.messageId === "callback-2" && value.code === 200));
+    assert.deepEqual(acknowledgements.find(value => value.headers.messageId === "callback-2"), { code: 200, headers: { messageId: "callback-2", contentType: "application/json" }, message: "OK", data: '{"response":null}' });
     assert.equal(acknowledgements.find(value => value.headers.messageId === "ping-1").data, '{"opaque":"synthetic"}');
     await f.runtime.tick(); assert.equal(f.core.calls.filter(value => value.operation === "sendMessage").length, 1);
   } finally { controller.abort(); await stream; for (const socket of socketServer.clients) socket.terminate(); await Promise.all([new Promise(resolve => socketServer.close(resolve)), new Promise(resolve => gateway.close(resolve))]); }
