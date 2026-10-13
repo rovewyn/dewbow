@@ -20,9 +20,29 @@ export function parseMessage(frame: StreamFrame, credentials: ChannelCredentials
 }
 
 export function splitText(text: string): string[] {
-  const chunks: string[] = []; let part = "", bytes = 0;
-  for (const character of text) { const size = Buffer.byteLength(character); if (bytes + size > 1500) { chunks.push(part); part = ""; bytes = 0; } part += character; bytes += size; }
-  if (part) chunks.push(part);
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = start, bytes = 0, paragraphEnd = 0, lineEnd = 0, sentenceEnd = 0, wordEnd = 0;
+    while (end < text.length) {
+      const width = text.codePointAt(end)! > 0xffff ? 2 : 1;
+      const character = text.slice(end, end + width), size = Buffer.byteLength(character);
+      if (bytes + size > 1500) break;
+      end += width; bytes += size;
+      if (character === "\n") {
+        if (lineEnd && !text.slice(lineEnd, end - 1).trim()) paragraphEnd = end;
+        lineEnd = end;
+      } else if (/[。！？!?]/.test(character) || (character === "." && /\s/.test(text[end] ?? ""))) sentenceEnd = end;
+      else if (sentenceEnd > start && sentenceEnd === end - width && /["'”’）)\]]/.test(character)) sentenceEnd = end;
+      else if (character === " " || character === "\t") wordEnd = end;
+    }
+    // Keep all original whitespace and fall back to a code-point boundary only
+    // when the size window contains no paragraph, line, sentence or word break.
+    let boundary = end === text.length ? end : paragraphEnd || lineEnd || sentenceEnd || wordEnd || end;
+    if (!text.slice(start, boundary).trim()) boundary = end;
+    chunks.push(text.slice(start, boundary));
+    start = boundary;
+  }
   return chunks.length > 1 ? chunks.map((chunk, index) => `[${index + 1}/${chunks.length}]\n${chunk}`) : chunks;
 }
 

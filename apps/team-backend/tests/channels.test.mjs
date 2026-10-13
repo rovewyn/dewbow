@@ -124,7 +124,12 @@ test("DingTalk identity parsing rejects foreign destinations and expired webhook
   const frame = changes => ({ type: "CALLBACK", headers: { messageId: "callback", topic: "/v1.0/im/bot/messages/get" }, data: JSON.stringify({ ...body, ...changes }) });
   assert.equal(parseMessage(frame({}), credential).text, body.text.content);
   assert.throws(() => parseMessage(frame({ senderCorpId: "other" }), credential)); assert.throws(() => parseMessage(frame({ sessionWebhook: "https://example.invalid/private" }), credential));
-  const text = "🙂中文\n".repeat(1000), chunks = splitText(text); assert.equal(chunks.map(value => value.replace(/^\[\d+\/\d+\]\n/, "")).join(""), text); assert.ok(chunks.every(value => Buffer.byteLength(value) < 1600));
+  const paragraph = "A".repeat(1000) + "\r\n \r\n" + "B".repeat(1000), line = "A".repeat(1000) + "\n" + "B".repeat(1000), sentence = "中文".repeat(180) + "。" + "后续".repeat(160) + "。";
+  for (const text of ["🙂中文\n".repeat(1000), paragraph, line, sentence, "x".repeat(1499) + "🙂".repeat(1000), "word ".repeat(500), "\"" + "A".repeat(2000) + "\"", " \n" + "🙂".repeat(1000)]) {
+    const chunks = splitText(text), parts = chunks.map(value => value.replace(/^\[\d+\/\d+\]\n/, ""));
+    assert.equal(parts.join(""), text); assert.ok(parts.every(value => Buffer.byteLength(value) <= 1500 && value.trim())); assert.ok(chunks.every(value => Buffer.byteLength(value) < 1600));
+  }
+  assert.ok(splitText(paragraph)[0].endsWith("\r\n \r\n")); assert.ok(splitText(line)[0].endsWith("\n")); assert.ok(splitText(sentence)[0].endsWith("。"));
   const calls = []; let timeout = false;
   const sender = new DingTalkSender(async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); if (timeout) throw new Error("Synthetic timeout"); return Response.json(url.includes("accessToken") ? { accessToken: "synthetic-access", expireIn: 7200 } : url.includes("batchSend") ? { processQueryKey: "synthetic-query" } : { errcode: 0 }); });
   const address = { corpId: credential.corpId, userId: "user", webhook: body.sessionWebhook, expiresAt: 0 }; await sender.send(credential, address, "Reply", new AbortController().signal);
