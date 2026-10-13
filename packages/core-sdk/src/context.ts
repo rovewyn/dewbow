@@ -1,5 +1,5 @@
 import { open, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep, toNamespacedPath } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, toNamespacedPath } from "node:path";
 import { isOwnedFile } from "./file-trust.js";
 
 /** Passive items are persisted in the rollout but are not indexed as native turns. */
@@ -10,13 +10,21 @@ export async function hasInjectedContext(home: string, path: string, threadId: s
     if (!local || local.startsWith(`..${sep}`) || !["sessions","archived_sessions"].includes(local.split(sep)[0]!)) throw new Error("Untrusted context history path.");
   };
   if (!isAbsolute(path)) throw new Error("Untrusted context history path.");
-  check(toNamespacedPath(resolve(path)));
   let file:string;
   try {file=toNamespacedPath(await realpath(path));}
   catch(error) {
     // Codex assigns a rollout path before materializing the first persistent item.
     // Missing evidence never authorizes replay of an already attempted append.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      let ancestor=resolve(path);const missing:string[]=[];
+      while(true) {
+        try {check(join(toNamespacedPath(await realpath(ancestor)),...missing.reverse()));return false;}
+        catch(cause) {
+          if ((cause as NodeJS.ErrnoException).code!=="ENOENT" || dirname(ancestor)===ancestor)throw cause;
+          missing.push(basename(ancestor));ancestor=dirname(ancestor);
+        }
+      }
+    }
     throw error;
   }
   check(file);
