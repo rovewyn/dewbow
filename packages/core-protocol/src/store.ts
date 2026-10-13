@@ -2,9 +2,11 @@ import { DatabaseSync } from "node:sqlite";
 import { ensurePrivateFile } from "./files.js";
 import { fail } from "./index.js";
 import type { Event } from "./index.js";
+import { ChangeSignal } from "./stream.js";
 
 /** Small shared SQLite journal. Callers own record semantics and transactions. */
 export class Store {
+  readonly changes = new ChangeSignal();
   private readonly db: DatabaseSync;
   constructor(path: string, private readonly eventHistory = true) {
     ensurePrivateFile(path);
@@ -52,7 +54,13 @@ export class Store {
     if (kind === "interaction") {
       const record = JSON.parse(encoded); delete record.details; encoded = JSON.stringify(record);
     }
-    this.db.prepare("INSERT INTO records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value").run(kind, id, encoded);
+    const previousHost = kind === "host" ? this.get<{ status: string; name: string }>(kind, id) : undefined;
+    const result = this.db.prepare("INSERT INTO records VALUES (?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value WHERE value != excluded.value").run(kind, id, encoded);
+    if (Number(result.changes)) {
+      const record = JSON.parse(encoded);
+      if (kind === "host" && previousHost?.status === record.status && previousHost?.name === record.name) return;
+      this.changes.notify(kind === "host" ? `host:${id}` : `session:${record.sessionId ?? (kind === "session" ? id : "")}`);
+    }
   }
   remove(kind: string, id: string): void { this.db.prepare("DELETE FROM records WHERE kind=? AND id=?").run(kind, id); }
   append(event: Event): boolean {

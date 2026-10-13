@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { fail, TeamError, type ApiError, type CoreOperation, type CoreSessionDetails, type SessionBindingResult, type SessionBinding, type SessionBindingDetails, type SessionOptions } from "@dewbow/team-protocol";
+import { canonicalJson, fail, TeamError, type ApiError, type CoreOperation, type CoreSessionDetails, type SessionBindingResult, type SessionBinding, type SessionBindingDetails, type SessionOptions } from "@dewbow/team-protocol";
 import type { CoreApi, CoreOperationName } from "./core-client.js";
 import { fingerprintInput, TeamStore, type RequestRecord } from "./store.js";
 
@@ -57,7 +57,7 @@ export class SessionService {
     }
   }
 
-  private assertTarget(binding: SessionBinding, caller: string): RequestRecord {
+  assertTarget(binding: SessionBinding, caller: string): RequestRecord {
     if (!this.core.url) fail("CORE_NOT_CONFIGURED", "Configure Dewbow Core on the Team backend.");
     const creation = this.store.findRequest(binding.createCaller, binding.createOperation, binding.createRequestId);
     if (!creation?.coreInput || !creation.coreRequestId) fail("RECOVERY_REQUIRED", "The original creation request is missing.");
@@ -69,6 +69,9 @@ export class SessionService {
     const coreOperation = Object.hasOwn(mutations, operation) ? mutations[operation] : undefined;
     if (!coreOperation) fail("NOT_FOUND", "Unknown session operation.");
     if (!this.core.url) fail("CORE_NOT_CONFIGURED", "Configure Dewbow Core on the Team backend.");
+    if (caller === "operator" && ["sendBindingMessage", "steerBindingTurn", "answerBindingQuestions"].includes(operation) && this.store.getChannelConversationId(String(input.bindingId))) {
+      fail("CHANNEL_INPUT_REQUIRED", "This session belongs to a channel user. Use takeover and Send to user; ordinary agent input is unavailable.");
+    }
     const fingerprint = fingerprintInput(input);
     const requestId = input.requestId as string;
     const saved = this.store.transaction(() => {
@@ -120,6 +123,7 @@ export class SessionService {
   private async dispatch(record: RequestRecord, operation: CoreOperationName, input: Record<string, unknown>): Promise<SessionBindingResult> {
     let binding = this.store.getBinding(record.bindingId!);
     try {
+      if (record.caller === "operator" && ["sendMessage", "steerTurn", "answerQuestions"].includes(operation) && this.store.getChannelConversationId(binding.bindingId)) fail("CHANNEL_INPUT_REQUIRED", "Ordinary agent input is unavailable for channel-owned sessions.");
       const payload={...record.coreInput,...(["sendMessage","steerTurn"].includes(operation) ? {message:input.message} : {}),...(operation === "answerQuestions" ? {answers:input.answers} : {}),...(operation === "appendSessionContext" ? {text:input.text} : {})};
       const result = publicOperation(await this.core.call<CoreOperation>(operation, payload, true));
       if (result.requestId !== record.coreRequestId || result.operation !== operation || (binding.sessionId && result.sessionId !== binding.sessionId)) {
@@ -138,7 +142,7 @@ export class SessionService {
     }
   }
 
-  private async getDetails(binding: SessionBinding, caller: string): Promise<SessionBindingDetails> {
+  async getDetails(binding: SessionBinding, caller: string, observation?: { core: CoreSessionDetails | null; coreError: ApiError | null }, signal?: AbortSignal): Promise<SessionBindingDetails> {
     let core: CoreSessionDetails | null = null;
     let coreError: ApiError | null = null;
     const savedCreation = this.store.findRequest(binding.createCaller, binding.createOperation, binding.createRequestId);
@@ -146,13 +150,15 @@ export class SessionService {
     try {
       this.assertTarget(binding, caller);
       if (binding.sessionId) {
-        const observed = await this.core.call<CoreSessionDetails>("getSession", { sessionId: binding.sessionId });
+        if (observation?.coreError) throw new TeamError(observation.coreError);
+        const observed = observation ? observation.core : await this.core.call<CoreSessionDetails>("getSession", { sessionId: binding.sessionId }, false, signal);
+        signal?.throwIfAborted();
         if (observed?.session?.sessionId !== binding.sessionId || !Array.isArray(observed.operations)) fail("CORE_PROTOCOL_ERROR", "Core returned an invalid session view.");
         core = observed;
         if (binding.workDir !== observed.session.workDir) { binding = { ...binding, workDir: observed.session.workDir }; this.store.putBinding(binding); }
         for (const record of this.store.bindingRequests(caller, binding.bindingId)) {
           const result = core.operations.find(item => item.requestId === record.coreRequestId && item.operation === mutations[record.operation]);
-          if (result) this.store.putRequest({ ...record, result: publicOperation(result), error: result.error, updatedAt: new Date().toISOString() });
+          if (result && canonicalJson([record.result, record.error]) !== canonicalJson([publicOperation(result), result.error])) this.store.putRequest({ ...record, result: publicOperation(result), error: result.error, updatedAt: new Date().toISOString() });
         }
       }
     } catch (error) { coreError = detail(error); }
@@ -163,6 +169,6 @@ export class SessionService {
       mode:record.coreInput?.mode === "plan" ? "plan" as const : record.coreInput?.mode === "default" ? "default" as const : null,
       error: record.error, createdAt: record.createdAt, updatedAt: record.updatedAt,
     }));
-    return { binding, requestedOptions, requests, core, coreError };
+    return { binding, requestedOptions, requests, core, coreError, channelConversationId: this.store.getChannelConversationId(binding.bindingId) };
   }
 }

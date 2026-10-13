@@ -102,6 +102,17 @@ export interface NativeInventory {
   nextCursor: number | null;
 }
 export interface EventHistory { events: Event[]; nextCursor: number; hasMore: boolean; liveMessages: NativeMessage[] }
+export interface SessionDetails {
+  host?: Host;
+  session: SessionSummary; contextAuthority: "agent" | "operator"; turns: Turn[];
+  interactions: Interaction[]; interactionsError: ManagementErrorData | null;
+  operations: Omit<Operation, "caller" | "fingerprint" | "input">[];
+}
+export interface SessionHistory extends EventHistory, Omit<NativeHistory, "observedAt" | "historyError"> {
+  historyError: ManagementErrorData | null; eventsError?: ManagementErrorData | null;
+}
+export interface HistoryPosition { cursor?: number | undefined; updateCursor?: string | undefined; contextCursor?: number | undefined; resumeSessionId?: string | undefined }
+export interface SessionUpdates { contractVersion: "v1"; details: SessionDetails; history: SessionHistory }
 export interface HostQuery {
   queryId: string; operation: "listWorkspaceProfiles" | "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
   input: { sessionId?: string; cursor?: number; contextCursor?:number; beforeContextCursor?:number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };

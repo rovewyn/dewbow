@@ -13,6 +13,10 @@
       "types": "./dist/chat/model.d.ts",
       "default": "./dist/chat/model.js"
     },
+    "./chat/updates": {
+      "types": "./dist/chat/updates.d.ts",
+      "default": "./dist/chat/updates.js"
+    },
     "./ui": {
       "types": "./dist/ui/index.d.ts",
       "default": "./dist/ui/index.js"

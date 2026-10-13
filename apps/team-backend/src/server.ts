@@ -3,9 +3,12 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { contractVersion, fail, TeamError } from "@dewbow/team-protocol";
+import { createEventStream } from "@dewbow/core-protocol/stream";
+import { validateInput as validateCoreInput } from "@dewbow/core-protocol";
 import type { Config } from "./config.js";
 
 export type Handler = (operation: string, input: unknown, caller: string) => Promise<unknown> | unknown;
+export type SubscriptionHandler = (operation: string, input: Record<string, unknown>, caller: string, emit: (event: "snapshot" | "update", value: unknown) => void, signal: AbortSignal) => Promise<void>;
 
 function sameSecret(a: string, b: string): boolean {
   return Boolean(a && b) && timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
@@ -28,7 +31,7 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
-export function createTeamServer(config: Config, handle: Handler = () => fail("NOT_FOUND", "Unknown operation.")) {
+export function createTeamServer(config: Config, handle: Handler = () => fail("NOT_FOUND", "Unknown operation."), subscribe?: SubscriptionHandler) {
   const sessions = new Map<string, number>();
   const cookieName = "dewbowTeamOperator";
   const cookie = (value: string, maxAge: number) => `${cookieName}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${config.publicOrigin.startsWith("https:") ? "; Secure" : ""}`;
@@ -37,12 +40,32 @@ export function createTeamServer(config: Config, handle: Handler = () => fail("N
     const value = request.headers.cookie?.split(";").map(part => part.trim()).find(part => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     return Boolean(value && (sessions.get(value) ?? 0) > Date.now());
   };
-  return createServer(async (request, response) => {
+  const streams = new Set<ReturnType<typeof createEventStream>>();
+  const server = createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
     try {
       const pathname = new URL(request.url ?? "/", config.publicOrigin).pathname;
+      if (["/api/subscribeBindingUpdates", "/api/subscribeChannelConversationUpdates"].includes(pathname) && request.method === "GET") {
+        if (request.headers.origin && request.headers.origin !== config.publicOrigin) fail("FORBIDDEN", "Origin is not permitted.");
+        if (!authenticate(request)) fail("UNAUTHORIZED", "Authentication is required.");
+        if (!subscribe) fail("NOT_FOUND", "Subscriptions are unavailable.");
+        const params = new URL(request.url!, config.publicOrigin).searchParams, conversation = pathname.endsWith("subscribeChannelConversationUpdates");
+        const targetKey = conversation ? "conversationId" : "bindingId";
+        for (const key of params.keys()) if (![targetKey, "cursor", "updateCursor", "contextCursor", "resumeSessionId"].includes(key) || params.getAll(key).length !== 1) fail("INVALID_INPUT", "Invalid subscription parameters.");
+        const input: Record<string, unknown> = Object.fromEntries(params);
+        for (const key of ["cursor", "contextCursor"]) if (params.has(key)) input[key] = Number(params.get(key));
+        try { validateCoreInput("readSessionHistory", { sessionId: input[targetKey], ...(input.cursor !== undefined ? { cursor: input.cursor } : {}), ...(input.updateCursor !== undefined ? { updateCursor: input.updateCursor } : {}), ...(input.contextCursor !== undefined ? { contextCursor: input.contextCursor } : {}) }); }
+        catch { fail("INVALID_INPUT", "Invalid subscription history position."); }
+        await handle(conversation ? "readChannelConversation" : "getSessionBinding", conversation ? { conversationId: input.conversationId } : { bindingId: input.bindingId }, "operator");
+        const stream = createEventStream(response, () => { if (!authenticate(request)) fail("UNAUTHORIZED", "Authentication is required."); });
+        streams.add(stream); stream.signal.addEventListener("abort", () => streams.delete(stream), { once: true });
+        try { await subscribe(pathname.slice(5), input, "operator", stream.send, stream.signal); }
+        catch { stream.error(); }
+        finally { stream.close(); }
+        return;
+      }
       if (pathname === "/health" && request.method === "GET") {
         json(response, 200, { result: { service: "dewbow-team", contractVersion } });
         return;
@@ -102,4 +125,7 @@ export function createTeamServer(config: Config, handle: Handler = () => fail("N
       json(response, status, { error: detail });
     }
   });
+  const close = server.close.bind(server);
+  server.close = callback => { for (const stream of streams) stream.close(); return close(callback); };
+  return server;
 }

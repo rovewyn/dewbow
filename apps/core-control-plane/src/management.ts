@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalJson, fail, LiveReplies, ManagementError, maskPrivateMessages, maskPrivateActivity, maskPrivateEvents, now, terminal, validateInput } from "@dewbow/core-protocol";
-import type { AgentRef, Interaction, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, Turn } from "@dewbow/core-protocol";
+import type { AgentRef, Interaction, Command, Event, EventHistory, Host, HostQuery, HostReport, ManagementErrorData, NativeHistory, NativeInventory, NativeSession, Operation, OperationResult, Session, SessionOptions, SessionSummary, SessionUpdates, Turn } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
 
 export interface Caller { id: string; operator: boolean }
@@ -136,7 +136,9 @@ export class Management {
           page = await this.query(hostId, "discoverSessions", { cursor }) as NativeInventory;
           sessions.push(...page.sessions); cursor = page.nextCursor ?? 0;
         } while (page.nextCursor !== null);
+        const changed = canonicalJson(this.inventories.get(hostId)?.sessions ?? []) !== canonicalJson(sessions);
         this.inventories.set(hostId, { ...page, sessions }); this.discoveryErrors.delete(hostId);
+        if (changed) this.store.changes.notify(`host:${hostId}`);
       } catch (cause) {
         this.discoveryErrors.set(hostId, cause instanceof ManagementError ? cause.detail : { code: "READ_FAILED", message: "Native inventory could not be read.", retryable: true });
       } finally { this.refreshes.delete(hostId); }
@@ -192,7 +194,7 @@ export class Management {
         });
       } catch (cause) { interactionsError = cause instanceof ManagementError ? cause.detail : {code:"READ_FAILED",message:"Interactions are unavailable.",retryable:true}; }
     }
-    return { session, contextAuthority:this.privateConversation(id) ? "operator" : "agent",turns: this.store.list<Turn>("turn").filter(t => t.sessionId === id),
+    return { session, host: this.store.get<Host>("host", session.hostId), contextAuthority:this.privateConversation(id) ? "operator" : "agent",turns: this.store.list<Turn>("turn").filter(t => t.sessionId === id),
       interactions:interactions.map(item=>{if(caller.operator || !this.privateConversation(id))return item;const {details:_details,...metadata}=item;return metadata;}),interactionsError,
       operations: this.store.list<Operation>("operation").filter(o => o.sessionId === id).map(publicOperation) };
   }
@@ -200,6 +202,15 @@ export class Management {
     return this.privateConversation(sessionId) ? new Set(this.store.list<Turn>("turn").filter(turn=>turn.sessionId===sessionId && turn.codexTurnId).map(turn=>turn.codexTurnId!)) : new Set();
   }
   private privateConversation(sessionId:string):boolean {return this.store.list<Interaction>("interaction").some(item=>item.sessionId===sessionId && item.sensitive);}
+  protectUpdates(value: SessionUpdates, caller: Caller): SessionUpdates {
+    if (caller.operator || !this.privateConversation(value.details.session.sessionId)) return value;
+    const history = value.history;
+    const turns = new Set([...history.messages, ...history.liveMessages, ...history.activities].map(item => item.turnId));
+    for (const event of history.events) { if (event.turnId) turns.add(event.turnId); const turn = event.payload.turn as Turn | undefined; if (turn?.codexTurnId) turns.add(turn.codexTurnId); }
+    return { ...value, details: { ...value.details, contextAuthority: "operator", interactions: value.details.interactions.map(({ details: _details, ...item }) => item) },
+      history: { ...history, messages: maskPrivateMessages(history.messages, turns), liveMessages: maskPrivateMessages(history.liveMessages, turns), events: maskPrivateEvents(history.events, turns),
+        activities: history.activities.map(maskPrivateActivity), ...(history.contextRecords ? { contextRecords: history.contextRecords.map(record => ({ ...record, text: "", availability: "restricted" as const })) } : {}) } };
+  }
   private async history(input: Record<string, unknown>,caller:Caller) {
     if (input.contextCursor!==undefined && input.beforeContextCursor!==undefined) fail("INVALID_INPUT","Choose one context history cursor.");
     if ([input.beforeCursor,input.afterCursor,input.updateCursor].filter(value=>value !== undefined).length > 1) fail("INVALID_INPUT","Choose one history cursor.");

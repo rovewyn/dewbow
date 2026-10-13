@@ -30,17 +30,21 @@ export class ChannelStore {
   get<T>(table: Table, id: string): T | null { const row = this.team.db.prepare(`SELECT data_json FROM ${table} WHERE id=?`).get(id) as { data_json: string } | undefined; return row ? JSON.parse(row.data_json) : null; }
   put(table: Table, id: string, value: unknown): void {
     const json = JSON.stringify(value);
+    if (JSON.stringify(this.get(table, id)) === json) return;
     if (table === "channel_chatbots") { const bot = value as Chatbot; this.team.db.prepare("INSERT INTO channel_chatbots VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET definition_id=excluded.definition_id,data_json=excluded.data_json").run(id, bot.definitionId === "default" ? null : bot.definitionId, json); }
     else if (table === "channel_connections") { const connection = value as ChannelConnection; this.team.db.prepare("INSERT INTO channel_connections VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET credential_ref=excluded.credential_ref,data_json=excluded.data_json").run(id, connection.chatbotId, connection.credentialRef, json); }
     else if (table === "channel_conversations" || table === "channel_deliveries") {
       const relation = table === "channel_conversations" ? (value as Conversation).connectionId : (value as Delivery).conversationId;
       this.team.db.prepare(`INSERT INTO ${table} VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json`).run(id, relation, json);
     } else this.team.db.prepare(`INSERT INTO ${table} VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json`).run(id, json);
+    const conversationId = (value as { conversationId?: string }).conversationId;
+    if (conversationId) this.team.changes.notify(`conversation:${conversationId}`);
   }
   claim(bindingId: string, conversationId: string): void {
     const old = this.team.db.prepare("SELECT conversation_id FROM channel_binding_claims WHERE binding_id=?").get(bindingId) as { conversation_id: string } | undefined;
     if (old && old.conversation_id !== conversationId) fail("BINDING_IN_USE", "This session belongs to another channel identity.");
     this.team.db.prepare("INSERT OR IGNORE INTO channel_binding_claims VALUES(?,?)").run(bindingId, conversationId);
+    this.team.changes.notify(`binding:${bindingId}`);
   }
   output(conversation: Conversation, id: string, text: string, bindingId: string | null = null, turnId: string | null = null, source: "agent" | "operator" = "agent", contextId?: string): void {
     if (this.get("channel_deliveries", id)) return;

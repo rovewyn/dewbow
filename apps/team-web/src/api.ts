@@ -7,7 +7,7 @@ export class ApiClientError extends Error {
 const authFailures = new Set<() => void>();
 let authEpoch = 0;
 export function onAuthFailure(listener: () => void): () => void { authFailures.add(listener); return () => { authFailures.delete(listener); }; }
-async function confirmAuthFailure(): Promise<void> {
+export async function confirmSubscriptionAuth(): Promise<void> {
   const epoch = authEpoch;
   try {
     const response = await fetch("/auth/session", { credentials: "same-origin", cache: "no-store", signal: AbortSignal.timeout(5000) });
@@ -25,7 +25,7 @@ async function request<T>(path: string, method: string, input?: unknown, signal?
     });
     const value = await response.json() as { result: T; error?: ApiError };
     if (value.error) {
-      if (value.error.code === "UNAUTHORIZED" && path.startsWith("/api/")) await confirmAuthFailure();
+      if (value.error.code === "UNAUTHORIZED" && path.startsWith("/api/")) await confirmSubscriptionAuth();
       throw new ApiClientError(value.error);
     }
     if (!response.ok || !Object.hasOwn(value, "result")) throw new Error("Invalid response.");

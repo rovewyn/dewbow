@@ -7,12 +7,12 @@ import { splitText } from "./dingtalk/messages.js";
 export class Takeovers {
   constructor(private readonly store: ChannelStore, private readonly sessions: SessionService, private readonly canWork: (conversation:Conversation)=>boolean = ()=>true) {}
   private conversation(id: string): Conversation { return this.store.get<Conversation>("channel_conversations",id) ?? fail("NOT_FOUND","Conversation not found."); }
-  async read(id: string): Promise<ChannelConversationDetails> {
+  async read(id: string, observation?: SessionBindingDetails): Promise<ChannelConversationDetails> {
     const conversation = this.conversation(id), takeover = this.store.takeover(conversation);
     let corePause: ChannelConversationDetails["corePause"] = "unknown";
     try {
       if (conversation.bindingId) {
-        const view = await this.details(conversation.bindingId), pause = view.core!.session.executionPause;
+        const view = observation ?? await this.details(conversation.bindingId), pause = view.core!.session.executionPause;
         corePause = pause ? "paused" : conversation.mode === "human" && takeover?.pauseId ? "externallyResumed" : "unpaused";
       }
     } catch { /* Offline state remains explicit. */ }

@@ -14,8 +14,9 @@ const labels: Record<string, string> = { createMemberSession: "Create session", 
 const isMessage = (operation: string) => ["sendBindingMessage", "steerBindingTurn"].includes(operation);
 function unresolved(request: BindingOperation) { return request.result ? ["accepted", "unknown"].includes(request.result.status) : !request.error || request.error.retryable; }
 
-export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, memory, readOnly=false, embedded=false }: { bindingId: string; catalog: Catalog; navigate: (route: Route) => void; onBindingChanged: (binding: SessionBinding) => void; memory: TeamChatMemory; readOnly?: boolean; embedded?: boolean }) {
-  const observed = useSession(bindingId), details = observed.details;
+export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, memory, readOnly=false, embedded=false, observation }: { bindingId: string; catalog: Catalog; navigate: (route: Route) => void; onBindingChanged: (binding: SessionBinding) => void; memory: TeamChatMemory; readOnly?: boolean; embedded?: boolean; observation?: ReturnType<typeof useSession> }) {
+  const ownObservation = useSession(observation ? "" : bindingId), observed = observation ?? ownObservation, details = observed.details;
+  const channelReadOnly = readOnly || Boolean(details?.channelConversationId);
   const binding = details?.binding ?? catalog.bindings.find(item => item.bindingId === bindingId);
   const logicalOperation = (operation: string) => operation === "retrySessionBindingCreation" ? binding?.createOperation ?? "createMemberSession" : operation;
   const requestKey = (bindingId: string, operation: string, requestId: string) => JSON.stringify([bindingId, logicalOperation(operation), requestId]);
@@ -32,7 +33,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
   const hostUnavailable = details?.core?.interactionsError?.code === "HOST_UNAVAILABLE" || observed.historyError?.code === "HOST_UNAVAILABLE";
   const unavailable = !details?.core || Boolean(details.coreError || observed.error || hostUnavailable);
   const ready = !unavailable && session?.connectionState === "connected";
-  const paused=Boolean(session?.executionPause), executionReady=ready && !paused && !readOnly;
+  const paused=Boolean(session?.executionPause), executionReady=ready && !paused && !channelReadOnly;
   const active = details?.core?.turns.find(turn => turn.turnId === session?.activeTurnId);
   const operatorUrl = catalog.service.coreUrl ? `${catalog.service.coreUrl.replace(/\/$/, "")}/#${new URLSearchParams({ session: binding?.sessionId ?? "" })}` : undefined;
   useEffect(() => { const abort = new AbortController(); controller.current = abort; return () => abort.abort(); }, [bindingId]);
@@ -115,7 +116,7 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
   for (const [key, pending] of memory.inputs) if (pending.input.bindingId === bindingId && !chatRequests.some(item => item.key === key)) chatRequests.push({ key, requestId: String(pending.input.requestId ?? binding?.createRequestId), label: labels[logicalOperation(pending.operation)] ?? pending.operation, status: pending.result?.operation?.status ?? "unknown", error: pending.result?.error?.message ?? "Delivery is not confirmed. Retry the original request.", canRetry: !unavailable && !busy });
   const interactions = (display?.interactions ?? []).map(item => ({ ...item, ...(item.details ?? interactionDetails.get(item.content.contentId ?? "") ? { details: item.details ?? interactionDetails.get(item.content.contentId ?? "")! } : {}) }));
   const model = buildChatModel({ sessionKey: bindingId, turns: display?.turns ?? [], ...projectHistoryWindow(observed.history, display?.turns ?? [], session?.activeTurnId ?? null), interactions, requests: chatRequests, restricted: privateContext });
-  if (paused || readOnly) model.requests=model.requests.map(request=>({...request,canRetry:false}));
+  if (paused || channelReadOnly) model.requests=model.requests.map(request=>({...request,canRetry:false}));
   const creation = requests.find(item => item.operation === binding?.createOperation), connect = requests.find(item => item.operation === "connectSessionBinding" && unresolved(item));
   return <>
     {embedded ? <h2>{member?.name ?? catalog.definitions.find(item=>item.definitionId===binding?.agentRef.id)?.name ?? "Agent session"}</h2> : <PageHeading eyebrow="AGENT SESSION" title={member?.name ?? catalog.definitions.find(item => item.definitionId === binding?.agentRef.id)?.name ?? "Agent session"} description={binding?.workDir ?? "Loading session…"} actions={<button className="button secondary" onClick={() => navigate(member ? { page: "teams", teamId: member.teamId } : { page: "sessions" })}>← Back</button>} />}
@@ -131,9 +132,10 @@ export function SessionPage({ bindingId, catalog, navigate, onBindingChanged, me
       setTab(next); document.getElementById(`tab-${next}`)?.focus();
     }}>{item}</button>)}</div>
     <section className="conversation-panel" id="panel-conversation" role="tabpanel" aria-labelledby="tab-conversation" hidden={tab !== "conversation"}>
-      <ChatView hideComposer={readOnly} model={model} draft={draft} onDraftChange={changeDraft}
+      {!embedded && details?.channelConversationId && <p className="field-hint">This session belongs to a channel user. <button className="text-button" onClick={() => navigate({ page: "channels", conversationId: details.channelConversationId! })}>Open conversation workbench</button> to take over.</p>}
+      <ChatView hideComposer={!details || channelReadOnly} userLabel={channelReadOnly ? "User" : undefined} model={model} draft={draft} onDraftChange={changeDraft}
         composer={{ action: original && executionReady ? "retry" : canSteer ? "steer" : canSend ? "send" : "disabled", turnId: active?.turnId ?? null, mode: original?.mode ?? originalTurn?.mode ?? active?.mode ?? draft.mode, modeLocked: Boolean(active || original), retryRequestKey: retryKey, busy, reason: paused ? "Execution submissions are paused on this host daemon. Reading and interruption remain available." : original ? "Retry preserves the original request, mode and Core mapping." : privateContext ? "Continue this private conversation in Core." : unavailable || !ready ? "Reconnect the session to send. Your draft stays in this binding." : pendingMessage ? "An earlier message is unresolved. Inspect request delivery." : null }}
-        history={{ loading: !details, hasOlder: Boolean(observed.history.beforeCursor || observed.history.beforeContextCursor), loadingOlder: observed.loadingOlder, error: [observed.historyError, display?.interactionsError].filter(Boolean).map(item => item!.message).join(" · ") || null }}
+        history={{ loading: !details || !observed.historyLoaded, hasOlder: Boolean(observed.history.beforeCursor || observed.history.beforeContextCursor), loadingOlder: observed.loadingOlder, error: [observed.historyError, display?.interactionsError].filter(Boolean).map(item => item!.message).join(" · ") || null }}
         contents={contents} loadingInteractions={loadingInteractions} canReadContent={ref => !privateContext && ref.authority === "agent"} contentReadsAvailable={!unavailable} canRespond={item => !privateContext && item.kind === "questions" && item.authority === "agent" && !item.sensitive} canSubmitInteraction={item => Boolean(executionReady && item.status === "pending" && item.turnId === session?.activeTurnId)} {...(operatorUrl ? { operatorUrl } : {})}
         onSend={input => run("sendBindingMessage", input)} onSteer={input => run("steerBindingTurn", input)} onAnswer={input => run("answerBindingQuestions", input)} onDecideApproval={() => setError({ code: "FORBIDDEN", message: "Decide approvals in Core.", retryable: false })}
         onInterrupt={ready && session?.activeTurnId ? () => run("interruptBindingTurn", { turnId: session.activeTurnId }) : null}

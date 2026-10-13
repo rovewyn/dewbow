@@ -33,6 +33,7 @@ export interface ChatContentState {
 /** The host owns permission checks, request IDs, original input and all I/O. */
 export interface ChatViewProps {
   hideComposer?: boolean;
+  userLabel?: string | undefined;
   model: ChatModel; draft: ChatDraft; onDraftChange: (draft: ChatDraft) => void;
   composer: { action: "send" | "steer" | "retry" | "disabled"; turnId: string | null; mode: TurnMode; modeLocked: boolean; busy: boolean; reason: string | null; retryRequestKey: string | null };
   history: { loading: boolean; hasOlder: boolean; loadingOlder: boolean; error: string | null };

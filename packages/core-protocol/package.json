@@ -4,6 +4,6 @@
   "private": true,
   "description": "Dewbow Core management contracts and durable service journal",
   "type": "module",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./store": { "types": "./dist/store.d.ts", "import": "./dist/store.js" }, "./files": { "types": "./dist/files.d.ts", "import": "./dist/files.js" } },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./store": { "types": "./dist/store.d.ts", "import": "./dist/store.js" }, "./files": { "types": "./dist/files.d.ts", "import": "./dist/files.js" }, "./stream": { "types": "./dist/stream.d.ts", "import": "./dist/stream.js" } },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --test tests/*.test.mjs" }
 }

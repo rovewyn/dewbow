@@ -8,6 +8,7 @@
 | --- | --- |
 | `@dewbow/core-ui/chat` | `ChatView`, `ChatViewProps` and presentation model types |
 | `@dewbow/core-ui/chat/model` | `buildChatModel`, history merging, saved/live message projection and activity merging |
+| `@dewbow/core-ui/chat/updates` | Browser SSE subscription with committed-cursor reconnect and teardown |
 | `@dewbow/core-ui/ui` | Shared shadcn Button, Input, Textarea, NativeSelect, Card, Badge, Alert and `cn` |
 | `@dewbow/core-ui/theme.css` | Light/dark design tokens and Tailwind theme mapping |
 | `@dewbow/core-ui/styles.css` | Theme, chat styles and utilities, with package output included in Tailwind scanning |
@@ -26,7 +27,7 @@ Agent hosts apply `restrictHistory` when Core reports operator-only context. Tha
 
 ## Controlled interface
 
-`ChatViewProps` accepts the model, draft, composer state, history state, content states, interaction-loading state and explicit interaction/content permission predicates, current submission readiness and content-read availability. Its callbacks cover new messages, steering, structured answers, approval decisions, interruption, original-request retry, original-text resubmission, older history and private content/detail reads. The host generates and retains request IDs before I/O. Callbacks carry the exact management turn and interaction IDs where required. Retry uses the host's original operation and input. The package creates no network client, service credential or recovery policy.
+`ChatViewProps` accepts the model, draft, composer state, history state, content states, interaction-loading state and explicit interaction/content permission predicates, current submission readiness and content-read availability. Its callbacks cover new messages, steering, structured answers, approval decisions, interruption, original-request retry, original-text resubmission, older history and private content/detail reads. The host generates and retains request IDs before I/O. Callbacks carry the exact management turn and interaction IDs where required. Retry uses the host's original operation and input. ChatView itself creates no network client, service credential or recovery policy. Its host controller can use the shared SSE subscriber and continues to own history merging, authorization and execution callbacks. See [Session update subscriptions](session-updates.md).
 
 Draft text and new-turn mode belong to the host, keyed by Core session ID or Team binding ID. The selected mode defaults to Default. An active turn fixes its own mode for steering. Content state is keyed by content ID inside the selected session's cache; hosts release or abort reads when selection or authentication changes. Content loads use Core's chunk limits and explicit completeness. Operator-only interactions in Team route to Core.
 
