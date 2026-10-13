@@ -5,6 +5,11 @@ export const robotTopic = "/v1.0/im/bot/messages/get";
 export const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 export const makeAck = (frame: StreamFrame, code: number, message: string) => ({ code, headers: { messageId: frame.headers.messageId, contentType: "application/json" }, message, data: '{"response":null}' });
 const identifier = (value: unknown): value is string => typeof value === "string" && Boolean(value.trim()) && value.length <= 4096;
+export const textMessageBodyLimitBytes = 20000;
+export const textMessageBodyBudgetBytes = 19000;
+const textMessageBody = (text: string) => ({ msgtype: "text", text: { content: text } });
+export const getTextMessageBodyBytes = (text: string): number => Buffer.byteLength(JSON.stringify(textMessageBody(text)), "utf8");
+const encodedTextBytes = (text: string) => Buffer.byteLength(JSON.stringify(text), "utf8") - 2;
 
 export function parseMessage(frame: StreamFrame, credentials: ChannelCredentials): IncomingMessage | null {
   const value: unknown = JSON.parse(frame.data);
@@ -20,14 +25,20 @@ export function parseMessage(frame: StreamFrame, credentials: ChannelCredentials
 }
 
 export function splitText(text: string): string[] {
+  if (!text) return [];
+  if (getTextMessageBodyBytes(text) <= textMessageBodyBudgetBytes) return [text];
+  // A nonempty part cannot outnumber the original UTF-16 units. Reserve an
+  // upper bound for its escaped numbering prefix before choosing boundaries.
+  const prefixBytes = encodedTextBytes(`[${text.length}/${text.length}]\n`);
+  const contentBudget = textMessageBodyBudgetBytes - getTextMessageBodyBytes("") - prefixBytes;
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
     let end = start, bytes = 0, paragraphEnd = 0, lineEnd = 0, sentenceEnd = 0, wordEnd = 0;
     while (end < text.length) {
       const width = text.codePointAt(end)! > 0xffff ? 2 : 1;
-      const character = text.slice(end, end + width), size = Buffer.byteLength(character);
-      if (bytes + size > 1500) break;
+      const character = text.slice(end, end + width), size = encodedTextBytes(character);
+      if (bytes + size > contentBudget) break;
       end += width; bytes += size;
       if (character === "\n") {
         if (lineEnd && !text.slice(lineEnd, end - 1).trim()) paragraphEnd = end;
@@ -78,7 +89,7 @@ export class DingTalkSender {
     if (address.expiresAt > Date.now() + 1000) {
       const url = new URL(address.webhook);
       if (url.protocol !== "https:" || url.hostname !== "oapi.dingtalk.com" || url.pathname !== "/robot/sendBySession") throw new DeliveryError(false);
-      const result = await this.post(url.href, { msgtype: "text", text: { content: text } }, signal);
+      const result = await this.post(url.href, textMessageBody(text), signal);
       if (result.errcode !== 0) throw new DeliveryError(true);
     } else {
       const token = await this.token(credentials, signal);

@@ -5,7 +5,7 @@ import { TeamApi } from "../dist/api.js";
 import { SessionService } from "../dist/session-service.js";
 import { ChannelRuntime } from "../dist/channels/runtime.js";
 import { DeliveryError } from "../dist/channels/adapter.js";
-import { DingTalkSender, parseMessage, splitText } from "../dist/channels/dingtalk/messages.js";
+import { DingTalkSender, getTextMessageBodyBytes, parseMessage, splitText, textMessageBodyBudgetBytes, textMessageBodyLimitBytes } from "../dist/channels/dingtalk/messages.js";
 import { runStream } from "../dist/channels/dingtalk/stream.js";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -124,10 +124,14 @@ test("DingTalk identity parsing rejects foreign destinations and expired webhook
   const frame = changes => ({ type: "CALLBACK", headers: { messageId: "callback", topic: "/v1.0/im/bot/messages/get" }, data: JSON.stringify({ ...body, ...changes }) });
   assert.equal(parseMessage(frame({}), credential).text, body.text.content);
   assert.throws(() => parseMessage(frame({ senderCorpId: "other" }), credential)); assert.throws(() => parseMessage(frame({ sessionWebhook: "https://example.invalid/private" }), credential));
-  const paragraph = "A".repeat(1000) + "\r\n \r\n" + "B".repeat(1000), line = "A".repeat(1000) + "\n" + "B".repeat(1000), sentence = "中文".repeat(180) + "。" + "后续".repeat(160) + "。";
-  for (const text of ["🙂中文\n".repeat(1000), paragraph, line, sentence, "x".repeat(1499) + "🙂".repeat(1000), "word ".repeat(500), "\"" + "A".repeat(2000) + "\"", " \n" + "🙂".repeat(1000)]) {
+  assert.equal(textMessageBodyLimitBytes - textMessageBodyBudgetBytes, 1000);
+  const withinBudget = "A".repeat(textMessageBodyBudgetBytes - getTextMessageBodyBytes(""));
+  assert.deepEqual(splitText(withinBudget), [withinBudget]); assert.equal(splitText(withinBudget + "A").length, 2);
+  assert.deepEqual(splitText("中文🙂".repeat(400)), ["中文🙂".repeat(400)], "ordinary replies stay in one message");
+  const paragraph = "A".repeat(15000) + "\r\n \r\n" + "B".repeat(15000), line = "A".repeat(15000) + "\n" + "B".repeat(15000), sentence = "中文".repeat(2500) + "。" + "后续".repeat(1600) + "。";
+  for (const text of ["🙂中文\n".repeat(4000), paragraph, line, sentence, "x".repeat(18900) + "🙂".repeat(1000), "word ".repeat(5000), "\"" + "A".repeat(30000) + "\"", " \n" + "🙂".repeat(8000), "\"\\\n\t\u0000".repeat(6000)]) {
     const chunks = splitText(text), parts = chunks.map(value => value.replace(/^\[\d+\/\d+\]\n/, ""));
-    assert.equal(parts.join(""), text); assert.ok(parts.every(value => Buffer.byteLength(value) <= 1500 && value.trim())); assert.ok(chunks.every(value => Buffer.byteLength(value) < 1600));
+    assert.equal(parts.join(""), text); assert.ok(parts.every(value => value.trim())); assert.ok(chunks.every(value => getTextMessageBodyBytes(value) <= textMessageBodyBudgetBytes), "count JSON escaping and part labels in the complete payload");
   }
   assert.ok(splitText(paragraph)[0].endsWith("\r\n \r\n")); assert.ok(splitText(line)[0].endsWith("\n")); assert.ok(splitText(sentence)[0].endsWith("。"));
   const calls = []; let timeout = false;
@@ -167,7 +171,7 @@ test("confirmed state races choose a new operation, while disabling or shutting 
   await f.accept("racing", "user-a", "Channel participation"); await f.runtime.tick(); await f.runtime.tick();
   assert.equal(f.core.calls.filter(value=>value.operation==="steerTurn").length,1);
   assert.equal(f.runtime.store.list("channel_deliveries").find(value=>value.direction==="input" && value.operation==="steerBindingTurn").status,"completed");
-  f.core.finish("session-1", "🙂".repeat(1000)); f.core.sessions.get("session-1").messages[0].itemComplete=false; await f.runtime.tick();
+  f.core.finish("session-1", "🙂".repeat(8000)); f.core.sessions.get("session-1").messages[0].itemComplete=false; await f.runtime.tick();
   assert.ok(!f.sent.some(value=>value.text.startsWith("[1/")), "turn completion does not establish message completeness");
   f.core.sessions.get("session-1").messages[0].itemComplete=true; f.failReply(); await f.runtime.tick();
   assert.ok(!f.sent.some(value=>value.text.startsWith("[2/")), "later reply segments wait for the uncertain first segment");
