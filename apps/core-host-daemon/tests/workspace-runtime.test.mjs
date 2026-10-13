@@ -10,7 +10,7 @@ import { HostDaemon } from "../dist/index.js";
 const until = async predicate => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { const value = predicate(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error("Synthetic workspace runtime timed out."); };
 
 test("host transport prepares an isolated profile and refuses native recovery when its saved directory is missing", async () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "dewbow-profile-runtime-")));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "dewbow-profile-runtime-")));
   const executable = join(dir, "codex.mjs"); copyFileSync(new URL("fixtures/codex.mjs", import.meta.url), executable);
   writeFileSync(join(dir, "synthetic-config.json"), JSON.stringify({ model: "synthetic-default", sandbox_workspace_write: { writable_roots: ["/synthetic/shared"] } }));
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 }); await once(server, "listening");
@@ -31,7 +31,7 @@ test("host transport prepares an isolated profile and refuses native recovery wh
     assert.equal(preparation[0].event.payload.session.workspace.status, "preparing"); assert.equal(preparation[0].event.payload.session.workDir, null);
     assert.equal(preparation[1].event.payload.session.workspace.status, "ready");
     const session = frames.find(value => value.type === "event" && value.event.type === "session_created").event.payload.session;
-    assert.equal(session.workspace.status, "ready"); assert.equal(session.workDir, realpathSync(join(dir, "sessions", "managed-profile")));
+    assert.equal(session.workspace.status, "ready"); assert.equal(session.workDir, realpathSync.native(join(dir, "sessions", "managed-profile")));
     assert.deepEqual(session.sessionConfig.resolved.sandbox.writableRoots, []); assert.equal(session.sessionConfig.resolved.sandbox.excludeTmpdirEnvVar, true);
     await daemon.stop(); renameSync(session.workDir, join(dir, "retained-result"));
     const requests = () => readFileSync(join(dir, "synthetic-rpc.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
