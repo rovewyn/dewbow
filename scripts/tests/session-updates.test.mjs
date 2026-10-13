@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { get } from "node:http";
 import { ControlPlane } from "../../apps/core-control-plane/dist/index.js";
 import { TeamStore } from "../../apps/team-backend/dist/store.js";
 import { TeamApi } from "../../apps/team-backend/dist/api.js";
@@ -78,6 +79,34 @@ test("Core and Team SSE preserve updates, reconnect cursors, authority and chann
   assert.equal((await fetch(`${coreConfig.publicOrigin}/api/subscribeSessionUpdates?sessionId=${sessionId}`, { headers: { Authorization: `Bearer ${teamToken}` } })).status, 401);
   assert.equal((await fetch(`${teamConfig.publicOrigin}/api/subscribeBindingUpdates?bindingId=${created.binding.bindingId}&conversationId=${conversationId}`, { headers: { Authorization: `Bearer ${teamToken}` } })).status, 400);
   assert.equal((await fetch(`${coreConfig.publicOrigin}/api/subscribeSessionUpdates?sessionId=${sessionId}&cursor=invalid`, { headers: { Authorization: `Bearer ${coreToken}` } })).status, 400);
+  for (const target of [
+    { object: management, method: "call", operation: "getSession", server: plane.server, changes: plane.store.changes, origin: coreConfig.publicOrigin, path: `/api/subscribeSessionUpdates?sessionId=${sessionId}`, token: coreToken },
+    { object: api, method: "execute", operation: "getSessionBinding", server, changes: store.changes, origin: teamConfig.publicOrigin, path: `/api/subscribeBindingUpdates?bindingId=${created.binding.bindingId}`, token: teamToken },
+  ]) {
+    let release, entered, disconnected, finished, blocked = false, subscriptions = 0;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const closed = new Promise(resolve => { disconnected = resolve; });
+    const completed = new Promise(resolve => { finished = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const original = target.object[target.method], originalSubscribe = target.changes.subscribe;
+    target.object[target.method] = async (...args) => {
+      if (!blocked && args[0] === target.operation) {
+        blocked = true; entered(); await gate;
+        const result = await original.apply(target.object, args); finished(); return result;
+      }
+      return original.apply(target.object, args);
+    };
+    target.changes.subscribe = (...args) => { subscriptions++; return originalSubscribe.apply(target.changes, args); };
+    target.server.once("request", (_request, response) => response.once("close", disconnected));
+    const request = get(target.origin + target.path, { headers: { Authorization: `Bearer ${target.token}` } });
+    request.on("error", () => {});
+    try {
+      await ready; request.destroy(); await closed; release(); await completed; await wait(0);
+      assert.equal(subscriptions, 0, "disconnected clients never start subscriptions after a preflight read");
+    } finally {
+      release(); request.destroy(); target.object[target.method] = original; target.changes.subscribe = originalSubscribe;
+    }
+  }
   const coreStream = await subscribe(coreConfig.publicOrigin, `/api/subscribeSessionUpdates?sessionId=${sessionId}`, { Authorization: `Bearer ${coreToken}` });
   const teamStream = await subscribe(teamConfig.publicOrigin, `/api/subscribeChannelConversationUpdates?conversationId=${conversationId}`, { Authorization: `Bearer ${teamToken}` });
   await until(() => coreStream.frames.some(frame => frame.event === "snapshot") && teamStream.frames.some(frame => frame.data.history));

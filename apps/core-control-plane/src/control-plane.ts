@@ -63,6 +63,7 @@ export class ControlPlane {
       const position = { ...(params.has("cursor") ? { cursor: Number(params.get("cursor")) } : {}), ...(params.has("updateCursor") ? { updateCursor: params.get("updateCursor")! } : {}), ...(params.has("contextCursor") ? { contextCursor: Number(params.get("contextCursor")) } : {}) };
       validateInput("readSessionHistory", { sessionId, ...position });
       await management.call("getSession", { sessionId }, caller);
+      if (response.destroyed) return;
       const stream = createEventStream(response, () => { this.caller(request, management); });
       try { await subscribeSessionUpdates(management, sessionId, position, caller, stream.send, stream.signal); }
       catch { stream.error(); }

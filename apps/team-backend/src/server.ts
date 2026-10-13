@@ -59,6 +59,7 @@ export function createTeamServer(config: Config, handle: Handler = () => fail("N
         try { validateCoreInput("readSessionHistory", { sessionId: input[targetKey], ...(input.cursor !== undefined ? { cursor: input.cursor } : {}), ...(input.updateCursor !== undefined ? { updateCursor: input.updateCursor } : {}), ...(input.contextCursor !== undefined ? { contextCursor: input.contextCursor } : {}) }); }
         catch { fail("INVALID_INPUT", "Invalid subscription history position."); }
         await handle(conversation ? "readChannelConversation" : "getSessionBinding", conversation ? { conversationId: input.conversationId } : { bindingId: input.bindingId }, "operator");
+        if (response.destroyed) return;
         const stream = createEventStream(response, () => { if (!authenticate(request)) fail("UNAUTHORIZED", "Authentication is required."); });
         streams.add(stream); stream.signal.addEventListener("abort", () => streams.delete(stream), { once: true });
         try { await subscribe(pathname.slice(5), input, "operator", stream.send, stream.signal); }
