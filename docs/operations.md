@@ -52,6 +52,34 @@ Open `http://127.0.0.1:3100` for Team and sign in with `teamOperator` from the s
 
 Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while the Control Plane, Team backend, and daemon are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
 
+### Start and stop the complete live stack
+
+After installing dependencies, start the real Control Plane, Team backend and host daemon with one command:
+
+```sh
+mise exec -- npm run local:up
+mise exec -- npm run local:status
+mise exec -- npm run local:down
+```
+
+`local:up` builds the workspaces, initializes missing private configuration, checks Codex CLI 0.162.1 and its login status, then starts a background controller. It reports `ready` only after the authenticated Core host connection and Team-to-Core configuration are confirmed. It prints the actual Core and Team URLs and the work directory; it never sends a model message or creates a conversation automatically. Sign in using `operator` and `teamOperator` in the selected directory's private `credentials.json`. The existing per-service startup commands remain available independently.
+
+On Windows, select the actual standalone `codex.exe`, retaining its companion binaries. For an isolated demo, substitute your installation's executable for the synthetic path below:
+
+```sh
+mise exec -- npm run local:up -- --state-dir state/demo --core-port 3240 --team-port 3241 --codex-executable C:/Tools/codex/bin/codex.exe
+mise exec -- npm run local:status -- --state-dir state/demo
+mise exec -- npm run local:down -- --state-dir state/demo
+```
+
+The default directory is `state/local`; Core and Team default to ports 3000 and 3100. Different state directories with distinct ports can run concurrently. `--codex-home <directory>` selects an explicitly configured native home; otherwise the daemon uses the normal local Codex home and login. Existing credentials, environment values, definitions, databases, and native conversations are preserved. Explicit Codex options can fill missing daemon settings while stopped. Repeating `up` for a running directory returns its current status and does not start another runtime. Explicit options that conflict with saved values are rejected; choose another directory or deliberately edit the private environment file while stopped. The initializer accepts the same options and serializes configuration writes with `local-init.lock`. Keep state directories in ignored local paths.
+
+The controller uses the application's real service implementations. It coordinates their lifecycle in one Node process and owns a separate native Codex process; ordinary service CLIs still run independently. All listeners in this local workflow must use matching loopback HTTP origins. It refuses occupied service ports and does not adopt existing listeners. `live.log`, `live-controller.json`, and `live-last-run.json` remain private in the chosen directory. The controller record contains a short-lived control credential; do not print or share it.
+
+`down` authenticates the exact controller instance, calls service shutdown methods, waits for native runtime termination, and verifies its service ports are released. It stops only the selected stack and leaves other state directories and independently started services alone. Windows shutdown uses this control channel instead of attempting graceful shutdown with a process-kill signal. A normal stop records `stopped` and removes the active controller record without deleting configuration or conversations. `status` reports `degraded` when service or host readiness can no longer be confirmed; an unreachable or mismatched controller remains `unavailable`. Missing controller history is `notManaged`, not evidence that independently started services have stopped.
+
+Failed startup cleans up resources it started. If a crash or shutdown failure leaves an ownership record, commands refuse to kill a recorded PID or assume its resources are gone. Inspect the private log, controller identity and daemon ownership record using the recovery runbook below. Stop only verified owned processes before removing a stale controller record and restarting. A leftover `local-init.lock` also requires confirming that its initializer has exited before removal. Never reset native Codex storage to repair local preview state.
+
 ### Windows runtime and private state
 
 Install a separate CLI without replacing a desktop application's bundled runtime, for example `mise install npm:@openai/codex@0.162.1`. Locate that installation with `mise where npm:@openai/codex@0.162.1` and set `DEWBOW_CODEX_EXECUTABLE` in the ignored daemon environment file to its actual `codex.exe`. Do not use a `.cmd` shim or the npm `codex.js` wrapper: Windows termination cannot rely on its signal forwarding. Check that executable's version and login status before acceptance. Leave desktop configuration, credentials, and existing native conversations intact.

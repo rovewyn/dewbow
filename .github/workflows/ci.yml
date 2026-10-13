@@ -82,4 +82,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           node --check scripts/init-local.mjs
+          node --check scripts/local-config.mjs
+          node --check scripts/local-live.mjs
+          node --check scripts/local-live-controller.mjs
+          node --check scripts/local-live-state.mjs
           node --check scripts/smoke.mjs
