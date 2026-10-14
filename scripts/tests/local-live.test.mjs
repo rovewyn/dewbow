@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { createPrivateFile, ensurePrivateDirectory } from "@dewbow/core-protocol/files";
+import { createPrivateFile, ensurePrivateDirectory } from "@dewbow/protocol/files";
 import { controllerPath, readController, alive } from "../local-live-state.mjs";
 import { initializeLocal, readLocalEnvironment, environment } from "../local-config.mjs";
 
@@ -49,13 +49,13 @@ test("live lifecycle authenticates its owner, preserves state and stops only the
   });
   for (const name of ["first", "second"]) {
     const state = join(directory, name), home = join(directory, `${name}-codex`); mkdirSync(home);
-    const corePort = await port(); let teamPort = await port(); while (teamPort === corePort) teamPort = await port();
-    const instance = { directory: state, home, corePort, teamPort }; instances.push(instance);
+    const controlPlanePort = await port();
+    const instance = { directory: state, home, controlPlanePort }; instances.push(instance);
     if (name === "first") {
-      initializeLocal({ directory: state, corePort, teamPort });
+      initializeLocal({ directory: state, controlPlanePort });
       instance.initialCredentials = readFileSync(join(state, "credentials.json"), "utf8");
     }
-    instance.ready = await command("up", state, ["--core-port", String(corePort), "--team-port", String(teamPort), "--codex-executable", fixture, "--codex-home", home]);
+    instance.ready = await command("up", state, ["--port", String(controlPlanePort), "--codex-executable", fixture, "--codex-home", home]);
     assert.equal(instance.ready.status, "ready"); assert.equal(instance.ready.services.daemon, "connected");
     assert.equal(alive(instance.ready.pid), true); assert.equal(alive(instance.ready.runtimePid), true);
     assert.equal(readLocalEnvironment(state, "host-daemon.env").CODEX_HOME.replaceAll("\\", "/"), home.replaceAll("\\", "/"));
@@ -66,12 +66,11 @@ test("live lifecycle authenticates its owner, preserves state and stops only the
   const duplicate = await command("up", first.directory);
   assert.equal(duplicate.instanceId, first.ready.instanceId); assert.equal(duplicate.runtimePid, first.ready.runtimePid);
   const credentialsPath = join(first.directory, "credentials.json"), credentialsText = readFileSync(credentialsPath, "utf8"), credentials = JSON.parse(credentialsText);
-  const saved = await api(first.ready.teamUrl, credentials.teamOperator, "createAgentDefinition", { name: "Synthetic live agent", description: "Lifecycle persistence check", sessionOptions: { instructionsAppend: "Use the synthetic fixture." }, requestId: randomUUID() });
-  const created = await api(first.ready.coreUrl, credentials.agent, "createSession", { hostId: "local-host", workDir: join(first.directory, "workdir"), requestId: randomUUID() });
+  const created = await api(first.ready.controlPlaneUrl, credentials.agent, "createSession", { hostId: "local-host", workDir: join(first.directory, "workdir"), requestId: randomUUID() });
   assert.ok(["accepted", "delivered"].includes(created.status));
   let connected = false;
   for (let i = 0; i < 30; i++) {
-    const detail = await api(first.ready.coreUrl, credentials.agent, "getSession", { sessionId: created.sessionId });
+    const detail = await api(first.ready.controlPlaneUrl, credentials.agent, "getSession", { sessionId: created.sessionId });
     if (detail.session.connectionState === "connected") { connected = true; break; }
     await delay(100);
   }
@@ -85,14 +84,12 @@ test("live lifecycle authenticates its owner, preserves state and stops only the
   assert.equal(existsSync(controllerPath(first.directory)), false);
   assert.equal(stopped.status, "stopped"); assert.equal(stopped.runtimeExited, true); assert.equal(stopped.portsReleased, true);
   assert.equal(alive(first.ready.pid), false); assert.equal(alive(first.ready.runtimePid), false);
-  await canListen(first.corePort); await canListen(first.teamPort);
+  await canListen(first.controlPlanePort);
   assert.equal((await command("status", second.directory)).status, "ready");
   assert.equal((await command("down", first.directory)).status, "stopped");
   const restarted = await command("up", first.directory); first.ready = restarted;
   assert.notEqual(restarted.instanceId, record.instanceId); assert.equal(readFileSync(credentialsPath, "utf8"), credentialsText);
-  const definitions = await api(restarted.teamUrl, credentials.teamOperator, "listAgentDefinitions");
-  assert.ok(definitions.definitions.some(item => item.definitionId === saved.definition.definitionId));
-  const sessions = await api(restarted.coreUrl, credentials.agent, "listSessions");
+  const sessions = await api(restarted.controlPlaneUrl, credentials.agent, "listSessions");
   assert.ok(sessions.sessions.some(item => item.sessionId === created.sessionId));
 });
 
@@ -107,22 +104,22 @@ test("failed startup rolls back owned services and stale controller identities n
     assert.ok(ownedStates.every(ownedState => !readController(ownedState)), "Retain fixture state until its owned controllers stop.");
     await Promise.all([new Promise(accept => occupied.close(accept)), new Promise(accept => unrelated.close(accept))]); removeOwned(directory);
   });
-  const corePort = occupied.address().port, teamPort = await port();
-  await assert.rejects(command("up", state, ["--core-port", String(corePort), "--team-port", String(teamPort), "--codex-executable", fixture, "--codex-home", home]));
-  assert.equal(occupied.listening, true); assert.equal(existsSync(controllerPath(state)), false); await canListen(teamPort);
-  const failedNative = join(directory, "native-failure"), failCore = await port(); let failTeam = await port(); while (failTeam === failCore) failTeam = await port();
+  const controlPlanePort = occupied.address().port;
+  await assert.rejects(command("up", state, ["--port", String(controlPlanePort), "--codex-executable", fixture, "--codex-home", home]));
+  assert.equal(occupied.listening, true); assert.equal(existsSync(controllerPath(state)), false);
+  const failedNative = join(directory, "native-failure"), failCore = await port();
   ownedStates.push(failedNative);
   writeFileSync(join(home, "fail-start"), "synthetic failure");
-  await assert.rejects(command("up", failedNative, ["--core-port", String(failCore), "--team-port", String(failTeam), "--codex-executable", fixture, "--codex-home", home]));
-  assert.equal(existsSync(controllerPath(failedNative)), false); await canListen(failCore); await canListen(failTeam);
+  await assert.rejects(command("up", failedNative, ["--port", String(failCore), "--codex-executable", fixture, "--codex-home", home]));
+  assert.equal(existsSync(controllerPath(failedNative)), false); await canListen(failCore);
   unlinkSync(join(home, "fail-start"));
   const badTarget = join(directory, "bad-target"); ownedStates.push(badTarget);
-  initializeLocal({ directory: badTarget, corePort: failCore, teamPort: failTeam, codexExecutable: fixture, codexHome: home });
-  const badEnvironment = readLocalEnvironment(badTarget, "team.env"); badEnvironment.DEWBOW_CORE_URL += "/wrong-prefix/";
-  writeFileSync(join(badTarget, "team.env"), environment(badEnvironment));
+  initializeLocal({ directory: badTarget, controlPlanePort: failCore, codexExecutable: fixture, codexHome: home });
+  const badEnvironment = readLocalEnvironment(badTarget, "host-daemon.env"); badEnvironment.DEWBOW_CONTROL_PLANE_URL += "/wrong-prefix/";
+  writeFileSync(join(badTarget, "host-daemon.env"), environment(badEnvironment));
   await assert.rejects(command("up", badTarget));
   assert.equal(existsSync(join(badTarget, "daemon.sqlite")), false); assert.equal(existsSync(controllerPath(badTarget)), false);
-  await canListen(failCore); await canListen(failTeam);
+  await canListen(failCore);
   const stale = join(directory, "stale"); ensurePrivateDirectory(stale);
   createPrivateFile(controllerPath(stale), JSON.stringify({ contractVersion: "v1", instanceId: randomUUID(), pid: process.pid, token: randomBytes(32).toString("base64url"), controlOrigin: `http://127.0.0.1:${unrelated.address().port}` }));
   await assert.rejects(command("down", stale), error => JSON.parse(error.stdout).status === "unavailable");

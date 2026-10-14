@@ -42,42 +42,35 @@ jobs:
       - name: Build workspaces
         run: npm run build
       - name: Test service journal
-        working-directory: packages/core-protocol
+        working-directory: packages/protocol
         run: node --test tests/*.test.mjs
       - name: Test SDK
-        working-directory: packages/core-sdk
+        working-directory: packages/sdk
         run: node --test tests/*.test.mjs
       - name: Test conversation projection
-        working-directory: apps/core-web
+        working-directory: apps/web
         run: node --test tests/*.test.mjs
       - name: Test shared chat model
-        working-directory: packages/core-ui
+        working-directory: packages/ui
         run: node --test tests/*.test.mjs
       - name: Test host daemon
-        working-directory: apps/core-host-daemon
+        working-directory: apps/host-daemon
         run: node --test tests/*.test.mjs
       - name: Test Control Plane
-        working-directory: apps/core-control-plane
+        working-directory: apps/control-plane
         run: node --test tests/*.test.mjs
-      - name: Test Team backend
-        working-directory: apps/team-backend
-        run: node --test tests/*.test.mjs
-      - name: Test Team conversation projection
-        working-directory: apps/team-web
-        run: node --test tests/*.test.mjs
-      - name: Test Team to Core HTTP integration
+      - name: Test local lifecycle and session subscriptions
         run: node --test scripts/tests/*.test.mjs
       - name: Check SDK package contents
         if: runner.os == 'Linux'
-        run: npm pack --workspace @dewbow/core-sdk --dry-run --ignore-scripts
+        run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts
       - name: Check service configuration
         if: runner.os == 'Linux'
         env:
           DEWBOW_HOST_ID: example-host
         run: |
-          node apps/core-host-daemon/dist/cli.js --check
-          node apps/core-control-plane/dist/cli.js --check
-          DEWBOW_TEAM_OPERATOR_TOKEN=synthetic-team-operator-credential node apps/team-backend/dist/cli.js --check
+          node apps/host-daemon/dist/cli.js --check
+          node apps/control-plane/dist/cli.js --check
       - name: Check local operation scripts
         if: runner.os == 'Linux'
         run: |

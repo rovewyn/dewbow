@@ -1,16 +1,14 @@
-# Dewbow Core MVP
+# Dewbow MVP
 
 Implementation handoff
 
 Build a self-hosted service that lets an existing AI agent manage Codex sessions across multiple machines through MCP and an API. A small Web interface gives the human operator visibility, approval controls, and a way to intervene.
 
-This specification covers Dewbow Core. Agent definitions, teams, members, and session bindings belong to Dewbow Team, which uses Core's authenticated HTTP API. See [Dewbow boundaries and projects](README.md).
-
 ## 1 Product goal and working flow
 
 The MVP must demonstrate a complete workflow on two actual machines running Codex, with multiple sessions operating independently. The primary caller is an external AI client. The operator deploys the service and uses the Web interface when human input is needed.
 
-### Core workflow
+### Dewbow workflow
 
 1. The operator starts one Control Plane and configures a Host Daemon on each machine. Each daemon initiates an authenticated connection to the Control Plane.
 

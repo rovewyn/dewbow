@@ -16,45 +16,38 @@ codex login status
 npm run local:init
 ```
 
-The initializer creates ignored, owner-only files in `state/local/`. Existing configuration values are preserved, so rerunning it does not rotate credentials or erase history. It creates distinct Core management, host, Core operator, and Team operator credentials, a permitted `local-host`, environment files, a private MCP configuration, and an empty work directory. For an existing Core setup, it adds `teamOperator` to the credential file and creates `team.env` only when absent, taking the Core origin and management credential from the existing `control-plane.env`. Do not delete only one of these configuration files to rotate a credential; update its associated service/client configuration together.
+The initializer creates ignored, owner-only files in `state/local/`. Existing configuration values are preserved, so rerunning it does not rotate credentials or erase history. It creates separate management, host, and operator credentials, a permitted `local-host`, environment files, a private MCP configuration, and an empty work directory. Update associated service and client configuration together when rotating a credential.
 
-After a project-directory rename, check any explicit `DEWBOW_WEB_ROOT` in existing local configuration and point it at the current `apps/core-web/dist` build. The initializer preserves existing files and does not rewrite that path. Project naming changes require no database reset or credential rotation.
+After a project-directory rename, check any explicit `DEWBOW_WEB_ROOT` in existing local configuration and point it at the current `apps/web/dist` build. The initializer preserves existing files and does not rewrite that path. Project naming changes require no database reset or credential rotation.
 
 Start services in separate terminals, from the same checkout root:
 
 ```sh
 # Terminal 1: Control Plane and built Web
-npm run local:core:control-plane
+npm run local:control-plane
 
 # Terminal 2: local Codex runtime and host connection
-npm run local:core:host-daemon
-
-# Terminal 3: independent Team backend and built Team Web
-npm run local:team:backend
+npm run local:host-daemon
 ```
 
 Open `http://127.0.0.1:3000`. Use the `operator` value in the private `state/local/credentials.json` for Web login. The Web has no separate production listener. `/health` only establishes listener availability; a connected machine plus a completed native turn establishes the execution path.
-
-Open `http://127.0.0.1:3100` for Team and sign in with `teamOperator` from the same private credential file. Team uses a separate cookie and database; its Core management credential stays in the backend environment. The Control Plane and Team can run without a daemon for operator-interface previews. Hosts then remain disconnected and execution actions are unavailable. Team definition and team management remain available when Core is stopped. See [Team workspace](team/workspace.md) for its standalone startup commands.
 
 | Local file | Owner and purpose |
 | --- | --- |
 | `control-plane.env` | Control Plane configuration and management/operator credentials |
 | `host-daemon.env` | This daemon's identity, credential, URL and journal |
 | `agent.env` | External management client credential and URL |
-| `team.env` | Independent Team listener, operator credential, database, Web directory, and Core connection |
 | `mcp.json` | Private example client configuration containing the management header |
 | `hosts.json` | Permitted-host identities and credentials |
 | `control.sqlite` | Control Plane management metadata, decisions, deduplication and operator cookies |
 | `daemon.sqlite` | Local owned sessions, process IDs, event journal and command results |
-| `team.sqlite` | Team definitions, members, bindings, and request deduplication |
 | `workdir/` | Existing work directory for the local smoke run |
 
-Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while the Control Plane, Team backend, and daemon are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
+Keep the directory and credentials private. SQLite WAL/SHM files belong to their databases. Back up storage while the Control Plane and daemon are stopped. Native Codex credentials and conversation files remain in the local Codex home and are also needed for continuity. Management credentials do not provide model access.
 
 ### Start and stop the complete live stack
 
-After installing dependencies, start the real Control Plane, Team backend and host daemon with one command:
+After installing dependencies, start the real Control Plane and Host Daemon with one command:
 
 ```sh
 mise exec -- npm run local:up
@@ -62,17 +55,17 @@ mise exec -- npm run local:status
 mise exec -- npm run local:down
 ```
 
-`local:up` builds the workspaces, initializes missing private configuration, checks Codex CLI 0.162.1 and its login status, then starts a background controller. It reports `ready` only after the authenticated Core host connection and Team-to-Core configuration are confirmed. It prints the actual Core and Team URLs and the work directory; it never sends a model message or creates a conversation automatically. Sign in using `operator` and `teamOperator` in the selected directory's private `credentials.json`. The existing per-service startup commands remain available independently.
+`local:up` builds the workspaces, initializes missing private configuration, checks Codex CLI 0.162.1 and its login status, then starts a background controller. It reports `ready` only after the authenticated host connection is confirmed. It prints the actual Control Plane URL and work directory; it never sends a model message or creates a conversation automatically. Sign in using `operator` in the selected directory's private `credentials.json`. Per-service commands remain available independently.
 
 On Windows, select the actual standalone `codex.exe`, retaining its companion binaries. For an isolated demo, substitute your installation's executable for the synthetic path below:
 
 ```sh
-mise exec -- npm run local:up -- --state-dir state/demo --core-port 3240 --team-port 3241 --codex-executable C:/Tools/codex/bin/codex.exe
+mise exec -- npm run local:up -- --state-dir state/demo --port 3240 --codex-executable C:/Tools/codex/bin/codex.exe
 mise exec -- npm run local:status -- --state-dir state/demo
 mise exec -- npm run local:down -- --state-dir state/demo
 ```
 
-The default directory is `state/local`; Core and Team default to ports 3000 and 3100. Different state directories with distinct ports can run concurrently. `--codex-home <directory>` selects an explicitly configured native home; otherwise the daemon uses the normal local Codex home and login. Existing credentials, environment values, definitions, databases, and native conversations are preserved. Explicit Codex options can fill missing daemon settings while stopped. Repeating `up` for a running directory returns its current status and does not start another runtime. Explicit options that conflict with saved values are rejected; choose another directory or deliberately edit the private environment file while stopped. The initializer accepts the same options and serializes configuration writes with `local-init.lock`. Keep state directories in ignored local paths.
+The default directory is `state/local`; the Control Plane defaults to port 3000. Different state directories with distinct ports can run concurrently. `--codex-home <directory>` selects an explicitly configured native home; otherwise the daemon uses the normal local Codex home and login. Existing credentials, environment values, databases, and native conversations are preserved. Explicit Codex options can fill missing daemon settings while stopped. Repeating `up` for a running directory returns its current status and does not start another runtime. Explicit options that conflict with saved values are rejected; choose another directory or deliberately edit the private environment file while stopped. The initializer accepts the same options and serializes configuration writes with `local-init.lock`. Keep state directories in ignored local paths.
 
 The controller uses the application's real service implementations. It coordinates their lifecycle in one Node process and owns a separate native Codex process; ordinary service CLIs still run independently. All listeners in this local workflow must use matching loopback HTTP origins. It refuses occupied service ports and does not adopt existing listeners. `live.log`, `live-controller.json`, and `live-last-run.json` remain private in the chosen directory. The controller record contains a short-lived control credential; do not print or share it.
 
@@ -97,7 +90,7 @@ Use Streamable HTTP at `http://127.0.0.1:3000/mcp` with `Authorization: Bearer <
 For a Codex CLI client, configure the URL with its documented command:
 
 ```sh
-codex mcp add dewbow-core --url http://127.0.0.1:3000/mcp --bearer-token-env-var DEWBOW_MANAGEMENT_TOKEN
+codex mcp add dewbow --url http://127.0.0.1:3000/mcp --bearer-token-env-var DEWBOW_MANAGEMENT_TOKEN
 ```
 
 Start that client with the management environment loaded. For example, Node can load the private file and start the interactive client without putting the credential on the command line:
@@ -130,7 +123,7 @@ Before crossing machines, configure a reachable HTTPS/WSS origin. Set `DEWBOW_CO
 On the second machine, copy [host-daemon.env.example](examples/host-daemon.env.example) to a private ignored file such as `state/second-host.env`. Set its host ID, credential, HTTPS URL, and local journal path. Create the selected work directory there, then run:
 
 ```sh
-node --env-file=state/second-host.env apps/core-host-daemon/dist/cli.js
+node --env-file=state/second-host.env apps/host-daemon/dist/cli.js
 ```
 
 Wait until Web/MCP lists two distinct connected hosts. From a client with the updated HTTPS management environment, run:
@@ -164,8 +157,8 @@ Service stdout contains sanitized component/status messages. To retain it locall
 
 ```sh
 mkdir -p logs
-npm run local:core:control-plane > logs/control-plane.log 2>&1
-npm run local:core:host-daemon > logs/host-daemon.log 2>&1
+npm run local:control-plane > logs/control-plane.log 2>&1
+npm run local:host-daemon > logs/host-daemon.log 2>&1
 ```
 
 Raw native stderr is not forwarded. Keep shell diagnostics and acceptance traces private too. Stop each foreground service with Ctrl+C or send SIGTERM to its verified process. The daemon waits for its app-server to stop; the Control Plane closes sockets and storage. Stopping the Control Plane alone does not stop host execution. Verify the listener port is released before restarting on the same address. No system service, automatic boot startup, container, or cloud deployment is installed by this path.
@@ -180,11 +173,17 @@ When launching a standalone native executable, retain its companion binaries and
 
 Record the checkout commit, each actual host's OS/Codex version, MCP client/version, request/session/turn/approval IDs, terminal states, replay cursor ranges, and the observed recovery limits in a private report. Reference the native smoke JSON and Web screenshots. Keep simulated CI checks separate from actual runs. The [MVP checklist](mvp.md#acceptance-checklist) is complete only after the operator runs and records the second actual machine.
 
+## Updating an existing checkout
+
+Application directories and package names match the current project map. Reinstall with `npm ci`, rebuild, and use the current command names. While services are stopped, update an explicit `DEWBOW_WEB_ROOT` to `apps/web/dist` in the private Control Plane environment. The initializer preserves existing values. Local startup uses `--port` to select the Control Plane port.
+
+This revision removes organization provenance and passive external context from the `v1` management contract. Start with fresh synthetic journals for validation. Existing installations must stop their services and recorded runtime before archiving and replacing Dewbow journals under the reset procedure below. Preserve native conversations, credentials, workspace files and unrelated private data; this source change performs no local-state deletion.
+
 ## Resetting Dewbow state after contract changes
 
 The current `v1` contract uses camelCase JSON fields and verb-first camelCase operations. Old clients, permitted-host files and journals are unsupported. Update all services and clients together. No compatibility aliases or data conversion run during startup.
 
-Managed session records now also require `sessionConfig`: a creation-time override/resolved snapshot for new sessions, or explicit `null` for native connections without an agent definition. Journals predating this field must be archived and replaced. Do not backfill snapshots from the latest Team definition or host defaults; those values cannot establish the original session configuration.
+Managed session records now also require `sessionConfig`: a creation-time override/resolved snapshot for new sessions, or explicit `null` for adopted native conversations. Journals predating this field must be archived and replaced. Do not backfill snapshots from later host defaults; those values cannot establish the original session configuration.
 
 Before using this contract with existing state, stop the Control Plane and every daemon. Inspect each daemon's recorded owner and verify that its owned Codex runtime has stopped. Archive the old Dewbow journal files together with their SQLite `-wal` and `-shm` companions, then start the services with fresh Dewbow journals. Preserve the archive for local inspection. An unsupported ownership record returns `RECOVERY_REQUIRED` rather than being treated as evidence that its processes stopped.
 
