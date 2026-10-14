@@ -2,7 +2,7 @@
 
 ## Workspace development
 
-Use Rust 1.99.0 stable, Node.js 24.21.0 LTS and npm 12.2.0 with the committed root Cargo and npm lockfiles. Rust is pinned in `rust-toolchain.toml` and `mise.toml`; Node is pinned in `.node-version`, and npm in `packageManager`. Run `npm ci` at the repository root. The root Cargo workspace contains `apps/cli`, `apps/daemon`, `packages/protocol/rust` and `packages/sdk/rust`. Retained npm workspaces are `packages/protocol`, `packages/sdk`, `packages/ui` and `apps/web`. Keep dependency versions in the corresponding root lockfile.
+Use Rust 1.99.0 stable, Node.js 24.21.0 LTS and npm 12.2.0 with the committed root Cargo and npm lockfiles. Rust is pinned in `rust-toolchain.toml`, Node in `.node-version`, and npm in `packageManager`. Verify the active versions before running the documented `npm`, `cargo` and `node` commands directly. Local environment managers such as mise are optional; see [local environment management](docs/workspace.md#optional-local-environment-management). Run `npm ci` at the repository root. The root Cargo workspace contains `apps/cli`, `apps/daemon`, `packages/protocol/rust` and `packages/sdk/rust`. Retained npm workspaces are `packages/protocol`, `packages/sdk`, `packages/ui` and `apps/web`. Keep dependency versions in the corresponding root lockfile.
 
 Use the latest LTS release for runtimes and dependencies that offer LTS; otherwise, use the latest stable release. Keep `@types/node` on the runtime's major version. Validate upgrades before updating the pinned versions and lockfile. See [Workspace development and CI](docs/workspace.md) for setup and automated checks.
 
@@ -18,11 +18,11 @@ Write only the necessary unit tests described in `AGENTS.md`. Use synthetic temp
 
 Run `npm run version:check` and `npm run test:release` when changing manifests or release tooling. Product versions are synchronized from the root Cargo workspace with `npm run version:sync`; `npm run version:set -- <version>` prepares a new version without tagging or publishing. See [Versioning and releases](docs/releasing.md) for release PRs and the separately authorized publication workflow.
 
-With mise, run repository development commands through `mise exec --`. Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. Remote enrollment, self-update, system services and boot startup are deferred.
+Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. Remote enrollment, self-update, system services and boot startup are deferred.
 
 ## Enable commit checks
 
-With mise on Windows, use the repository runtime explicitly: `mise exec -- npm --version` must report 12.2.0 and `mise exec -- node --version` must report v24.21.0. If needed, run `mise install node@24.21.0` and `mise exec -- npm install --global npm@12.2.0`. Install Gitleaks through mise (`mise use --global gitleaks@8.30.1`) or another trusted distribution with the `git` scan command. Run the hook installer using Git for Windows' `sh.exe` inside `mise exec --` when `sh` is not on PATH. The same environment must expose Gitleaks when committing. See [local operations](docs/operations.md#windows-runtime-and-private-state) for standalone Codex and Windows state protection.
+On Windows, `npm --version` must report 12.2.0 and `node --version` must report v24.21.0 before installing dependencies. Install Gitleaks from a trusted distribution with the `git` scan command. If `sh` is not on PATH, run the hook installer using Git for Windows' `sh.exe`. The same environment must expose Gitleaks when committing, including when an optional environment manager is used. See [local operations](docs/operations.md#windows-runtime-and-private-state) for standalone Codex and Windows state protection.
 
 Install Gitleaks with support for the `git` command. On macOS with Homebrew:
 

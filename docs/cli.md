@@ -4,14 +4,12 @@ The `dewbow` executable contains the local daemon and the built Web. Node.js is 
 
 ## Build and prerequisites
 
-Use the stable Rust pinned in `rust-toolchain.toml`, Node.js 24.21.0 and npm 12.2.0. The repository's `mise.toml` selects Rust without changing a user's global default. On Windows, install the MSVC C++ build tools and Windows SDK if they are missing.
+Use the stable Rust 1.99.0 pinned in `rust-toolchain.toml`, Node.js 24.21.0 and npm 12.2.0 with the committed root lockfiles. Follow [workspace setup](workspace.md#setup-and-builds) to verify the active versions before running these commands from the repository root. mise is an [optional local environment manager](workspace.md#optional-local-environment-management). On Windows, install the MSVC C++ build tools and Windows SDK if they are missing.
 
 ```sh
-mise trust
-mise install
-mise exec -- npm ci
-mise exec -- npm run build
-mise exec -- cargo build --workspace --bins --examples
+npm ci
+npm run build
+cargo build --workspace --bins --examples
 ```
 
 Build Web assets before Cargo: the daemon embeds `apps/web/dist`. A build without those assets can compile for library tests, but daemon startup refuses to serve an incomplete application. Use `cargo build --release --bin dewbow` after the Web build for the standalone executable. Keep build artifacts out of Git.
@@ -59,11 +57,11 @@ An occupied port is never adopted. A stale instance, live recorded native proces
 ## Validation
 
 ```sh
-mise exec -- cargo fmt --all --check
-mise exec -- cargo clippy --workspace --all-targets -- -D warnings
-mise exec -- cargo build --workspace --bins --examples
-mise exec -- cargo test --workspace --all-targets
-mise exec -- node --test scripts/tests/rust-daemon.test.mjs
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --bins --examples
+cargo test --workspace --all-targets
+node --test scripts/tests/rust-daemon.test.mjs
 ```
 
 The Rust acceptance script uses an explicitly marked synthetic Codex home and the compiled SDK fixture. It covers lifecycle, operator authentication, deduplication, questions, approvals, streaming, Unicode content and restart recovery. Synthetic checks and CI builds do not establish real native or multi-machine acceptance. Keep actual screenshots and results in ignored local directories.

@@ -17,14 +17,14 @@ Conventional Commit PR titles survive squash merges and provide the change histo
 
 ## Synchronize and check
 
-Run these commands from the repository root with the documented Node/npm runtime:
+Run these commands from the repository root after verifying the pinned Node.js 24.21.0 and npm 12.2.0 versions in [workspace setup](workspace.md#setup-and-builds). mise is an [optional local environment manager](workspace.md#optional-local-environment-management):
 
 ```sh
-mise exec -- npm run version:check
-mise exec -- npm run version:sync
-mise exec -- npm run version:set -- 0.2.0-rc.1
-mise exec -- npm run version:check -- --tag 0.2.0-rc.1
-mise exec -- npm run test:release
+npm run version:check
+npm run version:sync
+npm run version:set -- 0.2.0-rc.1
+npm run version:check -- --tag 0.2.0-rc.1
+npm run test:release
 ```
 
 `version:check` is read-only and fails on drift. `version:sync` reads the Cargo product version and repairs the npm versions, internal dependency pins and lockfile version entries. `version:set` also changes the authoritative Cargo version. It does not install dependencies, resolve new external versions, create commits or tags, or publish anything. All file parsing and structural checks finish before writes begin. Inspect the resulting diff before committing.
@@ -68,7 +68,7 @@ Automated changelog generation and release PR maintenance can be added later. Th
 
 [Release](../.github/workflows/release.yml) runs when a tag matches `[0-9]*.[0-9]*.[0-9]*` or when manually dispatched. This filter includes stable and prerelease tags without a prefix; the preparation job requires an exact match with the product version. Both default to building and uploading Actions artifacts only. A branch dispatch can exercise release preparation before tagging. No release is created unless a later manual dispatch selects `publish: true`.
 
-The workflow installs pinned Node/npm and Rust, uses `npm ci` and Cargo `--locked`, builds Web before Rust, runs typechecking and the Rust/npm checks, builds the optimized executable, and verifies the extracted archive's executable with `--version` and `--help`. All matrix jobs must succeed before the publication job can run.
+The workflow installs pinned Node/npm and Rust directly, without mise, uses `npm ci` and Cargo `--locked`, builds Web before Rust, runs typechecking and the Rust/npm checks, builds the optimized executable, and verifies the extracted archive's executable with `--version` and `--help`. All matrix jobs must succeed before the publication job can run.
 
 The initial distribution targets are:
 
@@ -82,14 +82,14 @@ These targets are explicit; CI operating-system coverage does not imply other ar
 
 Each archive is named `dewbow-<version>-<target>.<extension>` and contains only `dewbow` (or `dewbow.exe`), `CLI.md` and `release.json`. The manifest records the product version, full source commit, target and executable SHA-256. A separate `<archive>.sha256` records the archive checksum. Actions keeps build artifacts for 14 days. Local state, Codex data, environment files and build logs are never package inputs.
 
-For a local Windows build and package check:
+For a local Windows build and package check, use the same pinned Node/npm versions and Rust 1.99.0:
 
 ```sh
-mise exec -- npm ci
-mise exec -- npm run build
-mise exec -- cargo build --locked --release --bin dewbow --target x86_64-pc-windows-msvc
-mise exec -- npm run release:pack -- --target x86_64-pc-windows-msvc
-mise exec -- npm run release:check -- --target x86_64-pc-windows-msvc
+npm ci
+npm run build
+cargo build --locked --release --bin dewbow --target x86_64-pc-windows-msvc
+npm run release:pack -- --target x86_64-pc-windows-msvc
+npm run release:check -- --target x86_64-pc-windows-msvc
 ```
 
 Use the matching target for Linux or macOS. Packaging requires the platform's `tar`; Windows uses the built-in BSD tar's ZIP support. Output goes to ignored `artifacts/release/`. Packaging refuses to overwrite an existing archive or checksum. Move reviewed outputs outside that directory or remove only your own generated outputs before rebuilding. Package verification checks archive contents, checksums, metadata and the extracted executable. These smoke checks do not start a daemon or access real Codex storage, and do not establish real native acceptance.
