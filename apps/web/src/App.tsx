@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import type { Host, SessionSummary } from "@dewbow/protocol";
 import { Button } from "@dewbow/ui/ui";
 import { Badge } from "@dewbow/ui/ui";
@@ -10,7 +10,7 @@ import {
   NativeSelectOption,
 } from "@dewbow/ui/ui";
 import { Alert, AlertDescription } from "@dewbow/ui/ui";
-import { api, ApiError, request } from "./api";
+import { api, ApiError, request, authenticateLauncher } from "./api";
 import type { Detail, OperationSummary } from "./api";
 import { Chat, createChatMemory } from "./Chat";
 import { useHistory } from "./useHistory";
@@ -53,7 +53,12 @@ export function App() {
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(false);
-  const [password, setPassword] = useState("");
+  useEffect(() => {
+    const authenticate = () => { void authenticateLauncher().then(() => setAuthenticated(true)).catch(cause => { setAuthenticated(false); if (!(cause instanceof ApiError && cause.detail.code === "UNAUTHORIZED")) setError(describe(cause)); }); };
+    const relaunch = () => { if (new URLSearchParams(window.location.hash.slice(1)).has("login")) authenticate(); };
+    authenticate(); window.addEventListener("hashchange", relaunch);
+    return () => window.removeEventListener("hashchange", relaunch);
+  }, []);
   const [hostId, setHostId] = useState(""),
     [workDir, setWorkDir] = useState("");
   const [retry, setRetry] = useState<{
@@ -69,7 +74,7 @@ export function App() {
     return () => window.removeEventListener("hashchange", change);
   }, []);
   useEffect(() => {
-    if (authenticated === false) return;
+    if (authenticated !== true) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     // Keep the page tall enough for its scroll position while the new panel loads.
@@ -113,20 +118,6 @@ export function App() {
     setNotice("");
     setRetry(null);
   };
-  async function login(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await request("/auth/login", { password });
-      setPassword("");
-      setAuthenticated(true);
-    } catch (cause) {
-      setError(describe(cause));
-    } finally {
-      setBusy(false);
-    }
-  }
   async function operation(name: string, input: Record<string, unknown>) {
     setBusy(true);
     setError("");
@@ -204,10 +195,10 @@ export function App() {
           <h1>
             Your sessions.
             <br />
-            Across your machines.
+            On your machine.
           </h1>
           <p className="description">
-            Manage hosts and conversations. Review approvals and recover execution.
+            Manage local conversations. Review approvals and recover execution.
           </p>
         </div>
         {connectionError && (
@@ -237,33 +228,17 @@ export function App() {
           </Button>
         )}
         {authenticated === null && (
-          <p role="status">Connecting to Control Plane…</p>
+          <p role="status">Connecting to Dewbow daemon…</p>
         )}
         {authenticated === false && (
           <Card role="region" className="panel login-panel">
             <CardHeader className="panel-heading">
-              <h2>Operator sign in</h2>
+              <h2>Open Dewbow from your terminal</h2>
             </CardHeader>
-            <form
-              onSubmit={(event) => {
-                void login(event);
-              }}
-              className="form-body"
-            >
-              <label htmlFor="password">Operator password</label>
-              <Input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-              <Button type="submit" disabled={busy}>
-                Sign in
-              </Button>
-            </form>
+            <div className="form-body">
+              <p>Run <code>dewbow web</code> on this machine to open an authenticated Web session.</p>
+              <p>If you selected a separate configuration, include its <code>--state-dir</code> option.</p>
+            </div>
           </Card>
         )}
         {authenticated && (

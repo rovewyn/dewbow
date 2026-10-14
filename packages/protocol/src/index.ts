@@ -17,10 +17,8 @@ export interface ResolvedSessionConfig {
 export interface SessionConfig {
   overrides: SessionOptions; resolved: ResolvedSessionConfig | null;
 }
-export interface WorkspaceProfile { profileId: string; name: string; kind: "emptyDirectory" | "gitWorktree" }
-export interface SessionWorkspace { profileId: string; kind: WorkspaceProfile["kind"]; workDir: string; directoryIdentity: string | null; repository: string | null; baseCommit: string | null; branch: string | null; status: "preparing" | "ready" | "error" }
 export interface Session {
-  sessionId: string; hostId: string; workDir: string | null; workspace?: SessionWorkspace; codexThreadId: string | null;
+  sessionId: string; hostId: string; workDir: string | null; codexThreadId: string | null;
   /** Null for existing native conversations connected without a creation snapshot. */
   sessionConfig: SessionConfig | null;
   codexHome?: string; connectionState: "disconnected" | "connecting" | "connected" | "error";
@@ -104,13 +102,6 @@ export interface SessionHistory extends EventHistory, Omit<NativeHistory, "obser
 }
 export interface HistoryPosition { cursor?: number | undefined; updateCursor?: string | undefined }
 export interface SessionUpdates { contractVersion: "v1"; details: SessionDetails; history: SessionHistory }
-export interface HostQuery {
-  queryId: string; operation: "listWorkspaceProfiles" | "discoverSessions" | "readSessionHistory" | "readEvents" | "getSessionActivity" | "readSessionContent" | "readInteractions";
-  input: { sessionId?: string; cursor?: number; codexThreadId?: string; codexHome?: string; beforeCursor?: string; afterCursor?: string; updateCursor?: string; limit?: number; itemId?: string; contentId?: string; contentCursor?: string; limitBytes?: number };
-  authority: "agent" | "operator";
-}
-export interface InteractionPage { interactions: Interaction[] }
-export interface HostQueryResult { queryId: string; result?: { profiles: WorkspaceProfile[] } | NativeInventory | NativeHistory | EventHistory | SessionActivity | ContentPage | InteractionPage; error?: ManagementErrorData }
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;
@@ -152,13 +143,6 @@ export interface Operation extends Command {
   caller: string; requestId: string; fingerprint: string; status: OperationStatus; createdAt: string;
   error: ManagementErrorData | null;
 }
-export interface HostReport {
-  sessions: Session[]; turns: Turn[]; interactions: Interaction[]; operations: OperationResult[];
-}
-export interface OperationResult { commandId: string; status: "delivered" | "error" | "unknown"; error: ManagementErrorData | null }
-export type ToHost = { type: "sync"; cursors: Record<string, number> } | { type: "ready" } | { type: "command"; command: Command } | { type: "query"; query: HostQuery };
-export type ToControlPlane = { type: "hello"; hostId: string } | { type: "event"; event: Event }
-  | { type: "report"; report: HostReport } | { type: "result"; result: OperationResult } | { type: "query_result"; response: HostQueryResult };
 export const terminal = (state: TurnState): state is "completed" | "interrupted" | "error" => state === "completed" || state === "interrupted" || state === "error";
 export const now = (): string => new Date().toISOString();
 
@@ -173,9 +157,8 @@ function tool(name: string, description: string, properties: Record<string, unkn
 }
 export const tools = [
   tool("listHosts", "List configured hosts and observed connection state.", {}, []),
-  tool("listWorkspaceProfiles", "List host-owned workspace profiles without local source paths.", { hostId: text }, ["hostId"]),
   tool("listSessions", "List SDK-discovered Codex conversations with optional managed execution metadata.", { hostId: text }, []),
-  tool("createSession", "Create a session with optional execution overrides frozen for recovery. Poll getSession for readiness.", { hostId: text, workDir: text, workspaceProfileId: request, requestId: request, sessionOptions }, ["hostId", "requestId"]),
+  tool("createSession", "Create a local session with optional execution overrides frozen for recovery.", { hostId: text, workDir: text, requestId: request, sessionOptions }, ["hostId", "workDir", "requestId"]),
   tool("connectSession", "Connect an SDK-discovered native conversation without creating a new thread. Poll getSession for readiness.", { sessionId: text, requestId: request }, ["sessionId", "requestId"]),
   tool("getSession", "Read state, turns, requests, and unified interactions. Delivery is separate from turn completion.", { sessionId: text }, ["sessionId"]),
   tool("readSessionHistory", "Read the latest 50 native items and host events. Page with beforeCursor/afterCursor; poll changed items with updateCursor.", { sessionId:text,cursor:{ type:"integer",minimum:0 },beforeCursor:text,afterCursor:text,updateCursor:text,limit:{ type:"integer",minimum:1,maximum:500 } },["sessionId"]),
@@ -183,16 +166,15 @@ export const tools = [
   tool("readSessionContent", "Read a UTF-8 chunk from host-private output or diff content. The default chunk is 64 KiB.", { sessionId: text, contentId: text, contentCursor: text, limitBytes: { type: "integer", minimum: 4, maximum: 262144 } }, ["sessionId", "contentId"]),
   tool("sendMessage", "Record a new Default or Plan turn. Default is used when mode is omitted.", { sessionId: text, message: { ...text, maxLength: 100000 }, requestId: request, mode:{ type:"string",enum:["default","plan"] } }, ["sessionId", "message", "requestId"]),
   tool("steerTurn", "Append instructions to the exact active turn without changing its mode.", { sessionId:text,turnId:text,message:{...text,maxLength:100000},requestId:request },["sessionId","turnId","message","requestId"]),
-  tool("answerQuestions", "Answer an exact pending interaction. Ordinary questions permit agents; other questions require the Dewbow operator.", { sessionId:text,turnId:text,interactionId:text,requestId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"object",properties:{questionId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},required:["questionId","answers"],additionalProperties:false}} },["sessionId","turnId","interactionId","requestId","answers"]),
+  tool("answerQuestions", "Answer an exact pending interaction with operator authority.", { sessionId:text,turnId:text,interactionId:text,requestId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"object",properties:{questionId:request,answers:{type:"array",minItems:1,maxItems:20,items:{type:"string",minLength:0,maxLength:100000}}},required:["questionId","answers"],additionalProperties:false}} },["sessionId","turnId","interactionId","requestId","answers"]),
   tool("interruptTurn", "Request interruption of the exact active turn. Poll final state separately.", { sessionId: text, turnId: text, requestId: request }, ["sessionId", "turnId", "requestId"]),
 ] as const;
 const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId:text,turnId:text,interactionId:text,requestId:request,decision:{type:"string",enum:["allow","deny"]} },["sessionId","turnId","interactionId","requestId","decision"]);
-export type ToolName = Command["operation"] | "listHosts" | "listWorkspaceProfiles" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
+export type ToolName = Command["operation"] | "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
 export function validateInput(name: string, input: unknown): Record<string, unknown> {
   const schema = [...tools, approvalTool].find(t => t.name === name)?.inputSchema;
   if (!schema) fail("INVALID_INPUT", "Unknown operation.");
   const validated = validateField(schema, input, "input") as Record<string, unknown>;
-  if (name === "createSession" && Boolean(validated.workDir) === Boolean(validated.workspaceProfileId)) fail("INVALID_INPUT", "Choose exactly one workDir or workspaceProfileId.");
   if (name === "sendMessage") validated.mode ??= "default";
   return validated;
 }

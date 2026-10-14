@@ -1,0 +1,24 @@
+[package]
+name = "dewbow-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+base64.workspace = true
+sha2.workspace = true
+dewbow-protocol.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+futures.workspace = true
+libc = "0.2"
+tokio-tungstenite = "0.30.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authorization", "Win32_System_Memory", "Win32_System_Threading"] }
