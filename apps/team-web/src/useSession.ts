@@ -1,67 +1,57 @@
 import { useEffect, useRef, useState } from "react";
-import type { ApiError, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
-import { call, errorDetail } from "./api.js";
-import { emptyHistory, mergeHistory, restrictHistory, type ChatHistoryState } from "@dewbow/core-ui/chat/model";
+import type { ApiError, BindingUpdates, ChannelConversationDetails, ChannelConversationUpdates, CoreHistory, CoreSessionDetails, SessionBindingDetails } from "@dewbow/team-protocol";
+import { subscribeUpdates } from "@dewbow/core-ui/chat/updates";
+import { emptyHistory, mergeHistory, restrictHistory } from "@dewbow/core-ui/chat/model";
+import { call, errorDetail, confirmSubscriptionAuth } from "./api.js";
 
-export function useSession(bindingId: string) {
-  const [details, setDetails] = useState<SessionBindingDetails | null>(null);
-  const [lastCore, setLastCore] = useState<CoreSessionDetails | null>(null);
-  const [history, setHistory] = useState<ChatHistoryState>(emptyHistory);
-  const [error, setError] = useState<ApiError | null>(null);
-  const [historyError, setHistoryError] = useState<ApiError | null>(null);
-  const savedRef = useRef(emptyHistory());
-  const controllerRef = useRef<AbortController|null>(null);
-  const [loadingOlder,setLoadingOlder] = useState(false);
-  const olderRead = useRef(false);
+export function useSession(bindingId: string, conversationId?: string) {
+  const [details, setDetails] = useState<SessionBindingDetails | null>(null), [lastCore, setLastCore] = useState<CoreSessionDetails | null>(null);
+  const [conversation, setConversation] = useState<ChannelConversationDetails | null>(null), [history, setHistory] = useState(emptyHistory);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [error, setError] = useState<ApiError | null>(null), [historyError, setHistoryError] = useState<ApiError | null>(null);
+  const saved = useRef(emptyHistory()), sessionId = useRef<string | null>(null), actualBindingId = useRef(bindingId);
+  const controller = useRef<AbortController | null>(null), olderRead = useRef(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   useEffect(() => {
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    savedRef.current = emptyHistory();
-    let saved = savedRef.current;
-    setLoadingOlder(false); olderRead.current = false;
-    setDetails(null); setLastCore(null); setHistory(saved); setError(null); setHistoryError(null);
-    async function poll() {
-      try {
-        const current = await call<SessionBindingDetails>("getSessionBinding", { bindingId }, controller.signal);
-        if (controller.signal.aborted) return;
+    const abort = new AbortController(); controller.current = abort;
+    saved.current = emptyHistory(); sessionId.current = null; actualBindingId.current = bindingId;
+    setDetails(null); setLastCore(null); setConversation(null); setHistory(saved.current); setHistoryLoaded(false); setError(null); setHistoryError(null); setLoadingOlder(false); olderRead.current = false;
+    if (!bindingId && !conversationId) return () => abort.abort();
+    const path = conversationId ? `/api/subscribeChannelConversationUpdates?${new URLSearchParams({ conversationId })}` : `/api/subscribeBindingUpdates?${new URLSearchParams({ bindingId })}`;
+    const dispose = subscribeUpdates<BindingUpdates | ChannelConversationUpdates>(path, () => ({ cursor: saved.current.eventCursor, updateCursor: saved.current.updateCursor, contextCursor: saved.current.contextCursor, resumeSessionId: sessionId.current ?? undefined }), value => {
+      if (abort.signal.aborted) return;
+      if ("conversation" in value) setConversation(value.conversation);
+      if (value.details) {
+        const current = value.details;
+        if (actualBindingId.current !== current.binding.bindingId) { actualBindingId.current = current.binding.bindingId; saved.current = emptyHistory(); setHistoryLoaded(false); setLastCore(null); }
+        sessionId.current = current.binding.sessionId;
         setDetails(current); setError(null);
         if (current.core) setLastCore(current.core);
-        if (current.core?.contextAuthority === "operator") {
-          savedRef.current = restrictHistory(savedRef.current); saved = savedRef.current; setHistory(saved);
-        }
-        if (current.binding.sessionId && !current.coreError) {
-          try {
-            for (let pages = 0; pages < 25; pages++) {
-              saved = savedRef.current;
-              const cursor = saved.updateCursor;
-              const page = await call<CoreHistory>("readBindingHistory",{bindingId,cursor:saved.eventCursor,limit:50,...(saved.contextCursor!==undefined ? {contextCursor:saved.contextCursor} : {}),...(cursor ? { updateCursor:cursor } : {})},controller.signal);
-              if (controller.signal.aborted) return;
-              saved = mergeHistory(savedRef.current,page,cursor || saved.contextCursor!==undefined ? "newer" : "initial"); savedRef.current = saved;
-              setHistory(saved); setHistoryError(page.historyError ?? page.eventsError ?? null);
-              if (page.historyError || page.eventsError || (!page.hasMore && !page.hasMoreUpdates && !page.hasMoreContexts)) break;
-            }
-          } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }
-        } else if (current.coreError) setHistoryError(current.coreError);
-      } catch (cause) { if (!controller.signal.aborted) setError(errorDetail(cause)); }
-      finally { if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 2000); }
-    }
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [bindingId]);
+        if (current.core?.contextAuthority === "operator") saved.current = restrictHistory(saved.current);
+        if (current.coreError) setHistoryError(current.coreError);
+      }
+      if (value.history) {
+        setHistoryLoaded(true);
+        const direction = saved.current.updateCursor || saved.current.contextCursor !== undefined ? "newer" : "initial";
+        saved.current = mergeHistory(saved.current, value.history, direction);
+        setHistoryError(value.history.historyError ?? value.history.eventsError ?? value.details?.coreError ?? null);
+      }
+      setHistory(saved.current);
+    }, cause => { if (!abort.signal.aborted) { setError(cause); void confirmSubscriptionAuth(); } });
+    return () => { abort.abort(); dispose(); };
+  }, [bindingId, conversationId]);
   async function loadOlder() {
-    const controller = controllerRef.current, cursor = savedRef.current.beforeCursor;
-    if (!controller || controller.signal.aborted || !cursor && !savedRef.current.beforeContextCursor || olderRead.current) return;
-    olderRead.current = true;
-    setLoadingOlder(true);
+    const abort = controller.current, cursor = saved.current.beforeCursor, target = actualBindingId.current;
+    if (!target || !abort || abort.signal.aborted || !cursor && !saved.current.beforeContextCursor || olderRead.current) return;
+    olderRead.current = true; setLoadingOlder(true);
     try {
-      const page = await call<CoreHistory>("readBindingHistory",{bindingId,...(cursor ? {beforeCursor:cursor} : {}),...(savedRef.current.beforeContextCursor ? {beforeContextCursor:savedRef.current.beforeContextCursor} : {}),cursor:savedRef.current.eventCursor,limit:50},controller.signal);
-      if (controller.signal.aborted) return;
-      if (!cursor) page.beforeCursor=savedRef.current.beforeCursor;
-      if (!savedRef.current.beforeContextCursor) page.beforeContextCursor=savedRef.current.beforeContextCursor??null;
-      savedRef.current = mergeHistory(savedRef.current,page,"older"); setHistory(savedRef.current); setHistoryError(page.historyError ?? page.eventsError ?? null);
-    } catch (cause) { if (!controller.signal.aborted) setHistoryError(errorDetail(cause)); }
-    finally { if (!controller.signal.aborted) { olderRead.current = false; setLoadingOlder(false); } }
+      const page = await call<CoreHistory>("readBindingHistory", { bindingId: target, ...(cursor ? { beforeCursor: cursor } : {}), ...(saved.current.beforeContextCursor ? { beforeContextCursor: saved.current.beforeContextCursor } : {}), cursor: saved.current.eventCursor, limit: 50 }, abort.signal);
+      if (abort.signal.aborted || target !== actualBindingId.current) return;
+      if (!cursor) page.beforeCursor = saved.current.beforeCursor;
+      if (!saved.current.beforeContextCursor) page.beforeContextCursor = saved.current.beforeContextCursor ?? null;
+      saved.current = mergeHistory(saved.current, page, "older"); setHistory(saved.current); setHistoryError(page.historyError ?? page.eventsError ?? null);
+    } catch (cause) { if (!abort.signal.aborted) setHistoryError(errorDetail(cause)); }
+    finally { if (!abort.signal.aborted) { olderRead.current = false; setLoadingOlder(false); } }
   }
-  return { details,lastCore,history,error,historyError,loadOlder,loadingOlder };
+  return { details, lastCore, conversation, history, historyLoaded, error, historyError, loadOlder, loadingOlder };
 }

@@ -52,4 +52,5 @@ The root `local:up`, `local:status` and `local:down` commands coordinate a real 
 - [Core Control Plane](control-plane.md)
 - [Core operator Web](web.md)
 - [Shared chat UI](chat-ui.md)
+- [Session update subscriptions](session-updates.md)
 - [Team documentation](team/)

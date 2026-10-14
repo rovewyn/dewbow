@@ -5,7 +5,7 @@ import { buildChatModel, projectHistoryWindow } from "@dewbow/core-ui/chat/model
 import type { ContentPage, ContentRef, Interaction, InteractionDetails } from "@dewbow/core-protocol";
 import { api, ApiError, readInteractionDetails } from "./api";
 import type { Detail, OperationSummary } from "./api";
-import { useCoreHistory } from "./useCoreHistory";
+import type { useCoreHistory } from "./useCoreHistory";
 
 interface PendingInput { operation: string; input: Record<string, unknown>; result: OperationSummary | null }
 export interface CoreChatMemory { drafts: Map<string, ChatDraft>; inputs: Map<string, PendingInput> }
@@ -19,8 +19,8 @@ function matchesPending(pending: PendingInput | undefined, operation: OperationS
   return Boolean(pending && operation.authority === "operator" && pending.operation === operation.operation && pending.input.sessionId === operation.sessionId && pending.input.requestId === operation.requestId && (!pending.result || pending.result.commandId === operation.commandId));
 }
 
-export function CoreChat({ detail, connected, memory, globalBusy }: { detail: Detail; connected: boolean; memory: CoreChatMemory; globalBusy: boolean }) {
-  const sessionId = detail.session.sessionId, observed = useCoreHistory(sessionId);
+export function CoreChat({ detail, connected, memory, globalBusy, observed }: { detail: Detail; connected: boolean; memory: CoreChatMemory; globalBusy: boolean; observed: ReturnType<typeof useCoreHistory> }) {
+  const sessionId = detail.session.sessionId;
   const [draft, setDraft] = useState<ChatDraft>(() => memory.drafts.get(sessionId) ?? { text: "", mode: "default" });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
   const [retryId, setRetryId] = useState<string | null>(null);

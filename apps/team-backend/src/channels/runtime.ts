@@ -157,6 +157,7 @@ export class ChannelRuntime {
     });
   }
   private publicConversation({ address: _address, sequence:_sequence, ...conversation }: Conversation) { return conversation; }
+  readConversation(id: string, observation?: SessionBindingDetails) { return this.takeovers.read(id, observation); }
   private automatic(id: string): boolean { return this.store.get<Conversation>("channel_conversations",id)?.mode !== "human"; }
 
   async accept(connectionId: string, message: IncomingMessage): Promise<void> {

@@ -62,4 +62,8 @@ export interface SessionBindingDetails {
   requests: BindingOperation[];
   core: CoreSessionDetails | null;
   coreError: ApiError | null;
+  channelConversationId?: string | null;
 }
+
+export interface BindingUpdates { contractVersion: "v1"; details: SessionBindingDetails; history?: CoreHistory }
+export interface ChannelConversationUpdates extends Partial<BindingUpdates> { contractVersion: "v1"; conversation: import("./channels.js").ChannelConversationDetails }

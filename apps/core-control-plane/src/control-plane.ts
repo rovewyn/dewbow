@@ -5,14 +5,16 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomBytes, createHash } from "node:crypto";
 import { extname, resolve, sep } from "node:path";
-import { ManagementError, fail } from "@dewbow/core-protocol";
+import { ManagementError, fail, validateInput } from "@dewbow/core-protocol";
 import { Store } from "@dewbow/core-protocol/store";
+import { createEventStream } from "@dewbow/core-protocol/stream";
 import type { ControlPlaneConfig } from "./config.js";
 import { Gateway } from "./gateway.js";
 import { json, jsonBody, sameSecret } from "./http.js";
 import { Management } from "./management.js";
 import type { Caller } from "./management.js";
 import { mcp } from "./mcp.js";
+import { subscribeSessionUpdates } from "./updates.js";
 
 export class ControlPlane {
   private server: Server | undefined;
@@ -54,6 +56,20 @@ export class ControlPlane {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'");
     const path = request.url?.split("?")[0] ?? "/";
+    if (path === "/api/subscribeSessionUpdates" && request.method === "GET") {
+      const caller = this.caller(request, management), params = new URL(request.url!, this.config.publicOrigin).searchParams;
+      for (const key of params.keys()) if (!["sessionId", "cursor", "updateCursor", "contextCursor"].includes(key) || params.getAll(key).length !== 1) fail("INVALID_INPUT", "Invalid subscription parameters.");
+      const sessionId = params.get("sessionId") ?? "";
+      const position = { ...(params.has("cursor") ? { cursor: Number(params.get("cursor")) } : {}), ...(params.has("updateCursor") ? { updateCursor: params.get("updateCursor")! } : {}), ...(params.has("contextCursor") ? { contextCursor: Number(params.get("contextCursor")) } : {}) };
+      validateInput("readSessionHistory", { sessionId, ...position });
+      await management.call("getSession", { sessionId }, caller);
+      if (response.destroyed) return;
+      const stream = createEventStream(response, () => { this.caller(request, management); });
+      try { await subscribeSessionUpdates(management, sessionId, position, caller, stream.send, stream.signal); }
+      catch { stream.error(); }
+      finally { stream.close(); }
+      return;
+    }
     if (path === "/health" && request.method === "GET") { json(response, 200, { status: "ok" }); return; }
     if (path === "/auth/login" && request.method === "POST") {
       const input = await jsonBody(request) as { password?: string };

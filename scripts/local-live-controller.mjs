@@ -126,7 +126,7 @@ async function start() {
   plane = new ControlPlane(coreConfig); await plane.start(); coreStarted = true; guard();
   teamStore = new TeamStore(teamConfig.databasePath);
   const apiService = new TeamApi(teamStore, new CoreClient(teamConfig.coreUrl, teamConfig.coreToken));
-  team = createTeamServer(teamConfig, (operation, input, caller) => apiService.execute(operation, input, caller));
+  team = createTeamServer(teamConfig, (operation, input, caller) => apiService.execute(operation, input, caller), (...args) => apiService.subscribe(...args));
   team.listen(teamConfig.port, teamConfig.host); await once(team, "listening"); teamStarted = true; guard();
   daemon = new HostDaemon(daemonConfig);
   daemon.onRuntimeFailure = () => { failure = "The owned native runtime exited."; if (!stopping) void shutdown(); };

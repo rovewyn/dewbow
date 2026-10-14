@@ -1,6 +1,7 @@
 import { ensurePrivateFile } from "@dewbow/core-protocol/files";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
+import { ChangeSignal } from "@dewbow/core-protocol/stream";
 import { canonicalJson, defaultDefinition, fail, type AgentDefinition, type ApiError, type SessionBinding, type Team, type TeamMember } from "@dewbow/team-protocol";
 
 type Row = Record<string, string | number | bigint | Uint8Array | null>;
@@ -23,6 +24,7 @@ export interface RequestRecord {
 }
 
 export class TeamStore {
+  readonly changes = new ChangeSignal();
   readonly db: DatabaseSync;
 
   constructor(path: string) {
@@ -168,9 +170,17 @@ export class TeamStore {
 
   putBinding(value: SessionBinding): void {
     this.db.prepare(`INSERT INTO session_bindings VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(binding_id) DO UPDATE SET session_id=excluded.session_id, work_dir=excluded.work_dir`)
+      ON CONFLICT(binding_id) DO UPDATE SET session_id=excluded.session_id, work_dir=excluded.work_dir
+      WHERE session_id IS NOT excluded.session_id OR work_dir IS NOT excluded.work_dir`)
       .run(value.bindingId, value.memberId, value.createCaller, value.createOperation, value.workspaceProfileId, value.sessionId, value.hostId, value.workDir,
         JSON.stringify(value.agentRef), value.createRequestId, value.createdAt);
+    this.changes.notify(`binding:${value.bindingId}`);
+  }
+
+  getChannelConversationId(bindingId: string): string | null {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='channel_binding_claims'").get()) return null;
+    const row = this.db.prepare("SELECT conversation_id FROM channel_binding_claims WHERE binding_id=?").get(bindingId) as Row | undefined;
+    return row?.conversation_id as string ?? null;
   }
 
   getBinding(bindingId: string): SessionBinding {
@@ -225,6 +235,7 @@ export class TeamStore {
         coreInput ? JSON.stringify(coreInput) : null, value.bindingId,
         value.result === null ? null : JSON.stringify(value.result), value.error ? JSON.stringify(value.error) : null,
         value.createdAt, value.updatedAt);
+    if (value.bindingId) this.changes.notify(`binding:${value.bindingId}`);
   }
 
   mutate(caller: string, operation: string, input: Record<string, unknown>, work: () => unknown): unknown {

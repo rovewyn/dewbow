@@ -12,9 +12,9 @@ function Context({record}:{record:SessionContext}) {
     {boundary ? <strong>{record.source === "takeoverStart" ? "Human takeover started" : "Human takeover ended"}</strong> : <><div className="chat-message-heading"><strong>{record.source === "operator" ? "Operator · human takeover" : "User · human takeover"}</strong></div><div className="chat-message-body">{record.availability === "restricted" ? "This context requires the Core operator." : record.text}</div></>}
   </article>;
 }
-function Message({ message }: { message: ChatMessage }) {
+function Message({ message, userLabel }: { message: ChatMessage; userLabel?: string | undefined }) {
   return <article className={`chat-message chat-message-${message.kind}`} data-message-id={message.id}>
-    <div className="chat-message-heading"><strong>{messageLabels[message.kind]}</strong>{!message.complete && <span className="chat-muted">In progress</span>}</div>
+    <div className="chat-message-heading"><strong>{message.kind === "user" && userLabel ? userLabel : messageLabels[message.kind]}</strong>{!message.complete && <span className="chat-muted">In progress</span>}</div>
     <div className="chat-message-body">{message.restricted ? "This turn contains private operator input. View it in Core." : message.text}</div>
   </article>;
 }
@@ -77,7 +77,7 @@ export function ChatView(view: ChatViewProps) {
           if (entry.kind === "activity" && turn.entries[index - 1]?.kind === "activity") return null;
           const activities: SessionActivity[] = [];
           if (entry.kind === "activity") for (const candidate of turn.entries.slice(index)) { if (candidate.kind !== "activity") break; activities.push(candidate.activity); }
-          return <div data-chat-entry={entry.id} key={entry.id}>{entry.kind === "message" ? <Message message={entry.message} /> : entry.kind === "progress" ? <div className="chat-plan"><strong>Progress</strong><pre>{entry.progress.text}</pre></div> : entry.kind === "interaction" ? <InteractionCard interaction={entry.interaction} view={view} /> : <ActivityGroup activities={activities} view={view} />}</div>;
+          return <div data-chat-entry={entry.id} key={entry.id}>{entry.kind === "message" ? <Message message={entry.message} userLabel={view.userLabel} /> : entry.kind === "progress" ? <div className="chat-plan"><strong>Progress</strong><pre>{entry.progress.text}</pre></div> : entry.kind === "interaction" ? <InteractionCard interaction={entry.interaction} view={view} /> : <ActivityGroup activities={activities} view={view} />}</div>;
         })}
         {turn.interactions.some(item => ["resolved", "invalidated"].includes(item.status)) && <details className="chat-activities"><summary>Interaction history</summary><div className="chat-activity-list">{turn.interactions.filter(item => ["resolved", "invalidated"].includes(item.status)).map(item => <InteractionCard interaction={item} view={view} key={item.interactionId} />)}</div></details>}
         {turn.orderIncomplete && <p className="chat-order-note">Some activity is still live or has incomplete source order.</p>}
@@ -87,6 +87,7 @@ export function ChatView(view: ChatViewProps) {
     {view.model.requests.length > 0 && <details className="chat-requests"><summary>Request delivery ({view.model.requests.length})</summary><ul>
       {view.model.requests.map(request => <li key={request.key}><div className="chat-content-heading"><strong>{request.label}</strong><Badge variant="outline">{request.status}</Badge></div><code>{request.requestId}</code>{request.error && <p role="alert">{request.error}</p>}{request.canRetry && <Button variant="outline" onClick={() => view.onRetry(request.key)}>Retry original request</Button>}</li>)}
     </ul></details>}
+    {view.hideComposer && view.onInterrupt && <div className="chat-composer-actions"><Button variant="outline" onClick={view.onInterrupt} disabled={view.composer.busy}>Interrupt turn</Button></div>}
     {!view.hideComposer && <form className="chat-composer" onSubmit={event => {
       event.preventDefault(); if (!enabled || !view.draft.text.trim()) return;
       if (view.composer.action === "steer" && view.composer.turnId) view.onSteer({ turnId: view.composer.turnId, message: view.draft.text });

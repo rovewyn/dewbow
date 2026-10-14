@@ -84,3 +84,4 @@ export { normalizeDefinitionId, validateInput } from "./validation.js";
 export type { CoreHost, CoreOperation, RuntimeState, CoreSession, CoreTurn, CoreInteraction, CoreSessionDetails, NativeMessage, SessionActivity, ContentRef, ContentPage, CoreHistory, BindingOperation, SessionBindingResult, SessionBindingDetails,UserQuestion,QuestionAnswer,InteractionDetails,TurnMode } from "./core.js";
 
 export type { Chatbot, ChannelConnection, ChannelConversation, ChannelDelivery, ChannelState, ChannelTakeover, ChannelContextRecord, ChannelConversationDetails } from "./channels.js";
+export type { BindingUpdates, ChannelConversationUpdates } from "./core.js";

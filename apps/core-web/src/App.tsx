@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from "@dewbow/core-ui/ui";
 import { api, ApiError, request } from "./api";
 import type { Detail, OperationSummary } from "./api";
 import { CoreChat, createCoreChatMemory } from "./CoreChat";
+import { useCoreHistory } from "./useCoreHistory";
 import { SessionTreeView } from "@/components/session-tree/SessionTreeView";
 import { buildSessionTree, projectSessionTree } from "@/components/session-tree/model";
 
@@ -37,6 +38,16 @@ export function App() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(selection),
     [detail, setDetail] = useState<Detail | null>(null);
+  const observed = useCoreHistory(authenticated === true ? selected : "");
+  useEffect(() => {
+    setDetail(observed.details);
+    if (observed.details?.host) {
+      const host = observed.details.host;
+      setHosts(previous => previous.some(item => item.hostId === host.hostId) ? previous.map(item => item.hostId === host.hostId ? host : item) : [...previous, host]);
+    }
+    if (observed.details) { const session = observed.details.session; setSessions(previous => previous.some(item => item.sessionId === session.sessionId) ? previous.map(item => item.sessionId === session.sessionId ? session : item) : [...previous, session]); }
+  }, [observed.details]);
+  useEffect(() => { if (observed.authExpired) { setAuthenticated(false); setDetail(null); setHosts([]); setSessions([]); } }, [observed.authExpired]);
   const chatMemory = useRef(createCoreChatMemory());
   const [connectionError, setConnectionError] = useState("");
   const [error, setError] = useState(""),
@@ -70,12 +81,10 @@ export function App() {
           api<{ hosts: Host[] }>("listHosts", {}, controller.signal),
           api<{ sessions: SessionSummary[]; discovery: { hostId: string; error: { message: string } | null }[] }>("listSessions", {}, controller.signal),
         ]);
-        const current = selected ? await api<Detail>("getSession", { sessionId: selected }, controller.signal) : null;
         if (controller.signal.aborted) return;
         setHosts(hostData.hosts);
         setSessions(sessionData.sessions);
         setDiscoveryError(sessionData.discovery.filter(d => d.error).map(d => `${d.hostId}: ${d.error!.message}`).join(" "));
-        setDetail(current);
         setAuthenticated(true);
         setConnectionError("");
       } catch (cause) {
@@ -90,7 +99,7 @@ export function App() {
       if (!controller.signal.aborted)
         timer = setTimeout(() => {
           void poll();
-        }, 1500);
+        }, 10000);
     }
     void poll();
     return () => {
@@ -396,7 +405,7 @@ export function App() {
                       </p>
                     )}
                   </div>
-                  <CoreChat key={detail.session.sessionId} detail={detail} connected={connected && !connectionError} memory={chatMemory.current} globalBusy={busy} />
+                  <CoreChat key={detail.session.sessionId} detail={detail} connected={connected && !connectionError} memory={chatMemory.current} globalBusy={busy} observed={observed} />
 
                 </>
               )}
