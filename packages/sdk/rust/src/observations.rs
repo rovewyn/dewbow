@@ -72,13 +72,13 @@ pub async fn augment(
                         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
                         .open(path)?;
                     let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-                    lock.l_type = libc::F_WRLCK as i16;
+                    lock.l_type = libc::F_WRLCK;
                     lock.l_whence = libc::SEEK_SET as i16;
                     anyhow::ensure!(
                         unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut lock) } == 0,
                         "Writer observation unavailable"
                     );
-                    Ok(lock.l_type != libc::F_UNLCK as i16)
+                    Ok(lock.l_type != libc::F_UNLCK)
                 })();
                 match result {
                     Ok(held) => session["hasActiveWriter"] = json!(held),
