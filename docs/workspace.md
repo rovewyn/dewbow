@@ -24,6 +24,8 @@ The retained TypeScript SDK remains independently usable. `npm run demo` prints 
 ```sh
 mise exec -- npm run build
 mise exec -- npm run typecheck
+mise exec -- npm run version:check
+mise exec -- npm run test:release
 mise exec -- cargo fmt --all --check
 mise exec -- cargo clippy --workspace --all-targets -- -D warnings
 mise exec -- cargo build --workspace --bins --examples
@@ -38,6 +40,8 @@ Rust source uses idiomatic snake_case identifiers while JSON uses the shared cam
 
 ## Continuous integration
 
-[CI](../.github/workflows/ci.yml) installs pinned Node/npm and Rust on Linux, macOS and Windows. Every job builds Web before Rust, runs formatting and strict Clippy, builds all binaries/examples, and runs Rust plus retained npm tests. Linux also checks SDK package contents. The workflow has read-only repository permission and does not publish or deploy.
+[CI](../.github/workflows/ci.yml) installs pinned Node/npm and Rust on Linux, macOS 26 Intel and Windows. The macOS job uses the explicit `macos-26-intel` runner instead of the ARM64 `macos-latest` pool to avoid ARM64 runner capacity constraints. Every job builds Web before Rust, runs formatting and strict Clippy, builds all binaries/examples, and runs Rust plus retained npm tests. Linux also checks SDK package contents. The workflow has read-only repository permission and does not publish or deploy.
+
+CI also checks the shared product version before dependency installation; release-tool tests run with the root npm test suite. The separate [Release workflow](../.github/workflows/release.yml) builds distribution archives, including the macOS ARM64 target that ordinary CI does not exercise; publication requires an explicit manual input on a matching version tag. See [Versioning and releases](releasing.md) for preparation, artifacts and the future publication procedure.
 
 These builds and synthetic subprocess checks establish platform foundations. They do not establish real Codex, OS sandbox or multi-machine acceptance. Report actual local verification separately from configured or completed CI runs.

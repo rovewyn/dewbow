@@ -19,6 +19,12 @@
     "apps/web"
   ],
   "scripts": {
+    "version:check": "node scripts/sync-version.mjs --check",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:set": "node scripts/sync-version.mjs --version",
+    "test:release": "node --test scripts/tests/release.test.mjs",
+    "release:pack": "node scripts/package-release.mjs",
+    "release:check": "node scripts/package-release.mjs --check",
     "build": "npm run build --workspaces",
     "typecheck": "npm run build --workspace @dewbow/protocol && npm run build --workspace @dewbow/sdk && npm run build --workspace @dewbow/ui && npm run typecheck --workspaces",
     "test": "npm run build --workspace @dewbow/protocol && npm run build --workspace @dewbow/ui && npm test --workspaces --if-present && node --test scripts/tests/*.test.mjs",
