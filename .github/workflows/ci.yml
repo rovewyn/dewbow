@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-26-intel, windows-latest]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +37,8 @@ jobs:
       - name: Install pinned npm
         shell: bash
         run: npm install --global "$(node -p 'require("./package.json").packageManager')"
+      - name: Check product versions
+        run: npm run version:check
       - name: Install dependencies
         run: npm ci
       - name: Install pinned stable Rust
