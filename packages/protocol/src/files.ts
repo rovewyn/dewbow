@@ -4,6 +4,9 @@ import { homedir } from "node:os";
 import { dirname, parse, resolve } from "node:path";
 
 const securedDirectories = new Set<string>();
+// Include cold PowerShell/.NET initialization on loaded Windows hosts, while
+// keeping ACL establishment bounded and mandatory before private writes.
+const windowsAclTimeoutMs = 60_000;
 const aclScript = `
 $ErrorActionPreference = 'Stop'
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -49,11 +52,18 @@ function secure(paths: string[]): void {
   }
   try {
     execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(aclScript, "utf16le").toString("base64")], {
-      windowsHide: true, timeout: 15000, stdio: "pipe", env: { ...process.env, DEWBOW_PRIVATE_PATHS: JSON.stringify(paths) },
+      windowsHide: true, timeout: windowsAclTimeoutMs, stdio: "pipe", env: { ...process.env, DEWBOW_PRIVATE_PATHS: JSON.stringify(paths) },
     });
   } catch (error) {
-    const status = (error as { status?: number }).status;
-    throw new Error(status === 11 ? "Private state cannot traverse a reparse point." : status === 12 ? "Private state must belong to the current account." : "Private Dewbow state ACL protection could not be established.");
+    const { status, code } = error as { status?: number | null; code?: string };
+    if (status === 11) throw new Error("Private state cannot traverse a reparse point.");
+    if (status === 12) throw new Error("Private state must belong to the current account.");
+    if (code === "ETIMEDOUT") throw new Error(`Private Dewbow state ACL protection timed out after ${windowsAclTimeoutMs / 1000} seconds.`);
+    if (code === "ENOENT") throw new Error("Windows PowerShell was not found; private Dewbow state ACL protection could not be established.");
+    // Child-process messages and stderr can contain private paths. Expose only
+    // a numeric exit status, never the raw helper error or its output.
+    const detail = typeof status === "number" ? ` (PowerShell exit status ${status})` : "";
+    throw new Error(`Private Dewbow state ACL protection could not be established${detail}.`);
   }
 }
 
