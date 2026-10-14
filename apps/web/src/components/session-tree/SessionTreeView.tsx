@@ -144,9 +144,9 @@ export function SessionTreeView({ model, search, onSearchChange, onSelect, error
     {model.nodes.length > 0 && <ul ref={tree} role="tree" aria-labelledby={`${id}-heading`} className="session-tree-nodes">
       {model.nodes.map(node => renderNode(node, 0))}
     </ul>}
-    {!model.hostIds.length ? <p className="session-tree-empty">No permitted hosts. Configure the Control Plane's host file.</p> :
+    {!model.hostIds.length ? <p className="session-tree-empty">No local host is available. Run dewbow doctor to check the daemon.</p> :
       model.query && !model.matchCount ? <p className="session-tree-empty">No sessions found.</p> :
-      !model.sessionCount && <p className="session-tree-empty">Create a session on a connected machine, or use MCP.</p>}
+      !model.sessionCount && <p className="session-tree-empty">Create a session on this machine.</p>}
     {model.selected && <div className="session-tree-selection" role="status">
       <span>Selected session</span><strong>{model.selected.title}</strong>
       <span>{model.selected.metadata.slice(0, 3).join(" · ")}{model.query && !model.selected.searchText.includes(model.query) ? " · Not a search match" : ""}</span>

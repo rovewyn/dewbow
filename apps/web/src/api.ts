@@ -13,6 +13,20 @@ export async function request<T>(path: string, input: unknown, signal?: AbortSig
   return data.result;
 }
 export const api = <T>(operation: string, input: unknown = {}, signal?: AbortSignal): Promise<T> => request(`/api/${operation}`, input, signal);
+let launcherLogin: Promise<unknown> | undefined;
+let lastLauncherTicket: string | undefined;
+/** Consume the launcher fragment once, including React's development remount. */
+export function authenticateLauncher(): Promise<unknown> {
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const ticket = fragment.get("login");
+  if (ticket) {
+      fragment.delete("login");
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${fragment.size ? `#${fragment}` : ""}`);
+  }
+  if (ticket && ticket !== lastLauncherTicket) { lastLauncherTicket = ticket; launcherLogin = request("/auth/login", { ticket }); }
+  launcherLogin ??= api("listHosts");
+  return launcherLogin;
+}
 export async function readInteractionDetails(sessionId:string,contentId:string,signal?:AbortSignal):Promise<InteractionDetails> {
   let text="",cursor:string|null=null,offset=0;
   do {

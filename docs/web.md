@@ -1,10 +1,10 @@
 # Dewbow operator Web interface
 
-`@dewbow/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports shared UI, public record types and browser-safe protocol helpers. Server implementations and the SDK stay outside the browser. All assets are local.
+`@dewbow/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is the operator client of the Rust daemon. It imports shared UI, public record types and browser-safe protocol helpers. Server implementations and the SDK stay outside the browser. All assets are embedded locally in Dewbow.
 
 ## Workflow
 
-Sign in with the separate operator password. A protected cookie authenticates requests; no agent, daemon, or native Codex credential is stored in browser storage. The session navigator groups conversations under permitted hosts and displays the native parent/child hierarchy. Hosts show connection state; session rows show titles and scoped runtime or connection status. Hovering a row exposes its full title, IDs, working directory and management metadata. The selected-session summary shows the host and the confirmed connection status and runtime observation. Archived conversations and managed sessions still being created or recovered remain visible. Select a native-only conversation and click Connect conversation. After connection is confirmed, the composer sends follow-ups in the same native conversation. A writer conflict appears in the operation status; release the conversation in its original runtime, then retry connection.
+Run `dewbow web` for a one-use CLI login link. Web clears the ticket fragment before exchanging it for an operator cookie; no daemon or native credential is stored in browser storage. Direct unauthenticated visits show CLI instructions. The session navigator groups conversations under the local host and displays the native parent/child hierarchy. Rows expose titles, IDs, directories and runtime/connection states. Archived conversations and managed sessions being created or recovered remain visible. Select a native-only conversation and click Connect conversation to resume its existing native ID. A writer conflict appears in operation status; release the conversation in its original runtime before retrying.
 
 Hosts initially expand and session branches initially collapse. Restoring or selecting a session reveals its ancestor path once. Polling preserves user expansion choices; collapsing the selected branch does not close its conversation. Expansion lasts for the current page mount. Search matches names, directories and management/native IDs. Results contain only matches and their ancestors, and result paths expand automatically. Search expansion is separate from normal expansion, so clearing search restores the earlier tree state. Searching does not change selection or the conversation panel. Matching counts exclude ancestor-only rows.
 
@@ -16,7 +16,7 @@ Lineage resolves native parent IDs within the same host and Codex home. Fork ori
 
 Select a session to read native saved messages. Managed sessions also show tool metadata, turn state and pending approvals. Native-only sessions keep sending disabled until connection is confirmed. Send creates a new turn in the same conversation. Approval Allow/Deny targets the exact active callback. Interrupt requests stopping; its delivery status and the eventual terminal turn state remain separate. Controls are disabled when the host is unavailable or the target is no longer actionable. Unknown runtime states show their last known observation and reject follow-ups pending recovery.
 
-The optional create form selects a connected host and an existing absolute work directory on that machine. MCP is the primary creation and management entry point; Web uses the same operations. Busy, pending, uncertain and failed requests remain visible. Transport failures offer a retry with the original request ID and input. Delivery details are available in the conversation's request list.
+The create form selects the local host and an existing absolute working directory. Web uses operator-authorized management operations. Busy, pending, uncertain and failed requests remain visible. Transport failures offer a retry with the original request ID and input. Delivery details are available in the conversation's request list.
 
 The composer selects Default or Plan for a new turn. During confirmed running/input/approval states it appends an instruction to the exact active turn and displays that turn's fixed mode. Question cards show native options and permitted custom input; approvals retain separate Allow/Deny actions and request IDs. Unsupported callbacks expose an interruption path. Pending bodies remain in page memory through accepted/unknown delivery and can be retried with the original operation and ID. They are released on a definite result or sign-out. Composer text and new-turn mode remain in memory for each session across selection changes. Refresh and sign-out clear drafts. Ctrl/Command + Enter submits a message; plain Enter inserts a line break.
 
@@ -29,20 +29,21 @@ From the repository root:
 ```sh
 npm ci
 npm run build
-npm run control-plane
+cargo build --bin dewbow
+dewbow web
 ```
 
-Configure the Control Plane and daemon using their guides. The built Web is served at the Control Plane origin, normally `http://127.0.0.1:3000`. It requires no separate Web service or browser-visible environment secrets. Same-origin service hosting is the reproducible local deployment path.
+Initialize native Codex using the [CLI guide](cli.md). The embedded Web is served at the daemon origin, normally `http://127.0.0.1:3000`. It requires no separate Web service or browser-visible environment secrets. Use the compiled executable path if it is not on PATH.
 
-For UI development against the default local Control Plane:
+For UI development against the default local daemon:
 
 ```sh
 npm run web
 ```
 
-Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward that service's Host and Origin. These proxies are not included in production assets. `npm run web -- --port 5174` selects another free development port. Production service origin checks remain unchanged.
+Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward the daemon's Host and Origin. Open with CLI first, then use the same browser at Vite: the loopback cookie applies to the same host across ports. These proxies are excluded from production assets. `npm run web -- --port 5174` selects another available port. Production origin checks remain strict.
 
-`npm run web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is only useful for static inspection. Use the Control Plane for full integration. Stop development/preview with Ctrl+C. The built service is stopped through the Control Plane command.
+`npm run web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is useful for static inspection. Use the Rust daemon for full integration. Stop development/preview with Ctrl+C and the daemon with `dewbow daemon stop`.
 
 ## UI foundation
 

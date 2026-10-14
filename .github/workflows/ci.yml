@@ -18,11 +18,11 @@ jobs:
   checks:
     name: Checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'push' && '["ubuntu-latest"]' || '["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,44 +39,20 @@ jobs:
         run: npm install --global "$(node -p 'require("./package.json").packageManager')"
       - name: Install dependencies
         run: npm ci
+      - name: Install pinned stable Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
       - name: Build workspaces
         run: npm run build
-      - name: Test service journal
-        working-directory: packages/protocol
-        run: node --test tests/*.test.mjs
-      - name: Test SDK
-        working-directory: packages/sdk
-        run: node --test tests/*.test.mjs
-      - name: Test conversation projection
-        working-directory: apps/web
-        run: node --test tests/*.test.mjs
-      - name: Test shared chat model
-        working-directory: packages/ui
-        run: node --test tests/*.test.mjs
-      - name: Test host daemon
-        working-directory: apps/host-daemon
-        run: node --test tests/*.test.mjs
-      - name: Test Control Plane
-        working-directory: apps/control-plane
-        run: node --test tests/*.test.mjs
-      - name: Test local lifecycle and session subscriptions
-        run: node --test scripts/tests/*.test.mjs
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Check Rust with Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build executable and synthetic native fixture
+        run: cargo build --workspace --bins --examples
+      - name: Test Rust crates
+        run: cargo test --workspace --all-targets
+      - name: Test SDK, Web, contracts and Rust lifecycle
+        run: npm test
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts
-      - name: Check service configuration
-        if: runner.os == 'Linux'
-        env:
-          DEWBOW_HOST_ID: example-host
-        run: |
-          node apps/host-daemon/dist/cli.js --check
-          node apps/control-plane/dist/cli.js --check
-      - name: Check local operation scripts
-        if: runner.os == 'Linux'
-        run: |
-          node --check scripts/init-local.mjs
-          node --check scripts/local-config.mjs
-          node --check scripts/local-live.mjs
-          node --check scripts/local-live-controller.mjs
-          node --check scripts/local-live-state.mjs
-          node --check scripts/smoke.mjs

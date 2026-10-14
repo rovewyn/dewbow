@@ -1,7 +1,0 @@
-{
-  "root": "/workspace/session-workspaces",
-  "profiles": [
-    { "profileId": "empty", "name": "Independent directory", "kind": "emptyDirectory" },
-    { "profileId": "code", "name": "Code repository", "kind": "gitWorktree", "repository": "/workspace/source-repository", "baseRef": "main" }
-  ]
-}

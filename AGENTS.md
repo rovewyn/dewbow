@@ -10,7 +10,7 @@ Keep the root `README.md` as simple as possible: a brief project introduction an
 
 Keep related code and resources together. Follow established directory boundaries and naming patterns. Update operating instructions when a change affects setup, configuration, commands, or expected behavior.
 
-Dewbow owns hosts, native conversations, configuration snapshots, execution, recovery, and approvals. Keep service implementations in `apps/control-plane` and `apps/host-daemon`, the operator interface in `apps/web`, management contracts in `packages/protocol`, native Codex integration in `packages/sdk`, and browser presentation in `packages/ui`. External agents use the authenticated API or MCP tools. Preserve independent service startup and separate management-client and operator authority.
+Dewbow owns local host identity, native conversation references, configuration snapshots, execution, recovery, and approvals. Keep the executable in `apps/cli`, its daemon library in `apps/daemon`, the operator interface in `apps/web`, management contracts in `packages/protocol` (including its Rust crate), native Codex integration in `packages/sdk` (including its Rust crate), and browser presentation in `packages/ui`. The daemon embeds Web assets and directly owns a native Codex app-server. All browser operations use operator authority. Remote networks, MCP and external agent access are deferred.
 
 Keep generated files, caches, dependency installations, and temporary outputs out of version control unless the repository explicitly tracks them. Preserve user-created files and local results during cleanup.
 
@@ -36,7 +36,7 @@ For retained generated assets, preserve source outputs and record exact prompts,
 
 ### Naming conventions
 
-Use the shared `@dewbow` npm scope, with names matching their directories, such as `@dewbow/protocol`, `@dewbow/sdk`, and `@dewbow/host-daemon`. The private root coordinator is `@dewbow/workspace`. Use descriptive application commands such as `control-plane`, `host-daemon`, and `web`, and prefix their local-environment variants with `local:`. Keep the ownership and project map in `docs/README.md` current.
+Use the shared `@dewbow` npm scope, with names matching their directories, such as `@dewbow/protocol`, `@dewbow/sdk`, and `@dewbow/web`. The private root coordinator is `@dewbow/workspace`. Rust crate names use the `dewbow-` prefix; the only application executable is `dewbow`. Keep the ownership and project map in `docs/README.md` current.
 
 Use `camelCase` for Dewbow-owned TypeScript and JavaScript variables, functions, methods, object properties, and configuration keys. Use the same field names in HTTP requests and responses, MCP inputs and results, SDK types, and Web application objects. For example, use `hostId`, `sessionId`, `requestId`, `sessionOptions`, and `instructionsAppend`.
 
@@ -50,7 +50,7 @@ During initial development, direct breaking naming changes are acceptable. Do no
 
 ## Early Development Compatibility
 
-The project is in early development. Backward compatibility, data migrations, and legacy protocol support are not required. Pin all Dewbow-owned contract versions to `v1` during this phase. Change the `v1` contract and update services and clients together; do not introduce a new contract version, version negotiation, or compatibility branches. Recreate obsolete Dewbow-owned tables instead of adding migration code. Stop the Control Plane, daemon, and recorded runtime before resetting their state. Preserve native Codex conversations, credentials, and unrelated user files. Document state resets and validate with fresh synthetic databases.
+The project is in early development. Backward compatibility, data migrations, and legacy protocol support are not required. Pin all Dewbow-owned contract versions to `v1` during this phase. Change the `v1` contract and update the daemon and clients together; do not introduce a new contract version, version negotiation, or compatibility branches. Recreate obsolete Dewbow-owned tables instead of adding migration code. Stop the daemon and its owned native runtime before resetting their state. Preserve native Codex conversations, credentials, and unrelated user files. Document state resets and validate with fresh synthetic databases.
 
 ## Validation Guidelines
 
