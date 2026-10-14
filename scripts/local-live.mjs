@@ -3,13 +3,13 @@ import { closeSync, existsSync, openSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
-import { ensurePrivateFile } from "@dewbow/core-protocol/files";
-import { nativeCommand } from "../packages/core-sdk/dist/internal.js";
+import { ensurePrivateFile } from "@dewbow/protocol/files";
+import { nativeCommand } from "../packages/sdk/dist/internal.js";
 import { initializeLocal, localOptions, readLocalEnvironment } from "./local-config.mjs";
 import { alive, lastRunPath, readController, readPrivateJson, requestController } from "./local-live-state.mjs";
 
 const run = promisify(execFile);
-const usage = "Usage: npm run local:<up|status|down> -- [--state-dir <directory>]\nUp also accepts --core-port, --team-port, --codex-executable and --codex-home. Saved configuration is preserved. See docs/operations.md.";
+const usage = "Usage: npm run local:<up|status|down> -- [--state-dir <directory>]\nUp also accepts --port, --codex-executable and --codex-home. Saved configuration is preserved. See docs/operations.md.";
 
 async function up(options) {
   const { directory } = initializeLocal(options);
@@ -20,7 +20,7 @@ async function up(options) {
   if (process.platform === "win32" && /(?:^|[\\/])codex(?:\.cmd|\.js)?$/i.test(executable)) {
     throw new Error("On Windows, configure the standalone codex.exe with --codex-executable or the private host-daemon.env file.");
   }
-  for (const path of ["apps/core-control-plane/dist/index.js", "apps/core-host-daemon/dist/index.js", "apps/team-backend/dist/server.js", "apps/core-web/dist/index.html", "apps/team-web/dist/index.html"]) {
+  for (const path of ["apps/control-plane/dist/index.js", "apps/host-daemon/dist/index.js", "apps/web/dist/index.html"]) {
     if (!existsSync(path)) throw new Error("Build the workspaces before starting the live stack: npm run build.");
   }
   const env = { ...process.env, ...(daemon.CODEX_HOME ? { CODEX_HOME: daemon.CODEX_HOME } : {}) };
@@ -72,7 +72,7 @@ try {
   const [operation, ...args] = process.argv.slice(2), options = localOptions(args);
   if (options.help) console.log(usage);
   else if (!["up", "status", "down"].includes(operation)) throw new Error(usage);
-  else if (operation !== "up" && [options.corePort, options.teamPort, options.codexExecutable, options.codexHome].some(value => value !== undefined)) throw new Error("Status and down accept only --state-dir.");
+  else if (operation !== "up" && [options.controlPlanePort, options.codexExecutable, options.codexHome].some(value => value !== undefined)) throw new Error("Status and down accept only --state-dir.");
   else {
     let result;
     if (operation === "up") result = await up(options);

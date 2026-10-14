@@ -1,0 +1,7 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss/preflight.css" layer(base);
+@import "@dewbow/ui/styles.css";
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+}

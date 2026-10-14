@@ -1,8 +1,6 @@
-# Dewbow Core host daemon
+# Dewbow host daemon
 
-Execution admission pause and passive context append are daemon-owned generic capabilities. The pause persists across restart and covers turn start, steering and interaction responses submitted through this host; it does not automatically interrupt an active turn or govern another native writer. See [execution admission and passive context](interfaces.md#execution-admission-and-passive-context) for exact-ID resume authority, native persistence reconciliation and the boundary with Team takeover. Preserve private context records along with the daemon journal and native home during recovery.
-
-`@dewbow/core-host-daemon` owns a local Codex app-server over stdio. It initiates an authenticated WebSocket connection to the Control Plane and journals managed session metadata, command fingerprints, approvals and management events in SQLite. Browser lifetime does not affect its runtime. One app-server can run independent turns for separate conversations; each conversation permits one active or unresolved turn.
+`@dewbow/host-daemon` owns a local Codex app-server over stdio. It initiates an authenticated WebSocket connection to the Control Plane and journals managed session metadata, command fingerprints, approvals and management events in SQLite. Browser lifetime does not affect its runtime. One app-server can run independent turns for separate conversations; each conversation permits one active or unresolved turn.
 
 The public `discoverSessions` and `readSessionHistory` methods call the read-only SDK. The authenticated host connection also exposes these reads to Control Plane clients. All discovered conversations, including archived and child conversations, can be listed and read without importing their catalog or messages into Dewbow SQLite. New sessions create native conversations. Explicit `connectSession` requests use SDK `CodexRuntime.connectSession` to resume an existing native ID without a fork or a new model turn. The daemon controls it after Codex confirms an idle connection. Native writer locks reject conflicting ownership; the daemon does not stop Desktop or CLI processes. Connected conversations use the existing send, approval, interrupt, and restart recovery flow. `runtimeState` reports observed Codex execution separately from `connectionState`. Failed connection requests leave runtime observations unchanged. Only confirmed connections, or unresolved owned turns, qualify for automatic recovery; an unsuccessful first connection is not retried by a restart.
 
@@ -20,14 +18,14 @@ Use the workspace's pinned Node.js/npm and a Codex CLI supporting the app-server
 | `DEWBOW_CODEX_EXECUTABLE` | `codex` | Installed executable |
 | `DEWBOW_CODEX_MODEL` | Native Codex configuration | Creation-time model default; session overrides take precedence and recovery uses the saved snapshot |
 
-For explicit `workDir`, create the work directory before `createSession`. Alternatively, set `DEWBOW_HOST_WORKSPACE_CONFIG` to a private profile file and create with `workspaceProfileId`; the daemon prepares a separate directory or Git worktree using the stable Core session ID. The daemon checks that it is an absolute, existing directory with read, write, and traversal access, then stores its canonical path. Invalid directories return `INVALID_WORKDIR` without creating a Codex thread. Every turn uses the selected saved conversation and work directory. Managed workspaces are verified before creation, continuation and recovery and never recreated to replace missing resources. See [Channels workspace configuration](team/channels.md#configure-host-workspaces).
+For explicit `workDir`, create the work directory before `createSession`. Alternatively, set `DEWBOW_HOST_WORKSPACE_CONFIG` to a private profile file and create with `workspaceProfileId`; the daemon prepares a separate directory or Git worktree using the stable Dewbow session ID. The daemon checks that it is an absolute, existing directory with read, write, and traversal access, then stores its canonical path. Invalid directories return `INVALID_WORKDIR` without creating a Codex thread. Every turn uses the selected saved conversation and work directory. Managed workspaces are verified before creation, continuation and recovery and never recreated to replace missing resources. See [workspace profile configuration](#configure-host-workspaces).
 
 Run from the repository root with credentials configured outside Git:
 
 ```sh
 npm ci
-DEWBOW_HOST_ID=example-host npm run core:host-daemon -- --check
-npm run core:host-daemon
+DEWBOW_HOST_ID=example-host npm run host-daemon -- --check
+npm run host-daemon
 ```
 
 `--check` validates identity and URL configuration without opening storage, reading Codex, starting a process, or connecting to the service. Normal startup creates the journal, checks previous process ownership, initializes app-server, recovers saved conversations, and connects to the Control Plane. Ctrl+C or SIGTERM stops the owned runtime and closes storage and transport. Sanitized logs contain only component and connection/runtime status. Raw native stderr and RPC diagnostics are not forwarded.
@@ -40,7 +38,7 @@ Threads use `workspace-write`, `on-request`, and the native `user` approvals rev
 
 Default and Plan use native collaboration mode with the confirmed model and effort. The built-in mode instructions are selected without replacing the saved additional developer instructions. Mode belongs to the new turn; `turn/steer` supplies the exact native turn and stable client command ID without changing mode. Pending interactions remain visible until native resolution, even after response delivery. Blocking questions add `awaiting_input` alongside the existing approval wait state.
 
-Question/answer details remain in the separate host-private content database, bounded to 1 MiB per interaction. Secret or uncertain-secrecy questions make the conversation context operator-only, including later native messages, activities, event content and continuation. Read authority travels from the authenticated Core caller to the host, never from public input. Known content IDs cannot bypass that boundary. File-based question provenance refuses uncertain writable overlap, configured extra roots or previously allowed approvals; exact raw native provenance remains usable. See the [v1 interaction contract](interfaces.md#state-and-errors) for classification and recovery rules.
+Question/answer details remain in the separate host-private content database, bounded to 1 MiB per interaction. Secret or uncertain-secrecy questions make the conversation context operator-only, including later native messages, activities, event content and continuation. Read authority travels from the authenticated Dewbow caller to the host, never from public input. Known content IDs cannot bypass that boundary. File-based question provenance refuses uncertain writable overlap, configured extra roots or previously allowed approvals; exact raw native provenance remains usable. See the [v1 interaction contract](interfaces.md#state-and-errors) for classification and recovery rules.
 
 Created sessions accept the model, reasoning effort and appended instructions described in [Agent configuration and session snapshots](interfaces.md#agent-configuration-and-session-snapshots). The daemon resolves and journals the configuration before native creation, verifies the native response, and uses that immutable snapshot on reconnect/restart. It composes instructions once; recovery sets the saved complete additional developer instruction string without appending. The host's project/user config and `DEWBOW_CODEX_MODEL` are not reapplied as defaults to these saved sessions. Native adoption without a definition has no agent snapshot and does not apply the host model default. MCP, skills and tool environment remain host-managed.
 
@@ -66,17 +64,27 @@ Missing or incompatible snapshots also require recovery rather than fallback. Jo
 npm run build
 npm run typecheck
 npm test
-DEWBOW_HOST_ID=example-host node apps/core-host-daemon/dist/cli.js --check
+DEWBOW_HOST_ID=example-host node apps/host-daemon/dist/cli.js --check
 git diff --check
 ```
 
 The critical daemon integration test runs a synthetic app-server subprocess and transport. It protects command deduplication, process ownership, conversation continuity, busy sessions, exact approval routing, independent sessions, confirmed interruption, event replay, and restart recovery including the command/turn write gap. It uses temporary synthetic data and no native Codex credentials. Actual Codex and two-machine smoke checks are separate from CI.
 
+## Configure host workspaces
+
+Copy `docs/examples/host-workspaces.example.json` to a private host configuration file and replace the synthetic paths. Set `DEWBOW_HOST_WORKSPACE_CONFIG` to that file in the daemon environment. Profiles are host-owned; API clients receive their IDs, names and kinds, not source repository paths.
+
+`emptyDirectory` creates a separate directory. `gitWorktree` creates a separate checkout and branch from the configured local repository and base ref. The workspace root must be outside the source working tree. The daemon does not fetch, run setup hooks, initialize submodules, copy uncommitted source changes or reset the source repository. Configure a repository and base ref that already exist locally.
+
+The Control Plane assigns the session ID before provisioning. The directory is `<workspaceRoot>/<sessionId>` and the Git branch is `dewbow/session-<sessionId>`. The daemon records the resolved source commit, branch and path before creating resources, and synchronizes preparation and completion state. Repeated requests retain those resources. Reconnection and recovery verify saved directory identity, path and Git ownership; missing, replaced or inconsistent resources require local repair.
+
+Managed workspaces do not inherit additional writable roots or shared temporary-directory write exemptions. The host still owns network and approval policy. Separate worktrees share Git metadata, whose writes can require operator approval. Isolation applies to working directories and the native sandbox; it does not create separate operating-system users, containers, ports or credentials. Files and branches remain after turns; no automatic cleanup is provided.
+
 ## Private tool content
 
 The daemon stores tool bodies in a separate private `<host-state>.contents.sqlite` database beside its journal, using the same owner and permission checks. Command output deltas append in bounded chunks; terminal items confirm completeness. Native aggregated output without a full observed capture has unknown completeness. Interrupted capture stays partial. Native file-change diffs and structured tool details are stored separately from journal records and loaded on demand through `getSessionActivity` and `readSessionContent`. Missing native content stays explicitly unavailable. This storage does not reconstruct deleted native messages or tool side effects.
 
-Content scope includes canonical native home and thread identity. Chunk cursors cannot cross conversations and reads preserve UTF-8 boundaries. Core and Team receive metadata references and transient requested chunks; their persistent operation records never contain these bodies. Daemon event history removes commands and paths from tool payloads as well as message and plan text. Protect and retain the private content database with the daemon state when recovering it. Replacing obsolete Dewbow state also replaces this content database; do not reset native Codex storage.
+Content scope includes canonical native home and thread identity. Chunk cursors cannot cross conversations and reads preserve UTF-8 boundaries. The Control Plane receives metadata references and transient requested chunks; their persistent operation records never contain these bodies. Daemon event history removes commands and paths from tool payloads as well as message and plan text. Protect and retain the private content database with the daemon state when recovering it. Replacing obsolete Dewbow state also replaces this content database; do not reset native Codex storage.
 
 ## Native data and journal contents
 

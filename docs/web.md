@@ -1,6 +1,6 @@
-# Dewbow Core operator Web interface
+# Dewbow operator Web interface
 
-`@dewbow/core-web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports shared UI, public record types and browser-safe protocol helpers. Server implementations and the SDK stay outside the browser. All assets are local.
+`@dewbow/web` uses React, TypeScript, Vite, Tailwind and shadcn/ui with Base UI primitives. It is a browser client of the authenticated Control Plane. It imports shared UI, public record types and browser-safe protocol helpers. Server implementations and the SDK stay outside the browser. All assets are local.
 
 ## Workflow
 
@@ -20,7 +20,7 @@ The optional create form selects a connected host and an existing absolute work 
 
 The composer selects Default or Plan for a new turn. During confirmed running/input/approval states it appends an instruction to the exact active turn and displays that turn's fixed mode. Question cards show native options and permitted custom input; approvals retain separate Allow/Deny actions and request IDs. Unsupported callbacks expose an interruption path. Pending bodies remain in page memory through accepted/unknown delivery and can be retried with the original operation and ID. They are released on a definite result or sign-out. Composer text and new-turn mode remain in memory for each session across selection changes. Refresh and sign-out clear drafts. Ctrl/Command + Enter submits a message; plain Enter inserts a line break.
 
-The host/session catalog refreshes every ten seconds. The selected conversation uses the authenticated Core SSE subscription; see [Session update subscriptions](session-updates.md). The initial native page contains the latest 50 items; Load older history fetches preceding items and preserves the conversation scroll position. History, native updates and daemon event cursors remain independent. Subscription pages include changes to existing IDs and advance positions only after committing each batch. Completed native messages take precedence over partial snapshots and retain reliable source order. History unavailable errors remain visible and event cursors do not advance on failure. A selected session ID is in the URL fragment, so refresh restores the same conversation when the host is available. Closing the browser releases its subscription without interrupting daemon execution. Inventory timers, subscriptions and page reads are cancelled on teardown or selection change. The shared ChatView renders message-first turn entries. Consecutive tool activities collapse in their source positions; pending approvals and questions stay outside tool disclosures and expose an attention shortcut. Completed interactions have a separate history disclosure. Expanded activities load complete output or recorded diff in 64 KiB chunks, with explicit completeness and Load more controls. Content reads are transient and cancelled on selection change. Older pages preserve a visible entry anchor; scrolling away from the latest message stops automatic following until Jump to latest.
+The host/session catalog refreshes every ten seconds. The selected conversation uses the authenticated Dewbow SSE subscription; see [Session update subscriptions](session-updates.md). The initial native page contains the latest 50 items; Load older history fetches preceding items and preserves the conversation scroll position. History, native updates and daemon event cursors remain independent. Subscription pages include changes to existing IDs and advance positions only after committing each batch. Completed native messages take precedence over partial snapshots and retain reliable source order. History unavailable errors remain visible and event cursors do not advance on failure. A selected session ID is in the URL fragment, so refresh restores the same conversation when the host is available. Closing the browser releases its subscription without interrupting daemon execution. Inventory timers, subscriptions and page reads are cancelled on teardown or selection change. The shared ChatView renders message-first turn entries. Consecutive tool activities collapse in their source positions; pending approvals and questions stay outside tool disclosures and expose an attention shortcut. Completed interactions have a separate history disclosure. Expanded activities load complete output or recorded diff in 64 KiB chunks, with explicit completeness and Load more controls. Content reads are transient and cancelled on selection change. Older pages preserve a visible entry anchor; scrolling away from the latest message stops automatic following until Jump to latest.
 
 ## Build and local use
 
@@ -29,7 +29,7 @@ From the repository root:
 ```sh
 npm ci
 npm run build
-npm run core:control-plane
+npm run control-plane
 ```
 
 Configure the Control Plane and daemon using their guides. The built Web is served at the Control Plane origin, normally `http://127.0.0.1:3000`. It requires no separate Web service or browser-visible environment secrets. Same-origin service hosting is the reproducible local deployment path.
@@ -37,16 +37,16 @@ Configure the Control Plane and daemon using their guides. The built Web is serv
 For UI development against the default local Control Plane:
 
 ```sh
-npm run core:web
+npm run web
 ```
 
-Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward that service's Host and Origin. These proxies are not included in production assets. `npm run core:web -- --port 5174` selects another free development port. Production service origin checks remain unchanged.
+Vite binds to `http://127.0.0.1:5173`. Its development-only `/api` and `/auth` proxies target `http://127.0.0.1:3000` and forward that service's Host and Origin. These proxies are not included in production assets. `npm run web -- --port 5174` selects another free development port. Production service origin checks remain unchanged.
 
-`npm run core:web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is only useful for static inspection. Use the Control Plane for full integration. Stop development/preview with Ctrl+C. The built service is stopped through the Control Plane command.
+`npm run web:preview` serves static assets alone at `http://127.0.0.1:4173`; it has no management proxy and is only useful for static inspection. Use the Control Plane for full integration. Stop development/preview with Ctrl+C. The built service is stopped through the Control Plane command.
 
 ## UI foundation
 
-`components.json` records shadcn CLI 4.21.4's `base-nova` style. Component source and class utilities now live in `packages/core-ui/src/ui/`, with theme tokens and chat styles in that package. `src/ui.css` retains Core application preflight. Button, Input, Textarea, NativeSelect, Badge, Card and Alert are generated from the official shadcn registry with CLI 4.21.4. The select uses Lucide for its local chevron. Application CSS handles layout and state colors; component source handles controls and focus styles. The application needs no external font, theme switcher, desktop wrapper, or new routing library.
+`components.json` records shadcn CLI 4.21.4's `base-nova` style. Component source and class utilities now live in `packages/ui/src/ui/`, with theme tokens and chat styles in that package. `src/ui.css` retains Dewbow application preflight. Button, Input, Textarea, NativeSelect, Badge, Card and Alert are generated from the official shadcn registry with CLI 4.21.4. The select uses Lucide for its local chevron. Application CSS handles layout and state colors; component source handles controls and focus styles. The application needs no external font, theme switcher, desktop wrapper, or new routing library.
 
 `src/components/session-tree/SessionTreeView.tsx` is an independent view built with the existing shadcn Button and Input, inside the page's Card. It accepts a view model, search value and callbacks; it owns only expansion and keyboard focus. `model.ts` supplies pure tree-building and search-projection functions. `App.tsx` retains the single host/session inventory, polling, selection and URL synchronization. The view has no API client, additional poller or browser-persisted session data.
 
@@ -61,4 +61,4 @@ git diff --check
 
 Shared chat-model tests protect completion, identity, source-order, privacy and history cursor behavior. Tree-model tests protect scoped lineage, retained orphan/cyclic nodes and search ancestor paths. Manually inspect desktop and narrow viewports, tree keyboard navigation, expansion across polls, search/clear, selected-child restoration, empty and disconnected states, login/logout, skip navigation, session selection, refresh, human Allow/Deny, message sending and interruption. Check errors and disabled controls during disconnects. Automated checks with synthetic data do not establish native Codex or two-machine acceptance; keep actual local screenshots and traces in ignored output directories.
 
-The shared `core-ui` package supplies ChatView, shadcn primitives, theme tokens and conversation projection. `CoreChat.tsx` supplies Core reads, request IDs, original-input retries and session drafts; `useCoreHistory.ts` owns independent history cursors. Browser transport failures remain visible even before Core has returned a request record. A message retry after refresh asks for the exact original text and preserves its operation, turn and mode. Build it before the Web workspace on a clean checkout. See [Shared chat UI](chat-ui.md) for package entry points and the controlled chat interface.
+The shared `ui` package supplies ChatView, shadcn primitives, theme tokens and conversation projection. `Chat.tsx` supplies Dewbow reads, request IDs, original-input retries and session drafts; `useHistory.ts` owns independent history cursors. Browser transport failures remain visible even before Dewbow has returned a request record. A message retry after refresh asks for the exact original text and preserves its operation, turn and mode. Build it before the Web workspace on a clean checkout. See [Shared chat UI](chat-ui.md) for package entry points and the controlled chat interface.

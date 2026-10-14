@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { createPrivateFile, ensurePrivateFile, protectExistingPrivateFile } from "@dewbow/core-protocol/files";
+import { createPrivateFile, ensurePrivateFile, protectExistingPrivateFile } from "@dewbow/protocol/files";
 
 export const controllerPath = directory => resolve(directory, "live-controller.json");
 export const lastRunPath = directory => resolve(directory, "live-last-run.json");

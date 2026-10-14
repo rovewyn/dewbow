@@ -5,14 +5,9 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
-import { createPrivateFile } from "@dewbow/core-protocol/files";
-import { ControlPlane, readControlPlaneConfig } from "../apps/core-control-plane/dist/index.js";
-import { HostDaemon, readHostDaemonConfig } from "../apps/core-host-daemon/dist/index.js";
-import { readConfig } from "../apps/team-backend/dist/config.js";
-import { createTeamServer } from "../apps/team-backend/dist/server.js";
-import { TeamStore } from "../apps/team-backend/dist/store.js";
-import { TeamApi } from "../apps/team-backend/dist/api.js";
-import { CoreClient } from "../apps/team-backend/dist/core-client.js";
+import { createPrivateFile } from "@dewbow/protocol/files";
+import { ControlPlane, readControlPlaneConfig } from "../apps/control-plane/dist/index.js";
+import { HostDaemon, readHostDaemonConfig } from "../apps/host-daemon/dist/index.js";
 import { readLocalEnvironment } from "./local-config.mjs";
 import { alive, controllerPath, releaseController, writePrivateJson } from "./local-live-state.mjs";
 
@@ -20,8 +15,8 @@ const directory = resolve(process.argv[2]);
 const instanceId = randomUUID(), token = randomBytes(32).toString("base64url");
 const record = { contractVersion: "v1", instanceId, token, pid: process.pid, controlOrigin: null };
 let owned = false, handedOff = false, phase = "starting", failure = null, stopping = false, stopPromise, startPromise;
-let control, plane, daemon, team, teamStore, coreConfig, teamConfig, daemonConfig, runtimePid = null;
-let coreStarted = false, teamStarted = false;
+let control, plane, daemon, controlPlaneConfig, daemonConfig, runtimePid = null;
+let controlPlaneStarted = false;
 const cancellation = new AbortController();
 const send = value => { if (process.connected) process.send(value, () => {}); };
 const guard = () => { if (stopping) throw new Error("Startup was cancelled."); };
@@ -49,18 +44,16 @@ async function api(origin, credential, operation, input = {}) {
 
 async function status() {
   const value = { instanceId, pid: process.pid, status: phase, ...(failure ? { message: failure } : {}),
-    coreUrl: coreConfig?.publicOrigin, teamUrl: teamConfig?.publicOrigin, hostId: daemonConfig?.hostId, workDir: resolve(directory, "workdir"), runtimePid };
+    controlPlaneUrl: controlPlaneConfig?.publicOrigin, hostId: daemonConfig?.hostId, workDir: resolve(directory, "workdir"), runtimePid };
   if (phase !== "ready") return value;
   const checks = await Promise.allSettled([
-    api(coreConfig.publicOrigin, coreConfig.managementToken, "listHosts"),
-    api(teamConfig.publicOrigin, teamConfig.operatorToken, "listHosts"),
+    api(controlPlaneConfig.publicOrigin, controlPlaneConfig.managementToken, "listHosts"),
   ]);
-  const coreReady = checks[0].status === "fulfilled";
-  const connected = coreReady && checks[0].value.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected");
-  const teamReady = checks[1].status === "fulfilled" && checks[1].value.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected");
+  const controlPlaneReady = checks[0].status === "fulfilled";
+  const connected = controlPlaneReady && checks[0].value.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected");
   // Shutdown can finish while the readiness reads are in flight.
   if (phase !== "ready") return {...value,status:phase};
-  return { ...value, status: coreReady && connected && teamReady ? "ready" : "degraded", services: { core: coreReady ? "ready" : "unavailable", team: teamReady ? "ready" : "unavailable", daemon: connected ? "connected" : "unavailable" } };
+  return { ...value, status: controlPlaneReady && connected ? "ready" : "degraded", services: { controlPlane: controlPlaneReady ? "ready" : "unavailable", daemon: connected ? "connected" : "unavailable" } };
 }
 
 async function released(port) {
@@ -83,10 +76,8 @@ async function stop() {
     await startPromise?.catch(() => {});
     const closed = await Promise.allSettled([
       plane?.stop(),
-      team && new Promise((accept, reject) => { team.close(error => error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : accept()); team.closeAllConnections(); }),
     ]);
-    teamStore?.close(); teamStore = undefined;
-    const ports = [coreStarted ? coreConfig.port : null, teamStarted ? teamConfig.port : null].filter(port => port !== null);
+    const ports = controlPlaneStarted ? [controlPlaneConfig.port] : [];
     const portsReleased = (await Promise.all(ports.map(released))).every(Boolean);
     if (nativeFailure || closed.some(value => value.status === "rejected") || runtimePid && alive(runtimePid) || !portsReleased) {
       phase = "shutdownFailed"; failure = "Owned resources did not confirm shutdown. Inspect the private state and recovery runbook.";
@@ -113,28 +104,20 @@ async function shutdown() {
 
 async function start() {
   guard();
-  coreConfig = readControlPlaneConfig(readLocalEnvironment(directory, "control-plane.env"));
-  teamConfig = readConfig(readLocalEnvironment(directory, "team.env"));
+  controlPlaneConfig = readControlPlaneConfig(readLocalEnvironment(directory, "control-plane.env"));
   daemonConfig = readHostDaemonConfig({ ...process.env, ...readLocalEnvironment(directory, "host-daemon.env") });
-  const target = new URL(teamConfig.coreUrl);
-  if (coreConfig.host !== "127.0.0.1" || teamConfig.host !== "127.0.0.1" || coreConfig.publicOrigin !== `http://127.0.0.1:${coreConfig.port}`
-    || teamConfig.publicOrigin !== `http://127.0.0.1:${teamConfig.port}` || daemonConfig.controlPlaneUrl !== coreConfig.publicOrigin
-    || target.origin !== coreConfig.publicOrigin || target.pathname !== "/" || target.search || target.hash || target.username || target.password
-    || teamConfig.coreToken !== coreConfig.managementToken || coreConfig.port === teamConfig.port) {
-    throw new Error("The live stack needs matching, distinct loopback Core and Team configuration.");
+  if (controlPlaneConfig.host !== "127.0.0.1" || controlPlaneConfig.publicOrigin !== `http://127.0.0.1:${controlPlaneConfig.port}`
+    || daemonConfig.controlPlaneUrl !== controlPlaneConfig.publicOrigin) {
+    throw new Error("The live stack needs matching loopback Control Plane and daemon configuration.");
   }
-  plane = new ControlPlane(coreConfig); await plane.start(); coreStarted = true; guard();
-  teamStore = new TeamStore(teamConfig.databasePath);
-  const apiService = new TeamApi(teamStore, new CoreClient(teamConfig.coreUrl, teamConfig.coreToken));
-  team = createTeamServer(teamConfig, (operation, input, caller) => apiService.execute(operation, input, caller), (...args) => apiService.subscribe(...args));
-  team.listen(teamConfig.port, teamConfig.host); await once(team, "listening"); teamStarted = true; guard();
+  plane = new ControlPlane(controlPlaneConfig); await plane.start(); controlPlaneStarted = true; guard();
   daemon = new HostDaemon(daemonConfig);
   daemon.onRuntimeFailure = () => { failure = "The owned native runtime exited."; if (!stopping) void shutdown(); };
   await daemon.start(); runtimePid = nativePid(); guard();
   for (let i = 0; i < 30; i++) {
     guard();
     try {
-      const hosts = await api(coreConfig.publicOrigin, coreConfig.managementToken, "listHosts");
+      const hosts = await api(controlPlaneConfig.publicOrigin, controlPlaneConfig.managementToken, "listHosts");
       if (hosts.hosts.some(host => host.hostId === daemonConfig.hostId && host.status === "connected")) {
         phase = "ready"; const ready = await status();
         if (ready.status === "ready") return ready;
