@@ -210,7 +210,11 @@ impl Service {
     pub(crate) async fn native_event(&self, message: Value) -> anyhow::Result<()> {
         let method = message["method"].as_str().unwrap_or("");
         if method == "runtime/exited" {
-            for mut session in self.store.list("session")? {
+            for session in self.store.list("session")? {
+                let sid = session["sessionId"].as_str().unwrap();
+                let lock = self.state_lock(sid);
+                let _guard = lock.lock().await;
+                let mut session = self.session(sid)?;
                 session["connectionState"] = json!("disconnected");
                 session["runtimeState"] = json!("unknown");
                 if let Some(turn_id) = session["activeTurnId"].as_str()
@@ -233,7 +237,7 @@ impl Service {
         let Some(thread) = thread else {
             return Ok(());
         };
-        let Some(mut session) = self
+        let Some(session) = self
             .store
             .list("session")?
             .into_iter()
@@ -245,6 +249,10 @@ impl Service {
             return Ok(());
         };
         let sid = session["sessionId"].as_str().unwrap().to_string();
+        // Share the operation gate so a fast completion cannot be overwritten by a start reply.
+        let lock = self.state_lock(&sid);
+        let _guard = lock.lock().await;
+        let mut session = self.session(&sid)?;
         let Some(turn_id) = session["activeTurnId"].as_str().map(str::to_string) else {
             return Ok(());
         };

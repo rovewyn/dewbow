@@ -111,9 +111,11 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     result = await send('WAIT'); const active = (await details()).session.activeTurnId;
     assert.equal((await send('second busy send')).error.code, 'SESSION_BUSY');
     const other = await op.request('createSession',{...input,requestId:'create-independent'});
-    assert.equal((await op.request('sendMessage',{sessionId:other.sessionId,message:'Independent turn',requestId:'independent-send'})).status,'delivered');
-    await until(()=>op.request('getSession',{sessionId:other.sessionId}),d=>!d.session.activeTurnId,'independent session completion');
-    assert.equal((await details()).session.activeTurnId,active);
+    for (let index = 0; index < 50; index++) {
+      assert.equal((await op.request('sendMessage',{sessionId:other.sessionId,message:'Independent turn',requestId:`independent-send-${index}`})).status,'delivered');
+      await until(()=>op.request('getSession',{sessionId:other.sessionId}),d=>!d.session.activeTurnId,`independent session completion ${index}`);
+      assert.equal((await details()).session.activeTurnId,active);
+    }
     assert.equal((await op.request('decideApproval', { sessionId: sid, turnId: active, interactionId: approval.interactionId, requestId: 'stale-approval', decision: 'allow' })).error.code, 'STALE_INTERACTION');
     assert.equal((await op.request('steerTurn', { sessionId: sid, turnId: active, message: 'Steer', requestId: 'steer-a' })).status, 'delivered');
     const streamAbort = new AbortController(); const stream = await fetch(`${env.origin}/api/subscribeSessionUpdates?sessionId=${sid}`, { headers: { Cookie: op.cookie }, signal: streamAbort.signal });
