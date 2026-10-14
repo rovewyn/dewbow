@@ -24,6 +24,8 @@ Install the official independent Codex distribution and retain its companion exe
 
 State directories use a protected current-user and SYSTEM ACL on Windows and mode 0700 on POSIX. Files and parent paths reject links/reparse points. Do not use a shared work directory as Dewbow's state directory. Synthetic workspaces belong in a separate ignored directory.
 
+The retained TypeScript protocol helpers allow up to 60 seconds for one Windows PowerShell ACL operation, including startup and validation. Timeouts, a missing helper and nonzero exits stop the operation; private contents are written only after ACL protection succeeds. Errors identify timeouts, missing PowerShell or a numeric exit status without including raw helper output or private paths. Ownership and reparse-point rejection remains mandatory.
+
 The runtime prefers the documented native MXC sandbox on supported Windows devices, while honoring native requirements and fallback. It does not edit Codex configuration, disable native sandboxing or automatically provision legacy sandbox accounts. A device with no permitted functioning native sandbox needs native Codex setup before tool execution.
 
 ## Recovery and state resets
