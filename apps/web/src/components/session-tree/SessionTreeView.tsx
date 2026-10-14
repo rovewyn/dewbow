@@ -135,7 +135,9 @@ export function SessionTreeView({ model, search, onSearchChange, onSelect, error
       <label htmlFor={`${id}-search`} className="sr-only">Find a conversation by name, directory, or ID</label>
       <Search aria-hidden="true" className="session-tree-search-icon" />
       <Input ref={input} id={`${id}-search`} type="search" placeholder="Search sessions" value={search}
-        onChange={event => onSearchChange(event.target.value)} onKeyDown={event => { if (event.key === "Escape") onSearchChange(""); }} />
+        onChange={event => onSearchChange(event.target.value)} onKeyDown={event => {
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onSearchChange(""); }
+        }} />
       {search && <Button variant="ghost" size="icon-xs" className="session-tree-clear" aria-label="Clear search"
         onClick={() => { onSearchChange(""); input.current?.focus(); }}><X aria-hidden="true" /></Button>}
     </div>
