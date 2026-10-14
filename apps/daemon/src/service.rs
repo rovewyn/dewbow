@@ -287,16 +287,18 @@ impl Service {
             _ => self.operation(name, input).await,
         }
     }
+    pub(crate) fn state_lock(&self, key: &str) -> Arc<AsyncMutex<()>> {
+        self.locks
+            .lock()
+            .unwrap()
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
     async fn operation(&self, name: &str, input: Value) -> anyhow::Result<Value> {
         let request = text(&input, "requestId")?.to_string();
         let key = input["sessionId"].as_str().unwrap_or(&request).to_string();
-        let lock = self
-            .locks
-            .lock()
-            .unwrap()
-            .entry(key)
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-            .clone();
+        let lock = self.state_lock(&key);
         let _guard = lock.lock().await;
         let fingerprint =
             dewbow_protocol::hex(&Sha256::digest(json!([name, input]).to_string().as_bytes()));
