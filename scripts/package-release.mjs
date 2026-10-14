@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { synchronizeVersions } from './sync-version.mjs';
 
 const targets = new Set(['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin']);
+const tarExecutable = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const invoke = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
 
@@ -37,9 +38,9 @@ export function packageRelease(root, { target, sourceCommit }) {
       version: release.version, sourceCommit, target, executable: release.executable, binarySha256: hash(binary),
     }, null, 2)}\n`);
     if (target.includes('windows')) {
-      invoke('tar', ['-acf', release.archive, '-C', stage, release.name]);
+      invoke(tarExecutable, ['-acf', release.archive, '-C', stage, release.name]);
     } else {
-      invoke('tar', ['-czf', release.archive, '-C', stage, release.name]);
+      invoke(tarExecutable, ['-czf', release.archive, '-C', stage, release.name]);
     }
     writeFileSync(`${release.archive}.sha256`, `${hash(release.archive)}  ${release.archive.slice(release.output.length + 1)}\n`);
     return release;
@@ -53,7 +54,7 @@ export function verifyRelease(root, { target, sourceCommit, runBinary = true }) 
   const checksum = readFileSync(`${release.archive}.sha256`, 'utf8').trim();
   const archiveName = release.archive.slice(release.output.length + 1);
   if (checksum !== `${hash(release.archive)}  ${archiveName}`) throw new Error('Release archive checksum does not match.');
-  const entries = invoke('tar', ['-tf', release.archive]).trim().split(/\r?\n/);
+  const entries = invoke(tarExecutable, ['-tf', release.archive]).trim().split(/\r?\n/);
   const allowedFiles = [release.executable, 'CLI.md', 'release.json'].map(name => `${release.name}/${name}`);
   if (entries.some(entry => entry !== `${release.name}/` && !allowedFiles.includes(entry)) ||
       allowedFiles.some(entry => entries.filter(value => value === entry).length !== 1)) {
@@ -61,7 +62,7 @@ export function verifyRelease(root, { target, sourceCommit, runBinary = true }) 
   }
   const stage = mkdtempSync(join(release.output, '.verify-'));
   try {
-    invoke('tar', ['-xf', release.archive, '-C', stage]);
+    invoke(tarExecutable, ['-xf', release.archive, '-C', stage]);
     const directory = join(stage, release.name);
     const binary = join(directory, release.executable);
     const metadata = JSON.parse(readFileSync(join(directory, 'release.json'), 'utf8'));
