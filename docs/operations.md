@@ -2,6 +2,26 @@
 
 Use the [CLI guide](cli.md) for prerequisites, installation and builds. Dewbow runs one local Rust daemon with embedded Web and an independently installed native Codex CLI.
 
+## State directory
+
+The state directory is Dewbow's private local data directory for configuration, management storage, runtime ownership files and daemon diagnostics. The default is `~/.dewbow`: `%USERPROFILE%\.dewbow` on Windows or `$HOME/.dewbow` on POSIX. It belongs to the selected local daemon instance, and all conversations managed through that directory share its single Dewbow database.
+
+Every CLI command accepts `--state-dir <directory>`. Use the same directory for `init`, `doctor`, `web`, daemon commands and upgrades; omitting the option selects the default directory again. Relative paths are resolved from the command's current working directory. For separate instances, use distinct state directories and available ports. Use an ignored directory for synthetic demos.
+
+Restarting with the same state directory preserves its host identity, managed conversation bindings, frozen configuration, request receipts and recovery records. Initializing a fresh directory creates a new host identity and independent management state; request deduplication does not span state directories. Use the original directory to recover an existing instance.
+
+The directory can contain these files:
+
+| File | Purpose |
+| --- | --- |
+| `config.json` | Private daemon configuration, including the stable host ID, port, control credential and selected native Codex executable/home |
+| `daemon.sqlite` | The only Dewbow database: managed conversation bindings, frozen creation configuration, request deduplication receipts and minimum recovery state |
+| `daemon.sqlite-wal`, `daemon.sqlite-shm` | SQLite support files for the same database |
+| `init.lock`, `daemon.lock`, `instance.json` | Initialization locking, exclusive daemon ownership and process identity used for lifecycle checks and recovery |
+| `daemon.log` | Daemon diagnostics when written; it is not an archive of conversation content or complete command output |
+
+Conversation working files belong to the conversation's `workDir`. Native Codex conversations, history, execution status and credentials belong to Codex home, selected during `init` with `--codex-home <directory>`, otherwise `CODEX_HOME` or `~/.codex`. Selecting a different Dewbow state directory does not itself select a different Codex home. Use separate state and work directories; see [daemon ownership](daemon.md#ownership-and-interfaces) for the durable storage boundary.
+
 ## Start, inspect and stop
 
 ```sh
@@ -12,7 +32,7 @@ dewbow daemon status
 dewbow daemon stop
 ```
 
-The default private state directory is `~/.dewbow`. Every command accepts `--state-dir <directory>`. Initialization also accepts `--codex-home <directory>` and `--port <available-port>`. Existing configuration and host identity are retained; conflicting initialization options fail. Use a separate ignored directory for synthetic demos.
+These commands use the default state directory. Initialization accepts `--port <available-port>` as well as the directory options above. Existing configuration and host identity are retained; conflicting initialization options fail.
 
 `doctor` checks private configuration, CLI version and login, and read-only native app-server capabilities. It does not send a model prompt. `daemon run` runs in the foreground; `daemon start` launches a user background process. Readiness requires private storage, initialized Codex and Web. Duplicate starts return the same instance. No system service, boot startup or automatic background update is installed. See [install and upgrade](installation.md) for the explicit `upgrade` command and executable backups.
 
@@ -30,7 +50,7 @@ The runtime prefers the documented native MXC sandbox on supported Windows devic
 
 ## Recovery and state resets
 
-Stop the selected daemon before editing or backing up its configuration/databases. Stop verifies instance identity, its own native runtime, daemon process exit and listener release. It never kills an arbitrary saved PID. Start, stop, foreground run and actual upgrades can remove a valid stale instance record only under the daemon lock, after both recorded processes have exited and the matching configured port can be reserved. Invalid records, configuration mismatches, occupied ports and live or reused PIDs still require inspection. `daemon status` and `upgrade --check` never clean up records. Verify ownership and stop only the intended instance; do not stop Desktop or other sessions.
+Stop the selected daemon before editing or backing up its configuration and management database. Stop verifies instance identity, its own native runtime, daemon process exit and listener release. It never kills an arbitrary saved PID. Start, stop, foreground run and actual upgrades can remove a valid stale instance record only under the daemon lock, after both recorded processes have exited and the matching configured port can be reserved. Invalid records, configuration mismatches, occupied ports and live or reused PIDs still require inspection. `daemon status` and `upgrade --check` never clean up records. Verify ownership and stop only the intended instance; do not stop Desktop or other sessions.
 
 On Linux/macOS, `SIGTERM`, `SIGINT` and `SIGHUP` request the same owned-runtime cleanup as an authenticated stop. On Windows, delivered console stop events use that cleanup; detached background processes should be stopped through the CLI. Forced process termination leaves recovery to the next start after the safety checks above. See [CLI lifecycle](cli.md#lifecycle) for platform boundaries.
 

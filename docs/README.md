@@ -4,7 +4,7 @@ Dewbow manages local Codex conversations, execution, recovery and approvals thro
 
 ## Ownership and projects
 
-Codex owns native conversations, history, tool content, execution status and credentials. The daemon owns local management references, configuration snapshots, request identities and execution control. Its single database retains only management and recovery records; pending interactions and live content stay in memory. Web is an operator client; closing it does not stop a turn.
+Codex owns native conversations, history, tool content, execution status and credentials. The daemon owns local management references, configuration snapshots, request identities and execution control. Each private [state directory](operations.md#state-directory) holds its configuration, management storage, runtime ownership files and daemon diagnostics. Its single database retains only management and recovery records; pending interactions and live content stay in memory. Web is an operator client; closing it does not stop a turn.
 
 | Directory | Project | Responsibility |
 | --- | --- | --- |
