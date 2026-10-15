@@ -57,13 +57,9 @@ pub fn committed(state: &Path) -> anyhow::Result<bool> {
 }
 pub fn commit(state: &Path) -> anyhow::Result<()> {
     if committed(state)? {
-        return Ok(());
+        return sync_directory(&state.join("upgrade"));
     }
-    let path = state.join("upgrade/committed");
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(b"v1\n")?;
-    file.sync_all()?;
-    sync_directory(&state.join("upgrade"))
+    publish_marker(state, "committed")
 }
 pub fn rollback_started(state: &Path) -> anyhow::Result<bool> {
     let path = state.join("upgrade/rollback");
@@ -77,15 +73,44 @@ pub fn rollback_started(state: &Path) -> anyhow::Result<bool> {
 }
 pub fn begin_rollback(state: &Path) -> anyhow::Result<()> {
     if rollback_started(state)? {
-        return Ok(());
+        return sync_directory(&state.join("upgrade"));
     }
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(state.join("upgrade/rollback"))?;
+    publish_marker(state, "rollback")
+}
+fn publish_marker(state: &Path, name: &str) -> anyhow::Result<()> {
+    let directory = state.join("upgrade");
+    dewbow_sdk::private::no_links(&directory)?;
+    let stage = directory.join(format!(".{name}-{}.stage", dewbow_protocol::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&stage)?;
+    #[cfg(test)]
+    marker_checkpoint("created");
     file.write_all(b"v1\n")?;
     file.sync_all()?;
-    sync_directory(&state.join("upgrade"))
+    drop(file);
+    #[cfg(test)]
+    marker_checkpoint("flushed");
+    // A process exit during staging leaves the authoritative name absent, not
+    // an empty record that would make the commit boundary ambiguous.
+    fs::hard_link(&stage, directory.join(name))?;
+    #[cfg(test)]
+    marker_checkpoint("published");
+    // Cleanup cannot invalidate a published marker or strand a verified daemon
+    // in maintenance; an extra private staging link can be reviewed later.
+    let _ = fs::remove_file(stage);
+    sync_directory(&directory)
+}
+#[cfg(test)]
+fn marker_checkpoint(phase: &str) {
+    if std::env::var("DEWBOW_MARKER_EXIT").is_ok_and(|value| value == phase) {
+        std::process::exit(73);
+    }
 }
 pub fn sync_directory(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
@@ -288,6 +313,66 @@ impl Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_marker_publication_never_exposes_a_partial_record() {
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-marker-test-{}", dewbow_protocol::id()));
+        crate::config::secure_directory(&root).unwrap();
+        for name in ["committed", "rollback"] {
+            for phase in ["created", "flushed", "published"] {
+                let state = root.join(format!("{name}-{phase}"));
+                crate::config::secure_directory(&state.join("upgrade")).unwrap();
+                fs::write(state.join("synthetic.fixture"), "synthetic").unwrap();
+                let mut worker = std::process::Command::new(std::env::current_exe().unwrap());
+                crate::config::hidden(&mut worker);
+                let result = worker
+                    .args(["--exact", "maintenance::tests::marker_worker"])
+                    .env("DEWBOW_MARKER_STATE", &state)
+                    .env("DEWBOW_MARKER_NAME", name)
+                    .env("DEWBOW_MARKER_EXIT", phase)
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    result.status.code(),
+                    Some(73),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                let visible = if name == "committed" {
+                    committed(&state)
+                } else {
+                    rollback_started(&state)
+                }
+                .unwrap();
+                assert_eq!(visible, phase == "published");
+                if name == "committed" {
+                    commit(&state).unwrap();
+                } else {
+                    begin_rollback(&state).unwrap();
+                }
+                assert_eq!(fs::read(state.join("upgrade").join(name)).unwrap(), b"v1\n");
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn marker_worker() {
+        let Some(state) = std::env::var_os("DEWBOW_MARKER_STATE") else {
+            return;
+        };
+        let state = PathBuf::from(state);
+        assert_eq!(
+            fs::read(state.join("synthetic.fixture")).unwrap(),
+            b"synthetic"
+        );
+        match std::env::var("DEWBOW_MARKER_NAME").unwrap().as_str() {
+            "committed" => commit(&state).unwrap(),
+            "rollback" => begin_rollback(&state).unwrap(),
+            _ => panic!("Unknown synthetic marker"),
+        }
+    }
 
     #[test]
     fn draining_lease_expires_but_startup_seal_does_not() {

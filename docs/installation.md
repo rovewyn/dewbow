@@ -104,6 +104,8 @@ The installation directory must be writable and its filesystem must support hard
 
 On Linux/macOS, runners use a new session without a controlling terminal and have private log handles rather than launcher pipes. On Windows, they inherit no handles or console and must escape the caller's Job Object before running. A host policy that forbids job breakaway causes handoff to fail before maintenance; see Microsoft's [job object process rules](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects). These are user processes, not system services. Host reboot, session-wide termination, container teardown or a policy that kills the entire user/cgroup can terminate both controllers. No boot startup is installed; durable recovery runs at the next supported command.
 
+Job checkpoints and state commit/rollback markers are staged and flushed before an immutable hard link publishes the complete record. The selected state's recovery filesystem must also support hard links. Process exit before publication leaves only an ignored staging file; a published marker is always complete. Retained staging files belong to the same private recovery data and can be reviewed with its backups after acceptance.
+
 ## Recovery and package managers
 
 Recover an interrupted, uncommitted upgrade from the installed executable:
