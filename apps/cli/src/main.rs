@@ -1,4 +1,5 @@
 mod background;
+mod replacement;
 mod upgrade;
 use clap::{Parser, Subcommand};
 use dewbow_daemon::config::{self, Config};
@@ -88,12 +89,17 @@ async fn status(state: &std::path::Path, config: &Config) -> anyhow::Result<Valu
     Ok(value)
 }
 async fn start(state: &std::path::Path, config: &Config) -> anyhow::Result<Value> {
-    if state.join("instance.json").exists() {
-        let current = status(state, config).await?;
-        if current["status"] == "ready" {
-            return Ok(current);
-        }
+    if state.join("instance.json").exists()
+        && let Ok(current) = status(state, config).await
+    {
+        anyhow::ensure!(
+            current["status"] == "ready",
+            "The selected daemon is stopping"
+        );
+        return Ok(current);
     }
+    // Recovery and the child both take the daemon lock; neither can clear a live owner.
+    dewbow_daemon::lifecycle::DaemonLock::acquire(state)?.recover_instance()?;
     let mut child = background::Background::spawn(state)?;
     for _ in 0..240 {
         if child.exited()? {
@@ -180,11 +186,14 @@ async fn execute() -> anyhow::Result<()> {
         Commands::Daemon {
             command: Daemon::Stop,
         } => {
-            let current = status(&state, &config).await?;
-            if current["status"] == "stopped" {
-                println!("Stopped.");
-                return Ok(());
-            }
+            let current = match status(&state, &config).await {
+                Ok(current) if current["status"] != "stopped" => current,
+                _ => {
+                    dewbow_daemon::lifecycle::DaemonLock::acquire(&state)?.recover_instance()?;
+                    println!("Stopped.");
+                    return Ok(());
+                }
+            };
             let response = control(&config, "stop").await?;
             anyhow::ensure!(
                 response["instanceId"] == current["instanceId"],

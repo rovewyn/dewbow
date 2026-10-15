@@ -1,7 +1,9 @@
 pub mod config;
+pub mod lifecycle;
 mod observation;
 mod server;
 mod service;
+mod shutdown;
 mod store;
 pub use server::run;
 pub use service::doctor;

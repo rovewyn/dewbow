@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
@@ -10,6 +10,8 @@ const suffix = process.platform === 'win32' ? '.exe' : '';
 const binary = resolve(`target/debug/dewbow${suffix}`);
 const fixture = resolve(`target/debug/examples/fixture${suffix}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
+const exited = pid => until(async () => alive(pid), value => !value, 'owned process exit');
 const invoke = (state, ...args) => execFileSync(binary, ['--state-dir', state, ...args], { encoding:'utf8', timeout:100000, windowsHide:true,
   env:{...process.env,CODEX_APP_TOOLS_PIPE_PATH:'synthetic-pipe',CODEX_SESSION_ID:'synthetic-parent-session',CODEX_THREAD_ID:'synthetic-parent-thread',DEWBOW_TEST_CANARY:'synthetic-value'} });
 async function freePort() { const server = createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port; }
@@ -148,4 +150,132 @@ test('Rust startup refuses occupied ports and preserves initialization', { timeo
   const env = await prepare(); const original = await fs.readFile(join(env.state, 'config.json'), 'utf8'); const server = createServer();
   try { await new Promise(resolve => server.listen(env.port, '127.0.0.1', resolve)); assert.throws(() => invoke(env.state, 'daemon', 'start')); invoke(env.state, 'init'); assert.equal(await fs.readFile(join(env.state, 'config.json'), 'utf8'), original); assert.equal(await fs.readFile(join(env.home, 'synthetic.fixture'), 'utf8'), 'synthetic'); }
   finally { await new Promise(resolve => server.close(resolve)); await fs.rm(env.state, { recursive: true, force: true }); }
+});
+
+test('Rust recovery verifies stale ownership and recovers abrupt exits', { timeout: 120000 }, async () => {
+  const env = await prepare();
+  const original = await fs.readFile(join(env.state, 'config.json'), 'utf8');
+  const instancePath = join(env.state, 'instance.json');
+  const writeRecord = record => fs.writeFile(instancePath, JSON.stringify(record));
+  let running;
+  try {
+    running = JSON.parse(invoke(env.state, 'daemon', 'start'));
+    const previous = running;
+    invoke(env.state, 'daemon', 'stop'); running = undefined;
+    const stale = { instanceId: previous.instanceId, pid: previous.pid, port: env.port };
+
+    await writeRecord({ ...stale, pid: process.pid });
+    assert.throws(() => invoke(env.state, 'daemon', 'start'), /still alive/);
+    assert.equal(alive(process.pid), true);
+    assert.equal(JSON.parse(await fs.readFile(instancePath, 'utf8')).pid, process.pid);
+
+    await writeRecord(stale);
+    assert.throws(() => invoke(env.state, 'daemon', 'status'));
+    assert.deepEqual(JSON.parse(await fs.readFile(instancePath, 'utf8')), stale);
+    const listener = createServer(socket => socket.destroy());
+    await new Promise(resolve => listener.listen(env.port, '127.0.0.1', resolve));
+    try {
+      assert.throws(() => invoke(env.state, 'daemon', 'stop'), /occupied/);
+      assert.deepEqual(JSON.parse(await fs.readFile(instancePath, 'utf8')), stale);
+    } finally { await new Promise(resolve => listener.close(resolve)); }
+
+    const journal = new DatabaseSync(join(env.state, 'daemon.sqlite'));
+    journal.prepare("UPDATE records SET data=? WHERE kind='meta' AND id='owner'").run(JSON.stringify({ pid: process.pid }));
+    journal.close();
+    assert.throws(() => invoke(env.state, 'daemon', 'start'), /native process is still alive/);
+    assert.deepEqual(JSON.parse(await fs.readFile(instancePath, 'utf8')), stale);
+    const restored = new DatabaseSync(join(env.state, 'daemon.sqlite'));
+    restored.exec("UPDATE records SET data='null' WHERE kind='meta' AND id='owner'"); restored.close();
+
+    await writeRecord({});
+    assert.throws(() => invoke(env.state, 'daemon', 'start'), /Invalid daemon ownership/);
+    await writeRecord({ ...stale, port: env.port === 65535 ? 65534 : env.port + 1 });
+    assert.throws(() => invoke(env.state, 'daemon', 'start'), /ports differ/);
+    await writeRecord(stale);
+    assert.match(invoke(env.state, 'daemon', 'stop'), /Stopped/);
+    await assert.rejects(fs.access(instancePath), { code: 'ENOENT' });
+
+    console.log('Rust recovery: forced daemon exit and restart');
+    running = JSON.parse(invoke(env.state, 'daemon', 'start'));
+    const killed = running;
+    process.kill(killed.pid, 'SIGKILL');
+    await exited(killed.pid); await exited(killed.runtimePid); running = undefined;
+    await fs.access(instancePath); // Forced exit bypasses cleanup.
+    running = JSON.parse(invoke(env.state, 'daemon', 'start'));
+    assert.notEqual(running.instanceId, killed.instanceId);
+    invoke(env.state, 'daemon', 'stop'); running = undefined;
+
+    assert.equal(await fs.readFile(join(env.state, 'config.json'), 'utf8'), original);
+    assert.equal(await fs.readFile(join(env.home, 'synthetic.fixture'), 'utf8'), 'synthetic');
+  } finally {
+    if (running && alive(running.pid)) invoke(env.state, 'daemon', 'stop');
+    await fs.rm(env.state, { recursive: true, force: true });
+  }
+});
+
+test('Rust stop signals release the owned runtime, instance record and listener', { timeout: 60000 }, async () => {
+  const env = await prepare();
+  let running;
+  try {
+    running = JSON.parse(invoke(env.state, 'daemon', 'start'));
+    const stale = { instanceId: running.instanceId, pid: running.pid, port: env.port };
+    invoke(env.state, 'daemon', 'stop'); running = undefined;
+    await fs.writeFile(join(env.state, 'instance.json'), JSON.stringify(stale));
+    for (const signal of process.platform === 'win32' ? ['CTRL_BREAK'] : ['SIGTERM', 'SIGHUP', 'SIGINT']) {
+      if (process.platform === 'win32') {
+        // Give only this synthetic foreground daemon a dedicated, hidden console.
+        // A separate sender attaches to it, so the test runner's console is untouched.
+        const { default: koffi } = await import('koffi');
+        const kernel = koffi.load('kernel32.dll');
+        const startup = koffi.struct('RecoveryStartup', {
+          cb: 'uint32_t', reserved: 'void *', desktop: 'void *', title: 'void *',
+          x: 'uint32_t', y: 'uint32_t', width: 'uint32_t', height: 'uint32_t',
+          columns: 'uint32_t', rows: 'uint32_t', fill: 'uint32_t', flags: 'uint32_t',
+          show: 'uint16_t', reservedSize: 'uint16_t', reservedData: 'void *',
+          stdin: 'void *', stdout: 'void *', stderr: 'void *',
+        });
+        koffi.struct('RecoveryProcess', { process: 'void *', thread: 'void *', pid: 'uint32_t', tid: 'uint32_t' });
+        const create = kernel.func('int __stdcall CreateProcessW(str16 app, void *command, void *processSecurity, void *threadSecurity, int inherit, uint32_t flags, void *environment, str16 cwd, const RecoveryStartup *startup, _Out_ RecoveryProcess *process)');
+        const close = kernel.func('int __stdcall CloseHandle(void *handle)');
+        const child = {};
+        const command = Buffer.from(`"${binary}" --state-dir "${env.state}" daemon run\0`, 'utf16le');
+        const createNewConsole = 0x10, createNewProcessGroup = 0x200;
+        assert.ok(create(binary, command, null, null, 0, createNewConsole | createNewProcessGroup, null, null, { cb: koffi.sizeof(startup), flags: 1, show: 0 }, child));
+        close(child.thread); close(child.process);
+        running = { pid: child.pid };
+        running = await until(async () => { try { return JSON.parse(invoke(env.state, 'daemon', 'status')); } catch { return null; } }, value => value?.status === 'ready', 'foreground daemon readiness');
+        assert.equal(running.pid, child.pid);
+        execFileSync(process.execPath, ['-e', `
+          const kernel = require('koffi').load('kernel32.dll');
+          const free = kernel.func('int __stdcall FreeConsole()');
+          const attach = kernel.func('int __stdcall AttachConsole(uint32_t pid)');
+          const send = kernel.func('int __stdcall GenerateConsoleCtrlEvent(uint32_t event, uint32_t group)');
+          free();
+          if (!attach(Number(process.argv[1]))) throw new Error('Cannot attach to the synthetic console');
+          try { if (!send(1, Number(process.argv[1]))) throw new Error('Cannot send Ctrl+Break'); }
+          finally { free(); }
+        `, String(child.pid)], { windowsHide: true, timeout: 5000, stdio: 'pipe' });
+      } else {
+        const child = spawn(binary, ['--state-dir', env.state, 'daemon', 'run'], { stdio: 'ignore' });
+        running = { pid: child.pid };
+        running = await until(async () => { try { return JSON.parse(invoke(env.state, 'daemon', 'status')); } catch { return null; } }, value => value?.status === 'ready', 'foreground daemon readiness');
+        assert.equal(running.pid, child.pid);
+        process.kill(running.pid, signal);
+      }
+      console.log(`Rust recovery: graceful ${signal}`);
+      await exited(running.pid); await exited(running.runtimePid); running = undefined;
+      await assert.rejects(fs.access(join(env.state, 'instance.json')), { code: 'ENOENT' });
+      const owner = new DatabaseSync(join(env.state, 'daemon.sqlite'), { readOnly: true });
+      assert.equal(owner.prepare("SELECT data FROM records WHERE kind='meta' AND id='owner'").get().data, 'null'); owner.close();
+      const listener = createServer();
+      await new Promise(resolve => listener.listen(env.port, '127.0.0.1', resolve));
+      await new Promise(resolve => listener.close(resolve));
+    }
+  } finally {
+    if (running && alive(running.pid)) {
+      try { invoke(env.state, 'daemon', 'stop'); }
+      catch { process.kill(running.pid, 'SIGKILL'); await exited(running.pid); }
+    }
+    await fs.rm(env.state, { recursive: true, force: true });
+  }
 });
