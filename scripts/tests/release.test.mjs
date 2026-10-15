@@ -82,28 +82,31 @@ test('invalid versions and malformed lockfiles fail before changing manifests', 
 });
 
 test('release archives contain only distribution files and detect checksum corruption', t => {
-  const { root, write } = fixture(t);
   if (process.platform === 'win32') {
+    const { root, write } = fixture(t);
     const originalPath = process.env.PATH;
     write('shadow-bin/tar.exe', 'A PATH tar must not handle Windows distribution paths.');
     process.env.PATH = `${join(root, 'shadow-bin')};${originalPath ?? ''}`;
     t.after(() => { if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath; });
   }
-  synchronizeVersions(root);
-  const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc' :
-    process.platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-unknown-linux-gnu';
-  const executable = process.platform === 'win32' ? 'dewbow.exe' : 'dewbow';
-  write(`target/${target}/release/${executable}`, 'Synthetic executable bytes');
-  write('state/private.json', 'Synthetic private data that must not be packaged');
-  const sourceCommit = 'a'.repeat(40);
-  const release = packageRelease(root, { target, sourceCommit });
-  assert.deepEqual(readdirSync(release.output).sort(), [release.archive.split(/[\\/]/).at(-1), `${release.archive.split(/[\\/]/).at(-1)}.sha256`].sort());
+  const targets = ['x86_64-unknown-linux-gnu', 'aarch64-apple-darwin', 'x86_64-apple-darwin'];
+  if (process.platform === 'win32') targets.push('x86_64-pc-windows-msvc');
   const tarExecutable = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
-  const entries = execFileSync(tarExecutable, ['-tf', release.archive], { encoding: 'utf8', windowsHide: true });
-  assert.ok(!entries.includes('private.json'));
-  verifyRelease(root, { target, sourceCommit, runBinary: false });
-  assert.throws(() => verifyRelease(root, { target, sourceCommit: 'b'.repeat(40), runBinary: false }), /manifest/);
-  assert.throws(() => packageRelease(root, { target, sourceCommit }), /already exists/);
-  writeFileSync(release.archive, 'corrupted synthetic archive');
-  assert.throws(() => verifyRelease(root, { target, sourceCommit, runBinary: false }), /checksum/);
+  for (const target of targets) {
+    const { root, write } = fixture(t);
+    synchronizeVersions(root);
+    const executable = target.includes('windows') ? 'dewbow.exe' : 'dewbow';
+    write(`target/${target}/release/${executable}`, 'Synthetic executable bytes');
+    write('state/private.json', 'Synthetic private data that must not be packaged');
+    const sourceCommit = 'a'.repeat(40);
+    const release = packageRelease(root, { target, sourceCommit });
+    assert.deepEqual(readdirSync(release.output).sort(), [release.archive.split(/[\\/]/).at(-1), `${release.archive.split(/[\\/]/).at(-1)}.sha256`].sort());
+    const entries = execFileSync(tarExecutable, ['-tf', release.archive], { encoding: 'utf8', windowsHide: true });
+    assert.ok(!entries.includes('private.json'));
+    verifyRelease(root, { target, sourceCommit, runBinary: false });
+    assert.throws(() => verifyRelease(root, { target, sourceCommit: 'b'.repeat(40), runBinary: false }), /manifest/);
+    assert.throws(() => packageRelease(root, { target, sourceCommit }), /already exists/);
+    writeFileSync(release.archive, 'corrupted synthetic archive');
+    assert.throws(() => verifyRelease(root, { target, sourceCommit, runBinary: false }), /checksum/);
+  }
 });
