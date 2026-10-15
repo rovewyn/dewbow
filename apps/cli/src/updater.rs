@@ -517,10 +517,8 @@ pub async fn recover_before_start(executable: &Path, state: &Path) -> anyhow::Re
     Ok(upgrade::hash(executable)? != before)
 }
 
-pub async fn internal(job: &Path, job_id: &str, worker: Option<u32>) -> anyhow::Result<()> {
-    // Serialize role acquisition with publication and archival. A delayed child
-    // carries its immutable job identity and cannot execute a later active job.
-    let publication = tokio::time::timeout(Duration::from_secs(5), async {
+async fn publication(job: &Path) -> anyhow::Result<Lock> {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Some(lock) = lock(
                 &job.parent()
@@ -533,7 +531,12 @@ pub async fn internal(job: &Path, job_id: &str, worker: Option<u32>) -> anyhow::
         }
     })
     .await
-    .context("Upgrade publication lock timed out")??;
+    .context("Upgrade publication lock timed out")?
+}
+pub async fn internal(job: &Path, job_id: &str, worker: Option<u32>) -> anyhow::Result<()> {
+    // Serialize role acquisition with publication and archival. A delayed child
+    // carries its immutable job identity and cannot execute a later active job.
+    let publication = publication(job).await?;
     let request = request(job)?;
     ensure!(
         request.job_id == job_id,
@@ -648,7 +651,7 @@ async fn supervise(job: &Path, request: &Request, _guard: Lock) -> anyhow::Resul
                         &round,
                         "recoveryRequired",
                         "An adopted worker still owns the job; no process was killed and no state was restored.",
-                    );
+                    ).await;
                 }
             }
             sleep(Duration::from_millis(100)).await;
@@ -659,7 +662,7 @@ async fn supervise(job: &Path, request: &Request, _guard: Lock) -> anyhow::Resul
         if directory.join("result.json").exists() {
             let outcome: Outcome = read_json(&directory.join("result.json"))?;
             if outcome.status != "retry" {
-                return finish(job, &round, &outcome.status, &outcome.message);
+                return finish(job, &round, &outcome.status, &outcome.message).await;
             }
         }
         recovering = job.join("intent.json").exists() || request.options.recover;
@@ -674,9 +677,19 @@ async fn supervise(job: &Path, request: &Request, _guard: Lock) -> anyhow::Resul
         &round,
         "recoveryRequired",
         "Automatic attempts were exhausted. Private checkpoints are retained; inspect upgrade --status and use upgrade --recover after resolving ownership or file errors.",
-    )
+    ).await
 }
-fn finish(job: &Path, round: &Round, status: &str, message: &str) -> anyhow::Result<()> {
+async fn finish(job: &Path, round: &Round, status: &str, message: &str) -> anyhow::Result<()> {
+    let _publication = publication(job).await?;
+    let worker = lock(&job.join("worker.lock"))?;
+    let (status, message) = if worker.is_none() && status != "recoveryRequired" {
+        (
+            "recoveryRequired",
+            "A late worker still owns this job; inspect its checkpoints before retrying recovery.",
+        )
+    } else {
+        (status, message)
+    };
     write_new(
         &outcome_path(job, round),
         &Outcome {
@@ -687,6 +700,9 @@ fn finish(job: &Path, round: &Round, status: &str, message: &str) -> anyhow::Res
 }
 
 async fn work(job: &Path, request: &Request, index: u32, _worker: Lock) -> anyhow::Result<()> {
+    if completed(job)?.is_some() {
+        return Ok(());
+    }
     let round: Round = read_json(&job.join("round.json"))?;
     ensure!(
         index >= round.start
@@ -1297,6 +1313,22 @@ mod tests {
         let _supervisor = spawn(&job, None).unwrap();
         assert_eq!(done(&job).await.status, "succeeded");
         assert!(!maintenance::rollback_started(&env.state).unwrap());
+        let late = attempt_dir(&job, 2);
+        config::secure_directory(&late).unwrap();
+        write_new(
+            &late.join("request.json"),
+            &Attempt {
+                index: 2,
+                recover: false,
+            },
+        )
+        .unwrap();
+        let mut delayed = spawn(&job, Some(2)).unwrap();
+        until(|| delayed.exited().unwrap()).await;
+        assert!(
+            !late.join("started.json").exists(),
+            "A terminal job cannot start a delayed worker"
+        );
         assert!(
             submit(
                 &env.executable,
