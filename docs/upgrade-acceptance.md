@@ -1,0 +1,45 @@
+# Versioned upgrade acceptance
+
+Run `npm run test:upgrade` after building Web, the Dewbow executable and the synthetic native fixture with the pinned workspace tools. It exercises the public installed CLI with two distinct native executable images and versions. CI runs it on Linux x64, Windows x64, macOS Intel and macOS Apple Silicon. The Release workflow repeats acceptance using its optimized candidate before uploading distribution files or allowing publication.
+
+```sh
+npm run build:rust
+npm run test:upgrade
+```
+
+For an optimized candidate already built by the Release workflow:
+
+```sh
+npm run test:upgrade -- --release
+```
+
+The command archives tracked `HEAD` into an ignored private source directory, changes only that copy's product version to `0.0.0-upgrade-acceptance.0`, and builds it with Cargo's locked dependencies and separate outputs. The candidate keeps the workspace's actual development version. The real release packager creates a synthetic compatible archive containing that candidate. No installed user binary, repository version, published artifact, release tag or real Codex home is changed. Synthetic files use separate state, work, installation and marked native directories under `outputs/`; successful runs remove their own directory and failures retain it for private inspection.
+
+The baseline is deliberately a current-format synthetic predecessor. It does not establish support for any published source release. In particular, the released 0.1.0 executable has no upgrade command or maintenance protocol, and its management-state transition is excluded by the [0.2.0 release notes](release-notes/0.2.0.md). Testing the automatic transaction with a compatible predecessor does not override the target release's published upgrade or rollback policy. `--release` tests the same optimized executable that packaging verifies, using a compatible synthetic archive; it does not rewrite the real distribution archive or establish 0.1.0 migration support.
+
+## Required scenarios
+
+| Scenario | Required observation |
+| --- | --- |
+| Interrupted archive delivery | The public upgrader rejects a truncated archive against its original checksum before maintenance. The original daemon instance keeps serving. |
+| Download connection loss | An explicit loopback proxy tunnels authentic GitHub release discovery with ordinary TLS verification, then closes the archive connection. The download must actually hit this fault, and the original daemon must remain unchanged. No certificate store or host trust policy is changed. |
+| Candidate startup failure | The marked native fixture fails the candidate's model probe once. The public upgrader restores and verifies the original executable and service. |
+| Worker termination | Kill only the fresh worker belonging to this synthetic job after the real candidate has replaced the installation and native validation is gated. The independent supervisor restores the original service. |
+| Frontend disconnect and duplicate execution | Kill the waiting frontend while validation is gated. A repeated command attaches to the same job. Releasing validation completes the version change; repeating an equal-version upgrade does not restart the service. |
+
+Every scenario also checks the retained host identity, frozen session creation configuration, request deduplication target, absence of duplicate native work and a synthetic native credential canary. Successful upgrade checks the installed binary hash, reported version, new daemon identity and admission of a new request. Cleanup stops the selected synthetic daemon and verifies its listener has closed.
+
+The download connection test queries the public 0.1.0 release only for authentic metadata, then intentionally closes its archive connection without downloading or executing that release. It requires GitHub access and fails if the intended fault was not reached. Lower-level Rust download tests separately exercise incomplete response bodies and oversized responses. Existing Rust process tests additionally cover simultaneous controller loss, restart-triggered recovery, bounded failure and repair, delayed workers, interrupted checkpoint publication and Windows job policies.
+
+## Windows execution host
+
+Production handoff requires complete Job Object escape. A local host that forbids it cannot demonstrate successful detached upgrades. GitHub Actions uses the existing same-account independent validation host:
+
+```powershell
+./scripts/test-windows.ps1 -upgradeAcceptance
+./scripts/test-windows.ps1 -upgradeAcceptance -releaseCandidate
+```
+
+The script installs no service and changes no job policy. No production detachment check is disabled. Cargo and npm are build/test prerequisites only; the installed product still runs without Node.js or Rust.
+
+These checks use real OS processes, files, SQLite storage, archive tools, executable replacement and the public CLI, with a synthetic Codex app-server. They are not production SSH acceptance, real Codex service acceptance, reboot or hardware power-loss validation. Keep private diagnostics and actual run results out of commits and PR bodies; report validation commands and CI links without copying local state.

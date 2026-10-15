@@ -101,6 +101,8 @@ npm run release:check -- --target x86_64-pc-windows-msvc
 
 Use the matching target for Linux or macOS. Packaging requires the platform's `tar`; Windows explicitly invokes `%SystemRoot%\System32\tar.exe` for the built-in BSD tar's ZIP support, independent of the shell's PATH. Output goes to ignored `artifacts/release/`. Packaging refuses to overwrite an existing archive or checksum. Move reviewed outputs outside that directory or remove only your own generated outputs before rebuilding. Package verification checks archive contents, checksums, metadata and the extracted executable. These smoke checks do not start a daemon or access real Codex storage, and do not establish real native acceptance.
 
+Before artifact upload, each native build runs [versioned upgrade acceptance](upgrade-acceptance.md) with its optimized executable. This supplements archive verification with installed public-CLI upgrades, injected download and process failures, startup rollback and duplicate-request checks. The synthetic predecessor uses current-format state and does not override supported-source or rollback requirements in the target release notes. Publication depends on every matrix job, including acceptance, succeeding.
+
 ## Publish later, with explicit authorization
 
 Pushing a tag and running a publication job are separate operations from preparing code. Perform them only when authorized. The following is the future procedure, not part of setting up this workflow:

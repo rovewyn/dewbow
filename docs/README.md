@@ -25,6 +25,7 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Management storage and compatibility](storage.md)
 - [Workspace development and CI](workspace.md)
 - [Versioning and releases](releasing.md)
+- [Versioned upgrade acceptance](upgrade-acceptance.md)
 - [Release notes](release-notes/README.md)
 - [Local operations](operations.md)
 - [Current scope](mvp.md)

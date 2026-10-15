@@ -18,7 +18,7 @@ jobs:
   checks:
     name: Checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +60,12 @@ jobs:
       - name: Test Windows Rust, SDK, Web and lifecycle outside the launcher job
         if: runner.os == 'Windows'
         run: ./scripts/test-windows.ps1
+      - name: Accept versioned upgrades and injected failures
+        if: runner.os != 'Windows'
+        run: npm run test:upgrade
+      - name: Accept Windows upgrades outside the launcher job
+        if: runner.os == 'Windows'
+        run: ./scripts/test-windows.ps1 -upgradeAcceptance
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts
