@@ -17,7 +17,7 @@ The command archives the immutable predecessor source pinned in `scripts/upgrade
 
 The real release packager supplies the candidate's archive layout and metadata; separate synthetic archives declare a compatible transaction and a manual-only transition so both policies are exercised independently of the real release policy. No installed user binary, repository version, published artifact, release tag or real Codex home is changed. Synthetic files use separate state, work, installation and marked native directories under `outputs/`; successful runs remove their own directory and failures retain it for private inspection.
 
-The baseline is deliberately a current-format synthetic predecessor. It does not establish support for any published source release. In particular, the released 0.1.0 executable has no upgrade command or maintenance protocol, and its management-state transition is excluded by the [0.2.0 release notes](release-notes/0.2.0.md). Testing the automatic transaction with a compatible predecessor does not override the target release's published upgrade or rollback policy. `--release` tests the same optimized executable that packaging verifies, using a compatible synthetic archive; it does not rewrite the real distribution archive or establish 0.1.0 migration support.
+The baseline is deliberately a current-format synthetic predecessor. The harness selects that pinned predecessor's former RPC transport only when its reported version equals the synthetic baseline version; candidate requests use the Web client's `/api/v1` resource mapping. This fixture adapter verifies retained identities and receipts across the HTTP transition without adding compatibility routes to the product. It does not establish support for any published source release. In particular, the released 0.1.0 executable has no upgrade command or maintenance protocol, and its management-state transition is excluded by the [0.2.0 release notes](release-notes/0.2.0.md). Testing the automatic transaction with a compatible predecessor does not override the target release's published upgrade or rollback policy. `--release` tests the same optimized executable that packaging verifies, using a compatible synthetic archive; it does not rewrite the real distribution archive or establish 0.1.0 migration support.
 
 ## Required scenarios
 
@@ -36,13 +36,13 @@ Network failures are injected at distinct boundaries: public-CLI release discove
 
 ## Windows execution host
 
-Production handoff requires complete Job Object escape. A local host that forbids it cannot demonstrate successful detached upgrades. GitHub Actions uses the existing same-account independent validation host:
+Production handoff requires complete Job Object escape. A local or CI command host can retain a restrictive outer job. After building the executable and fixture with the pinned tools, use the same-account independent validation host from PowerShell 7:
 
 ```powershell
 ./scripts/test-windows.ps1 -upgradeAcceptance
 ./scripts/test-windows.ps1 -upgradeAcceptance -releaseCandidate
 ```
 
-The script installs no service and changes no job policy. No production detachment check is disabled. Cargo and npm are build/test prerequisites only; the installed product still runs without Node.js or Rust.
+The script works locally and in GitHub Actions. It starts a hidden WMI process, verifies the initiating user, preserves selected tool paths and actual CI variables, and records private diagnostics under ignored `outputs/`. It installs no service and changes no job policy. No production detachment check is disabled, and the restrictive synthetic host cases still verify refusal before maintenance. Local runs do not set GitHub Actions identity. If WMI cannot create an independent process, validation fails at startup; production upgrades launched directly from a host that forbids complete escape still refuse handoff. Cargo and npm are build/test prerequisites only; the installed product still runs without Node.js or Rust.
 
 These checks use real OS processes, files, SQLite storage, archive tools, executable replacement and the public CLI, with a synthetic Codex app-server. They are not production SSH acceptance, real Codex service acceptance, reboot or hardware power-loss validation. Keep private diagnostics and actual run results out of commits and PR bodies; report validation commands and CI links without copying local state.

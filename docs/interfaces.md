@@ -4,52 +4,62 @@ The Rust daemon exposes loopback Web operations using the shared `v1` camelCase 
 
 ## API design and authority
 
-The daemon serves both embedded Web assets and the operator API on `http://127.0.0.1:<configured-port>` (default port `3000`). The design uses named management operations rather than resource-oriented REST routes: reads and mutations are JSON `POST /api/<operation>` requests. Request bodies are objects, unknown top-level fields are rejected, and the JSON body limit is 1 MiB. The daemon validates the operation, manages request identity and recovery, then calls its owned native Codex runtime or reads native storage through the SDK. The browser never reads databases directly.
+The daemon serves both embedded Web assets and the operator API on `http://127.0.0.1:<configured-port>` (default port `3000`). Management resources use the `/api/v1` prefix. Reads use GET with path identities and optional query parameters; mutations use POST with JSON object bodies. Path identities must not be repeated in a body or query, even with the same value. Unknown fields and repeated query parameters are rejected, and the JSON body limit is 1 MiB. Integer query values use unsigned decimal digits. The HTTP adapter reconstructs the existing domain-operation input before validation, request fingerprinting and execution. The browser never reads databases directly.
 
 There are two authority boundaries. The browser uses an operator cookie for the documented Web API. The CLI uses a private control credential for `/internal/<operation>`, including lifecycle, ticket issuance and upgrade handshakes. Those private control routes and static assets are outside the OpenAPI contract. No MCP endpoint, remote management or external agent bearer access is provided.
 
 `dewbow web` requests a 60-second one-use ticket through a separate protected local control endpoint. Web removes the URL fragment ticket before `POST /auth/login`, then uses an HttpOnly SameSite=Strict cookie. `POST /auth/logout` revokes it. Tickets and cookies expire in memory and are invalidated when the daemon exits. Never expose the private control credential in browser storage or URLs.
 
-The cookie lasts at most 12 hours. Every Web POST requires `Host: 127.0.0.1:<configured-port>` and an `Origin` exactly equal to the server URL. SSE requires the same cookie and Host; if an Origin is supplied, it must also match. Using `localhost`, another hostname or a different port does not satisfy these checks. `GET /health` is an unauthenticated listener probe returning `{ "status": "available" }`; it does not establish native readiness or daemon identity.
+The cookie lasts at most 12 hours. Every Web POST requires `Host: 127.0.0.1:<configured-port>` and an `Origin` exactly equal to the server URL. GET and SSE require the same cookie and Host; if an Origin is supplied, it must also match. Using `localhost`, another hostname or a different port does not satisfy these checks. Operator JSON and SSE responses use `Cache-Control: no-store`. `GET /health` is an unauthenticated listener probe returning `{ "status": "available" }`; it does not establish native readiness or daemon identity.
 
 ## Requests, responses and errors
 
-Successful management requests return HTTP 200 with `{ "result": ... }`. Management failures return `{ "error": { "code", "message", "retryable" } }` with these current status mappings:
+Reads return HTTP 200 with `{ "result": ... }`. Mutations return a durable operation receipt in that envelope and a `Location: /api/v1/operations/{commandId}` header. A delivered session or turn creation returns 201; an accepted receipt returns 202; other receipts return 200. An identical retry can return the same 201 and Location without creating another resource. None of these statuses means that a native turn has completed. Failures before a receipt is returned use `{ "error": { "code", "message", "retryable" } }` and these resource-API mappings:
 
 | HTTP status | Management codes |
 | --- | --- |
-| `400` | All other management errors, including `INVALID_INPUT`, `REQUEST_CONFLICT`, `DELIVERY_UNCERTAIN`, `RECOVERY_REQUIRED` and `UNAVAILABLE` |
+| `400` | Invalid JSON/input, unknown or repeated fields, invalid query values and other input errors |
 | `401` | `UNAUTHORIZED`, including invalid credentials or a rejected Host/Origin |
 | `403` | `FORBIDDEN` |
 | `404` | `NOT_FOUND` |
+| `409` | `REQUEST_CONFLICT`, `SESSION_BUSY`, `SESSION_IN_USE`, `STALE_TURN`, `STALE_INTERACTION`, `RECOVERY_REQUIRED` |
+| `429` | `LIMIT_EXCEEDED` |
+| `500` | `EXECUTION_FAILED`, `DELIVERY_UNCERTAIN` before a receipt can be returned |
+| `503` | `UNAVAILABLE`, including shutdown or upgrade maintenance |
 
-Once a mutation has a receipt, a delivery failure or uncertain outcome may instead appear in an HTTP 200 operation's `status` and `error`. Discovery and history reads also return explicit partial-read errors inside their results. Clients must inspect these fields. `retryable` does not mean the native action never happened or authorize retrying with a new request ID. Login body extraction can return framework plain-text `400`, `413`, `415` or `422` errors rather than a management envelope; the OpenAPI file records that exception.
+Once a mutation has a receipt, a delivery failure or uncertain outcome appears in an HTTP 200 operation's `status` and `error`. Discovery and history reads also return explicit partial-read errors inside their results. Clients must inspect these fields. `retryable` does not mean the native action never happened or authorize retrying with a new request ID. Authentication endpoints and private CLI control retain their separate error mappings. Login body extraction can return framework plain-text `400`, `413`, `415` or `422` errors rather than a management envelope; the OpenAPI file records that exception. Unsupported methods and unmatched paths can return framework responses without a management envelope.
 
-For example, `POST /api/sendMessage` with `{ "sessionId": "session-example", "message": "Hello", "requestId": "req-123" }` returns an operation receipt with `commandId`, target IDs, delivery `status` and an optional error. Follow `getSession` or the subscription for the turn's actual state and use `readSessionHistory` for native messages. `delivered` alone does not establish a completed answer. Retain the original request ID and identical input when retrying a lost response.
+For example, `POST /api/v1/sessions/session-example/turns` with `{ "message": "Hello", "requestId": "req-123" }` returns an operation receipt with `commandId`, target IDs, delivery `status` and an optional error. Read the Location for delivery status, the session or its subscription for actual turn state, and `/history` for native messages. `delivered` alone does not establish a completed answer. Retain the original request ID, path identities and identical body when retrying a lost response.
+
+`GET /api/v1/operations/{commandId}` reads a retained receipt without executing a command or writing management storage. It exposes the same public fields as mutation responses, excluding fingerprints and native callback/process identities. A pruned or unknown receipt returns 404; absence does not establish that the action never happened. Receipt lookup follows the existing retention window and does not create an execution history.
 
 ## Contract version
 
-The management contract's current name is `v1`. It covers operation names, input/output shapes, errors and session update semantics. The protocol package declares this version, and session update snapshots include `contractVersion: "v1"`. HTTP operations still use `/api/<operation>`; the current service has no versioned API routes or multi-version negotiation. The marker describes the one contract implemented by the bundled daemon and Web client.
+The management contract's current name is `v1`. It covers domain operation names, input/output shapes, errors and session update semantics. The protocol package declares this version, session update snapshots include `contractVersion: "v1"`, and HTTP resources use `/api/v1`. The daemon and bundled Web implement one coordinated contract, without multi-version negotiation. The approved HTTP transition and removed routes are recorded in the [0.2.0 release notes](release-notes/0.2.0.md#http-api-transition).
 
 Product releases do not automatically advance this contract. An additive change that preserves existing clients' behavior can remain in `v1`. Renaming or removing a required field, or changing delivery/error semantics incompatibly, requires an explicit contract-version decision and coordinated client/daemon transition. A future `v2` is possible when needed, not a requirement for the next product release. This is independent of the integer [database schema version](storage.md#version-identifiers).
 
 ## Operations
 
-| Operation | Input | Result |
+Paths below are relative to `/api/v1`. Remaining read inputs are query parameters; remaining mutation inputs are JSON body fields. Mutations reject query parameters. Domain names remain internal management operations and OpenAPI operation IDs, rather than HTTP paths.
+
+| Method and resource path | Domain operation | Remaining input |
 | --- | --- | --- |
-| `listHosts` | `{}` | `{ hosts }` containing this local host |
-| `listSessions` | optional `hostId` | `{ sessions, discovery }` |
-| `getSession` | `sessionId` | Session, host, turns, interactions and operations |
-| `createSession` | `hostId, workDir, requestId`, optional `sessionOptions` | Operation with new management session ID |
-| `connectSession` | `sessionId, requestId` | Operation retaining the native conversation ID |
-| `readSessionHistory` | `sessionId`, optional event `cursor`, one native `beforeCursor/afterCursor/updateCursor`, `limit` | Bounded events, messages, activities and independent cursors |
-| `getSessionActivity` | `sessionId, itemId` | Exact native activity metadata and private content references |
-| `readSessionContent` | `sessionId, contentId`, optional `contentCursor, limitBytes` | Bounded UTF-8 content page |
-| `sendMessage` | `sessionId, message, requestId`, optional `mode` | New turn operation; mode is default or plan |
-| `steerTurn` | `sessionId, turnId, message, requestId` | Instruction to the exact active turn |
-| `answerQuestions` | `sessionId, turnId, interactionId, requestId, answers` | Exact question callback response |
-| `decideApproval` | `sessionId, turnId, interactionId, requestId, decision` | Single-request allow or deny |
-| `interruptTurn` | `sessionId, turnId, requestId` | Interrupt delivery; native confirmation follows separately |
+| `GET /hosts` | `listHosts` | None |
+| `GET /sessions` | `listSessions` | Optional `hostId` |
+| `GET /sessions/{sessionId}` | `getSession` | None |
+| `POST /sessions` | `createSession` | `hostId, workDir, requestId`, optional `sessionOptions` |
+| `POST /sessions/{sessionId}/connections` | `connectSession` | `requestId` |
+| `GET /sessions/{sessionId}/history` | `readSessionHistory` | Optional `cursor`, one of `beforeCursor/afterCursor/updateCursor`, `limit` |
+| `GET /sessions/{sessionId}/activities/{itemId}` | `getSessionActivity` | None |
+| `GET /sessions/{sessionId}/contents/{contentId}` | `readSessionContent` | Optional `contentCursor, limitBytes` |
+| `POST /sessions/{sessionId}/turns` | `sendMessage` | `message, requestId`, optional `mode` |
+| `POST /sessions/{sessionId}/turns/{turnId}/instructions` | `steerTurn` | `message, requestId` |
+| `POST /sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/answers` | `answerQuestions` | `requestId, answers` |
+| `POST /sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/decisions` | `decideApproval` | `requestId, decision` |
+| `POST /sessions/{sessionId}/turns/{turnId}/interruptions` | `interruptTurn` | `requestId` |
+| `GET /operations/{commandId}` | `getOperation` | None |
+| `GET /sessions/{sessionId}/updates` | `subscribeSessionUpdates` | Optional `cursor, updateCursor`; SSE response |
 
 `workDir` is an existing absolute local directory. Creation options permit model, reasoningEffort and instructionsAppend only. Models and efforts must be advertised by native Codex. Dewbow freezes the resolved creation model, effort, composed developer instructions and host-owned workspace sandbox/approval policy. It confirms identity, working directory and the managed settings on native resume. No member workspace profile or arbitrary native config input is accepted.
 
@@ -75,7 +85,7 @@ Native item IDs and update ordinals establish ordering and merge identity. Termi
 
 Tool output and diffs are read from native Codex items, without a durable Dewbow content copy. Question and approval details are runtime memory only and expire with their turn/runtime. References and byte cursors bind the conversation and an allowlisted content selector; callers cannot choose arbitrary file paths. limitBytes is 4–262144 (default 65536). Pages preserve UTF-8 boundaries. Nonempty completed native command output has unknown completeness because its aggregate can be truncated. A recorded diff describes the native change, not the current file. All history/activity/content reads leave Dewbow storage unchanged.
 
-`GET /api/subscribeSessionUpdates?sessionId=...` uses the same operator cookie. It emits SSE `snapshot` and `update` events whose JSON data is a `SessionUpdates` object, and `streamError` events whose JSON data is a management error. These data payloads have no HTTP-style `result` or `error` wrapper. OpenAPI represents the framed response as `text/event-stream` and records the JSON payload schemas in the `x-sse-events` extension. See [subscriptions](session-updates.md) for cursor and reconnection behavior. Browser disconnection releases the stream and does not interrupt execution.
+`GET /api/v1/sessions/{sessionId}/updates` uses the same operator cookie. It emits SSE `snapshot` and `update` events whose JSON data is a `SessionUpdates` object, and `streamError` events whose JSON data is a management error. These data payloads have no HTTP-style `result` or `error` wrapper. OpenAPI represents the framed response as `text/event-stream` and records the JSON payload schemas in the `x-sse-events` extension. See [subscriptions](session-updates.md) for cursor and reconnection behavior. Browser disconnection releases the stream and does not interrupt execution.
 
 ## Contract maintenance
 

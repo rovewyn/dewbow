@@ -53,6 +53,14 @@ git diff --check
 
 The root npm test includes Rust integration checks and expects the compiled `dewbow` executable and SDK fixture. These tests use explicitly marked synthetic native storage and isolated private state. They cover lifecycle, HTTP authentication, request identity, callbacks, Unicode output, independent history and restart uncertainty. Retained TypeScript tests cover SDK adapters, protocol helpers, chat projection and navigation.
 
+On Windows, a terminal, coding tool or CI command host can retain an outer Job Object that prevents detached upgrade processes. After selecting the pinned tools and building binaries/examples, run the complete Rust and npm checks from PowerShell 7 through the independent validation host:
+
+```powershell
+./scripts/test-windows.ps1
+```
+
+This starts a hidden same-account WMI process, verifies its user identity and preserves the selected tool paths and actual CI variables. It runs all tests without filtering or disabling production handoff checks. Private diagnostics remain under ignored `outputs/windows-checks-*`, and the command propagates the final result with a bounded wait. A local run does not set GitHub Actions identity. WMI must be available and permitted; a host that blocks independent process creation reports a startup failure. Production upgrades still require complete Job Object escape from their own launch environment. Use the same host with `-upgradeAcceptance` for [versioned upgrade acceptance](upgrade-acceptance.md#windows-execution-host).
+
 Rust source uses idiomatic snake_case identifiers while JSON uses the shared camelCase contract. Native Codex names remain native at integration boundaries. Keep generated build outputs, databases, logs and actual acceptance results in ignored directories.
 
 ## Continuous integration

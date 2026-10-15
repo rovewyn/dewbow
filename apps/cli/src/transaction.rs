@@ -733,13 +733,25 @@ pub(crate) mod tests {
                 .unwrap()
                 .into()
         }
-        pub(crate) async fn api(&self, cookie: &str, name: &str, input: Value) -> Value {
-            let value: Value = crate::client(Duration::from_secs(3))
-                .unwrap()
-                .post(format!("http://127.0.0.1:{}/api/{name}", self.config.port))
+        pub(crate) async fn api(&self, cookie: &str, name: &str, mut input: Value) -> Value {
+            let client = crate::client(Duration::from_secs(3)).unwrap();
+            let base = format!("http://127.0.0.1:{}/api/v1/sessions", self.config.port);
+            let request = match name {
+                "createSession" => client.post(base).json(&input),
+                "getSession" => {
+                    client.get(format!("{base}/{}", input["sessionId"].as_str().unwrap()))
+                }
+                "sendMessage" => {
+                    let session = input.as_object_mut().unwrap().remove("sessionId").unwrap();
+                    client
+                        .post(format!("{base}/{}/turns", session.as_str().unwrap()))
+                        .json(&input)
+                }
+                _ => panic!("Unsupported synthetic resource operation: {name}"),
+            };
+            let value: Value = request
                 .header("Origin", format!("http://127.0.0.1:{}", self.config.port))
                 .header("Cookie", cookie)
-                .json(&input)
                 .send()
                 .await
                 .unwrap()

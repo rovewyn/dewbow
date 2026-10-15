@@ -1,6 +1,6 @@
 # Session update subscriptions
 
-The Rust daemon exposes operator-authenticated SSE at `GET /api/subscribeSessionUpdates?sessionId=...`. Execution commands remain ordinary JSON HTTP operations. Subscribing only reads state; it does not connect a native conversation or start a turn.
+The Rust daemon exposes operator-authenticated SSE at `GET /api/v1/sessions/{sessionId}/updates`. Optional `cursor` and `updateCursor` remain query parameters; the session identity belongs only in the path. Repeated or unknown query parameters are rejected. Execution commands remain ordinary JSON HTTP operations. Subscribing only reads state; it does not connect a native conversation or start a turn. Responses use `Cache-Control: no-store`.
 
 Credentials never appear in subscription URLs. Host and supplied Origin checks match the [Web API](interfaces.md). SSE `snapshot` and `update` events carry JSON objects containing `contractVersion: "v1"`, `instanceId`, details and bounded history; these payloads have no `result` wrapper. `streamError` carries a management error directly, without an `error` wrapper. See the [OpenAPI contract](openapi.yaml) for framing, query parameters and payload schemas.
 

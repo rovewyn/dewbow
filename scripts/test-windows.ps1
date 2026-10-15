@@ -13,8 +13,8 @@ if ($workerDirectory) {
         Set-Location -LiteralPath $repo
         $env:PATH = $settings.path
         $env:CARGO = $settings.cargo
-        $env:CI = 'true'
-        $env:GITHUB_ACTIONS = 'true'
+        $env:CI = $settings.ci
+        $env:GITHUB_ACTIONS = $settings.githubActions
         $env:RUNNER_TRACKING_ID = $settings.trackingId
         if ($settings.upgradeAcceptance) {
             $arguments = @('scripts/upgrade-acceptance.mjs')
@@ -40,8 +40,8 @@ if ($workerDirectory) {
     exit $code
 }
 
-if (!$IsWindows -or $env:GITHUB_ACTIONS -ne 'true') {
-    throw 'This independent Windows validation host is for GitHub Actions only.'
+if (!$IsWindows) {
+    throw 'This independent validation host requires PowerShell 7 on Windows.'
 }
 $workerDirectory = Join-Path $repo ('outputs/windows-checks-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $workerDirectory | Out-Null
@@ -50,13 +50,15 @@ New-Item -ItemType Directory -Path $workerDirectory | Out-Null
     cargo = (Get-Command cargo).Source
     node = (Get-Command node).Source
     npm = (Get-Command npm.cmd).Source
+    ci = $env:CI
+    githubActions = $env:GITHUB_ACTIONS
     trackingId = $env:RUNNER_TRACKING_ID
     sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     upgradeAcceptance = [bool]$upgradeAcceptance
     releaseCandidate = [bool]$releaseCandidate
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workerDirectory 'settings.json') -Encoding utf8
 
-# Cargo and the Actions command host both use jobs. WMI creates a same-user
+# Cargo, CI and local command hosts can use jobs. WMI creates a same-user
 # validation process outside the launcher's job, without changing any job policy,
 # installing a service or granting privileges. Production handoff checks remain
 # active, including the explicitly restrictive synthetic SSH job tests.
@@ -73,7 +75,7 @@ $process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Argumen
     ProcessStartupInformation = $startup
 }
 if ($process.ReturnValue -ne 0) { throw "Independent Windows validation failed to start ($($process.ReturnValue))." }
-Write-Output 'Independent Windows validation started.'
+Write-Output "Independent Windows validation started; private diagnostics: $workerDirectory"
 $deadline = [DateTime]::UtcNow.AddMinutes($(if ($upgradeAcceptance) { 40 } else { 20 }))
 $result = Join-Path $workerDirectory 'result.json'
 while (!(Test-Path -LiteralPath $result)) {

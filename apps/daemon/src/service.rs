@@ -363,6 +363,22 @@ impl Service {
                 )
             }
             "getSession" => self.details(text(&input, "sessionId")?).await,
+            "getOperation" => self
+                .store
+                .list("operation")?
+                .into_iter()
+                .find(|operation| operation["commandId"] == input["commandId"])
+                .map(|mut operation| {
+                    operation["authority"] = json!("operator");
+                    public(operation)
+                })
+                .ok_or_else(|| {
+                    error(
+                        "NOT_FOUND",
+                        "Operation receipt is unavailable or has been pruned.",
+                    )
+                    .into()
+                }),
             "readSessionHistory" => self.history(text(&input, "sessionId")?, &input).await,
             "readSessionContent" => self.read_content(&input).await,
             "getSessionActivity" => {
@@ -937,6 +953,7 @@ fn validate(name: &str, input: &Value) -> anyhow::Result<()> {
         "listHosts" => (&[], &[]),
         "listSessions" => (&["hostId"], &[]),
         "getSession" => (&["sessionId"], &["sessionId"]),
+        "getOperation" => (&["commandId"], &["commandId"]),
         "readSessionHistory" => (
             &[
                 "sessionId",

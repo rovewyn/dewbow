@@ -8,7 +8,7 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
     proxy: {
-      "/api": {
+      "/api/v1": {
         target: "http://127.0.0.1:3000",
         changeOrigin: true,
         headers: { Origin: "http://127.0.0.1:3000" },
