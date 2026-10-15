@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { connect, createServer } from 'node:net';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, toNamespacedPath } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { packageRelease } from './package-release.mjs';
 import { synchronizeVersions } from './sync-version.mjs';
@@ -303,7 +303,11 @@ try {
     await run(env.installed, [...env.upgradeArgs, '--detach']);
     await gate(env);
     const request = await readJson(join(env.job, 'request.json'));
-    assert.equal(request.state.toLowerCase().replaceAll('\\', '/'), env.state.toLowerCase().replaceAll('\\', '/'));
+    const canonical = async path => {
+      const real = await fs.realpath(path);
+      return windows ? toNamespacedPath(real).toLowerCase() : real;
+    };
+    assert.equal(await canonical(request.state), await canonical(env.state));
     const worker = await readJson(join(env.job, 'worker.json'));
     // Fault injection only: this PID comes from the freshly created private
     // synthetic job. Production recovery never kills recorded PIDs.
