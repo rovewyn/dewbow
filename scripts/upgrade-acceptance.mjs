@@ -9,6 +9,9 @@ import { packageRelease } from './package-release.mjs';
 import { synchronizeVersions } from './sync-version.mjs';
 
 // This is a compatible current-format fixture, never a published source release.
+// Keep an immutable predecessor implementation across candidate changes. Update
+// this pin deliberately when release preparation selects a supported source.
+const baselineSource = '2be0d8f4a4efbb6f0954b5cbda892baad8615d33';
 const baselineVersion = '0.0.0-upgrade-acceptance.0';
 const repo = process.cwd();
 const windows = process.platform === 'win32';
@@ -83,7 +86,8 @@ let passed = false;
 try {
   console.log('Upgrade acceptance: building a distinct synthetic baseline executable');
   await fs.mkdir(source);
-  const tracked = execFileSync('git', ['archive', '--format=tar', 'HEAD'], { maxBuffer: 64 * 1024 * 1024 });
+  execFileSync('git', ['merge-base', '--is-ancestor', baselineSource, 'HEAD']);
+  const tracked = execFileSync('git', ['archive', '--format=tar', baselineSource], { maxBuffer: 64 * 1024 * 1024 });
   execFileSync(tar, ['-xf', '-', '-C', source], { input: tracked, windowsHide: true });
   await fs.cp(resolve('apps/web/dist'), join(source, 'apps/web/dist'), { recursive: true });
   synchronizeVersions(source, { version: baselineVersion });
