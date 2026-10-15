@@ -1,6 +1,17 @@
 use crate::service::{Service, public};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dewbow_protocol::{content_ref, error, id, now};
 use serde_json::{Value, json};
+
+fn reference(sid: &str, item: &str, part: &str, index: usize, body: &str, complete: bool) -> Value {
+    let token = URL_SAFE_NO_PAD.encode(json!([sid, item, part, index]).to_string());
+    content_ref(
+        &token,
+        if part == "diff" { "diff" } else { "output" },
+        body.len(),
+        complete,
+    )
+}
 
 impl Service {
     pub(crate) fn project(
@@ -48,31 +59,16 @@ impl Service {
         if kind == "commandExecution" {
             activity["title"] = json!("Command");
             activity["command"] = item["command"].clone();
-            let existing = self.store.content_meta(sid, item_id)?;
             let finished = ["completed", "failed", "declined"]
                 .iter()
                 .any(|s| item["status"] == *s);
-            let (content, bytes, captured_complete) =
-                if let Some((content, bytes, known, captured)) =
-                    existing.filter(|(_, _, known, captured)| *known || *captured)
-                {
-                    if finished && captured {
-                        self.store.finish_capture(&content)?;
-                    }
-                    (content, bytes, known || finished && captured)
-                } else {
-                    let body = item["aggregatedOutput"].as_str().unwrap_or("");
-                    let complete = finished && body.is_empty();
-                    let content = self
-                        .store
-                        .save_content(sid, item_id, "output", body, complete)?;
-                    (content, body.len(), complete)
-                };
-            let mut reference = content_ref(&content, "output", bytes, captured_complete);
-            if finished && !captured_complete {
-                reference["completeness"] = json!("unknown");
+            let body = item["aggregatedOutput"].as_str().unwrap_or("");
+            let mut content =
+                reference(sid, item_id, "output", 0, body, finished && body.is_empty());
+            if finished && !body.is_empty() {
+                content["completeness"] = json!("unknown");
             }
-            refs.push(reference);
+            refs.push(content);
         } else if kind == "fileChange" {
             activity["title"] = json!("File changes");
             let mut paths = Vec::new();
@@ -80,29 +76,17 @@ impl Service {
                 for (index, change) in changes.iter().enumerate() {
                     paths.push(change["path"].clone());
                     let body = change["diff"].as_str().unwrap_or("");
-                    let content = self.store.save_content(
-                        sid,
-                        &format!("{item_id}:diff:{index}"),
-                        "diff",
-                        body,
-                        complete,
-                    )?;
-                    let mut reference = content_ref(&content, "diff", body.len(), complete);
-                    reference["label"] = change["path"].clone();
-                    refs.push(reference);
+                    let mut content = reference(sid, item_id, "diff", index, body, complete);
+                    content["label"] = change["path"].clone();
+                    refs.push(content);
                 }
             }
             activity["paths"] = json!(paths);
         } else {
             let body = item.to_string();
-            let content = self
-                .store
-                .save_content(sid, item_id, "output", &body, complete)?;
-            refs.push(content_ref(&content, "output", body.len(), complete));
+            refs.push(reference(sid, item_id, "item", 0, &body, complete));
         }
         activity["contents"] = json!(refs);
-        self.store
-            .put("activity", &format!("{sid}:{item_id}"), &activity)?;
         Ok((None, Some(activity)))
     }
     pub(crate) async fn history(&self, sid: &str, input: &Value) -> anyhow::Result<Value> {
@@ -183,7 +167,46 @@ impl Service {
             json!({"events":events,"nextCursor":cursor,"hasMore":more,"messages":messages,"activities":activities,"beforeCursor":page["beforeCursor"],"afterCursor":page["afterCursor"],"updateCursor":page["updateCursor"],"hasMoreUpdates":page["hasMoreUpdates"].as_bool().unwrap_or(false),"liveMessages":live_messages,"historyError":history_error,"eventsError":null}),
         )
     }
-    pub(crate) fn read_content(&self, input: &Value) -> anyhow::Result<Value> {
+    pub(crate) async fn native_item(&self, sid: &str, item: &str) -> anyhow::Result<Value> {
+        let session = self.summary(sid).await?;
+        let thread = session["codexThreadId"]
+            .as_str()
+            .ok_or_else(|| error("NOT_FOUND", "Native conversation is unavailable."))?;
+        match dewbow_sdk::history::read_item(&self.config.codex_home, thread, item) {
+            Ok(record) => {
+                if record["completedAtMs"].is_null()
+                    && let Some(live) = self
+                        .live
+                        .lock()
+                        .unwrap()
+                        .get(&format!("{sid}:{item}"))
+                        .and_then(|row| row.get("record"))
+                {
+                    return Ok(live.clone());
+                }
+                Ok(record)
+            }
+            Err(cause) => {
+                if let Some(record) = self
+                    .live
+                    .lock()
+                    .unwrap()
+                    .get(&format!("{sid}:{item}"))
+                    .and_then(|row| row.get("record"))
+                {
+                    return Ok(record.clone());
+                }
+                if cause
+                    .downcast_ref::<dewbow_protocol::ManagementError>()
+                    .is_some()
+                {
+                    return Err(cause);
+                }
+                Err(error("UNAVAILABLE", "Native item could not be read.").into())
+            }
+        }
+    }
+    pub(crate) async fn read_content(&self, input: &Value) -> anyhow::Result<Value> {
         let sid = dewbow_protocol::text(input, "sessionId")?;
         let content = dewbow_protocol::text(input, "contentId")?;
         let cursor = input["contentCursor"]
@@ -201,10 +224,85 @@ impl Service {
             (4..=262144).contains(&limit),
             error("INVALID_INPUT", "Invalid content range.")
         );
-        let (body, bytes, complete) = self.store.chunk(sid, content, cursor, limit)?;
-        let end = cursor + body.len();
+        let (body, completeness) = if let Some(iid) = content.strip_prefix("interaction:") {
+            let interaction = self
+                .store
+                .get("interaction", iid)?
+                .filter(|v| v["sessionId"] == sid)
+                .ok_or_else(|| error("NOT_FOUND", "Interaction is no longer available."))?;
+            (interaction["details"].to_string(), "complete")
+        } else {
+            let spec: Value = URL_SAFE_NO_PAD
+                .decode(content)
+                .ok()
+                .filter(|v| v.len() <= 2048)
+                .and_then(|v| serde_json::from_slice(&v).ok())
+                .filter(|v: &Value| v.is_array() && v.as_array().unwrap().len() == 4 && v[0] == sid)
+                .ok_or_else(|| {
+                    error("NOT_FOUND", "Content is unavailable for this conversation.")
+                })?;
+            let item_id = spec[1]
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 384)
+                .ok_or_else(|| error("INVALID_INPUT", "Invalid native item reference."))?;
+            let index = spec[3]
+                .as_u64()
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or_else(|| error("INVALID_INPUT", "Invalid native content selector."))?;
+            let record = self.native_item(sid, item_id).await?;
+            let item = &record["item"];
+            let complete = !record["completedAtMs"].is_null();
+            let body = match spec[2].as_str() {
+                Some("output") if item["type"] == "commandExecution" && index == 0 => {
+                    item["aggregatedOutput"].as_str().unwrap_or("").to_string()
+                }
+                Some("diff") if item["type"] == "fileChange" => item["changes"]
+                    .as_array()
+                    .and_then(|changes| changes.get(index))
+                    .and_then(|v| v["diff"].as_str())
+                    .ok_or_else(|| error("NOT_FOUND", "Native diff is unavailable."))?
+                    .to_string(),
+                Some("item")
+                    if index == 0
+                        && ![
+                            "reasoning",
+                            "userMessage",
+                            "agentMessage",
+                            "plan",
+                            "commandExecution",
+                            "fileChange",
+                        ]
+                        .iter()
+                        .any(|kind| item["type"] == *kind) =>
+                {
+                    item.to_string()
+                }
+                _ => return Err(error("NOT_FOUND", "Native content is unavailable.").into()),
+            };
+            let completeness = if item["type"] == "commandExecution" && !body.is_empty() && complete
+            {
+                "unknown"
+            } else if complete {
+                "complete"
+            } else {
+                "partial"
+            };
+            (body, completeness)
+        };
+        let bytes = body.len();
+        anyhow::ensure!(
+            cursor <= bytes && body.is_char_boundary(cursor),
+            error(
+                "INVALID_INPUT",
+                "Content cursor is not a valid UTF-8 position."
+            )
+        );
+        let mut end = cursor.saturating_add(limit).min(bytes);
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
         Ok(
-            json!({"contentId":content,"text":body,"byteOffset":cursor,"byteLength":bytes,"nextCursor":if end<bytes{json!(format!("{content}:{end}"))}else{Value::Null},"completeness":if complete{"complete"}else{"partial"},"availability":"available"}),
+            json!({"contentId":content,"text":&body[cursor..end],"byteOffset":cursor,"byteLength":bytes,"nextCursor":if end<bytes{json!(format!("{content}:{end}"))}else{Value::Null},"completeness":completeness,"availability":"available"}),
         )
     }
     pub(crate) async fn native_event(&self, message: Value) -> anyhow::Result<()> {
@@ -271,6 +369,15 @@ impl Service {
         }
         turn["codexTurnId"] = json!(native_turn);
         if message.get("id").is_some() {
+            if self.store.list("interaction")?.len() >= 64 {
+                self.runtime.reject(message["id"].clone()).await?;
+                self.emit(
+                    &mut session,
+                    "interaction_rejected",
+                    json!({"reason":"Pending interaction capacity exceeded."}),
+                )?;
+                return Ok(());
+            }
             let iid = id();
             let questions = params["questions"]
                 .as_array()
@@ -299,9 +406,11 @@ impl Service {
                 details = json!({"action":{"kind":"unsupported","reason":"Interaction exceeds the supported size. Interrupt the turn."}});
             }
             let raw = details.to_string();
-            let content = self.store.save_content(&sid, &iid, "output", &raw, true)?;
+            let content = format!("interaction:{iid}");
             let blocking = params["isBlocking"].as_bool().unwrap_or(true);
             let interaction = json!({"interactionId":iid,"sessionId":sid,"turnId":turn_id,"itemId":params["itemId"],"kind":kind,"authority":"operator","blocking":blocking,"status":"pending","createdAt":now(),"observedAt":now(),"decision":null,"requestId":null,"content":content_ref(&content,"output",raw.len(),true),"sensitive":is_questions && questions.unwrap().iter().any(|q|q["isSecret"]==true),"runtimeId":self.instance,"nativeRequestId":message["id"],"nativeMethod":method});
+            let mut interaction = interaction;
+            interaction["details"] = details;
             self.store.put("interaction", &iid, &interaction)?;
             if blocking {
                 turn["state"] = json!(if kind == "approval" {
@@ -327,6 +436,7 @@ impl Service {
             if !["completed", "interrupted", "failed"].contains(&status) {
                 return Ok(());
             }
+            self.confirm_delivery(&turn)?;
             turn["state"] = json!(if status == "failed" { "error" } else { status });
             session["runtimeState"] = json!(if status == "completed" {
                 "idle"
@@ -336,24 +446,23 @@ impl Service {
                 status
             });
             session["activeTurnId"] = Value::Null;
-            for mut interaction in self.store.list("interaction")? {
-                if interaction["turnId"] == turn_id {
-                    interaction["status"] = json!(if interaction["status"] == "delivered" {
-                        "resolved"
-                    } else {
-                        "invalidated"
-                    });
-                    self.store.put(
-                        "interaction",
-                        interaction["interactionId"].as_str().unwrap(),
-                        &interaction,
-                    )?;
-                }
-            }
+            self.store.forget_interactions(&sid);
         } else if method == "item/commandExecution/outputDelta" {
             if let (Some(item), Some(delta)) = (params["itemId"].as_str(), params["delta"].as_str())
             {
-                self.store.append_output(&sid, item, delta)?;
+                let key = format!("{sid}:{item}");
+                let mut live = self.live.lock().unwrap();
+                if let Some(row) = live.get_mut(&key) {
+                    let mut body = row["record"]["item"]["aggregatedOutput"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    if body.len() + delta.len() <= 1_048_576 {
+                        body.push_str(delta);
+                        row["activity"]["contents"][0]["byteLength"] = json!(body.len());
+                        row["record"]["item"]["aggregatedOutput"] = json!(body);
+                    }
+                }
             }
         } else if method == "item/agentMessage/delta" {
             let item = params["itemId"].as_str().unwrap_or("");
@@ -372,7 +481,7 @@ impl Service {
                 let finished = method == "item/completed";
                 let record = json!({"item":item,"turnId":native_turn,"ordinal":null,"updatedOrdinal":null,"createdAtMs":chrono::Utc::now().timestamp_millis(),"completedAtMs":if finished{json!(chrono::Utc::now().timestamp_millis())}else{Value::Null},"turnStatus":turn["state"]});
                 let (message, activity) = self.project(&sid, &record)?;
-                let mut row = json!({"sessionId":sid});
+                let mut row = json!({"sessionId":sid,"record":record});
                 if let Some(message) = message {
                     row["message"] = message;
                 }
@@ -381,10 +490,12 @@ impl Service {
                 }
                 let mut live = self.live.lock().unwrap();
                 live.insert(format!("{sid}:{}", item["id"].as_str().unwrap_or("")), row);
-                while live.len() > 1000 {
-                    live.pop_first();
-                }
             }
+        }
+        if method.starts_with("item/") {
+            self.trim_live();
+            let _ = self.changed.send(());
+            return Ok(());
         }
         turn["observedAt"] = json!(now());
         self.store.put("turn", &turn_id, &turn)?;

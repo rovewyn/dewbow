@@ -81,6 +81,7 @@ pub struct Service {
     pub tickets: Mutex<HashMap<String, Instant>>,
     pub cookies: Mutex<HashMap<String, Instant>>,
     inventory: AsyncMutex<Option<(Instant, Value)>>,
+    requests: AsyncMutex<()>,
     locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     pub(crate) live: Mutex<BTreeMap<String, Value>>,
 }
@@ -110,6 +111,25 @@ impl Service {
                 "RECOVERY_REQUIRED: the previously owned native process is still alive; verify ownership before stopping it"
             );
         }
+        for mut session in store.list("session")? {
+            session["hostId"] = json!(config.host_id);
+            session["connectionState"] = json!("disconnected");
+            session["runtimeState"] = json!("unknown");
+            session["lastKnownState"] = json!("unknown");
+            session["lastKnownAt"] = json!(now());
+            session["observedAt"] = json!(now());
+            session["latestCursor"] = json!(0);
+            session["managed"] = json!(true);
+            session["name"] = json!("Conversation");
+            session["native"] = Value::Null;
+            store.put("session", session["sessionId"].as_str().unwrap(), &session)?;
+        }
+        for mut turn in store.list("turn")? {
+            turn["state"] = json!("unknown");
+            turn["observedAt"] = json!(now());
+            turn["error"] = Value::Null;
+            store.put("turn", turn["turnId"].as_str().unwrap(), &turn)?;
+        }
         let (runtime, mut events) =
             Runtime::spawn(&config.codex_executable, &config.codex_home).await?;
         store.put("meta", "owner", &json!({"pid":runtime.pid}))?;
@@ -130,6 +150,7 @@ impl Service {
             tickets: Mutex::new(HashMap::new()),
             cookies: Mutex::new(HashMap::new()),
             inventory: AsyncMutex::new(None),
+            requests: AsyncMutex::new(()),
             locks: Mutex::new(HashMap::new()),
             live: Mutex::new(BTreeMap::new()),
         });
@@ -175,7 +196,16 @@ impl Service {
             .ok_or_else(|| error("NOT_FOUND", "Conversation is unavailable.").into())
     }
     pub async fn summary(&self, session: &str) -> anyhow::Result<Value> {
-        if let Some(value) = self.store.get("session", session)? {
+        if let Some(mut value) = self.store.get("session", session)? {
+            if let Some(native) = self.inventory().await["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == value["codexThreadId"])
+            {
+                value["native"] = native.clone();
+                value["name"] = native["name"].clone();
+            }
             return Ok(public(value));
         }
         self.inventory().await["sessions"]
@@ -197,7 +227,15 @@ impl Service {
                 .list(kind)?
                 .into_iter()
                 .filter(|row| row["sessionId"] == session)
-                .map(public)
+                .map(|mut row| {
+                    if kind == "operation" {
+                        row["authority"] = json!("operator");
+                    }
+                    if kind == "turn" && row["observedAt"].is_null() {
+                        row["observedAt"] = row["createdAt"].clone();
+                    }
+                    public(row)
+                })
                 .collect())
         };
         Ok(
@@ -222,6 +260,18 @@ impl Service {
             .put("session", session["sessionId"].as_str().unwrap(), session)?;
         let _ = self.changed.send(());
         Ok(())
+    }
+    pub(crate) fn trim_live(&self) {
+        let mut live = self.live.lock().unwrap();
+        while live.len() > 256
+            || live
+                .values()
+                .map(|row| row.to_string().len())
+                .sum::<usize>()
+                > 16 * 1024 * 1024
+        {
+            live.pop_first();
+        }
     }
     pub async fn api(&self, name: &str, input: Value) -> anyhow::Result<Value> {
         validate(name, &input)?;
@@ -266,20 +316,11 @@ impl Service {
             }
             "getSession" => self.details(text(&input, "sessionId")?).await,
             "readSessionHistory" => self.history(text(&input, "sessionId")?, &input).await,
-            "readSessionContent" => self.read_content(&input),
+            "readSessionContent" => self.read_content(&input).await,
             "getSessionActivity" => {
                 let session = text(&input, "sessionId")?;
                 let item = text(&input, "itemId")?;
-                if let Some(activity) = self.store.get("activity", &format!("{session}:{item}"))? {
-                    return Ok(activity);
-                }
-                let summary = self.summary(session).await?;
-                let thread = summary["codexThreadId"].as_str().unwrap();
-                let db =
-                    dewbow_sdk::discovery::database(&self.config.codex_home, "thread_history_")?;
-                let record=db.query_row("SELECT item_json,turn_id,rollout_ordinal,updated_at_ordinal,created_at_ms,completed_at_ms FROM thread_items WHERE thread_id=? AND item_id=?",[thread,item],|r|Ok(json!({"itemJson":r.get::<_,String>(0)?,"turnId":r.get::<_,String>(1)?,"ordinal":r.get::<_,i64>(2)?,"updatedOrdinal":r.get::<_,i64>(3)?,"createdAtMs":r.get::<_,i64>(4)?,"completedAtMs":r.get::<_,Option<i64>>(5)?})))?;
-                let mut record = record;
-                record["item"] = serde_json::from_str(record["itemJson"].as_str().unwrap())?;
+                let record = self.native_item(session, item).await?;
                 self.project(session, &record)?
                     .1
                     .ok_or_else(|| error("NOT_FOUND", "Activity is unavailable.").into())
@@ -300,6 +341,8 @@ impl Service {
         let key = input["sessionId"].as_str().unwrap_or(&request).to_string();
         let lock = self.state_lock(&key);
         let _guard = lock.lock().await;
+        // Request IDs belong to the daemon, including across different session gates.
+        let request_guard = self.requests.lock().await;
         let fingerprint =
             dewbow_protocol::hex(&Sha256::digest(json!([name, input]).to_string().as_bytes()));
         if let Some(operation) = self.store.get("operation", &request)? {
@@ -310,14 +353,21 @@ impl Service {
                     "Request ID already has different input."
                 )
             );
+            let mut operation = operation;
+            operation["authority"] = json!("operator");
             return Ok(public(operation));
         }
+        anyhow::ensure!(
+            !self.stopped.load(std::sync::atomic::Ordering::Relaxed),
+            error("UNAVAILABLE", "Daemon is shutting down.")
+        );
         let session = input["sessionId"]
             .as_str()
             .map(str::to_string)
             .unwrap_or_else(id);
         let mut operation = json!({"requestId":request,"commandId":id(),"operation":name,"authority":"operator","sessionId":session,"turnId":input.get("turnId").unwrap_or(&Value::Null),"status":"accepted","createdAt":now(),"error":null,"fingerprint":fingerprint});
         self.store.put("operation", &request, &operation)?;
+        drop(request_guard);
         match self.execute(name, &input, &mut operation).await {
             Ok(()) => operation["status"] = json!("delivered"),
             Err(cause) => {
@@ -448,7 +498,7 @@ impl Service {
                 let resolved = self
                     .resolve_config(work.to_str().unwrap(), &options)
                     .await?;
-                json!({"sessionId":sid,"hostId":self.config.host_id,"workDir":work,"codexThreadId":null,"sessionConfig":{"overrides":options,"resolved":resolved},"connectionState":"connecting","createdAt":now(),"runtimeState":"unknown","lastKnownState":"unknown","lastKnownAt":now(),"observedAt":now(),"activeTurnId":null,"latestCursor":0,"managed":true,"name":"New conversation","native":null})
+                json!({"sessionId":sid,"hostId":self.config.host_id,"workDir":work,"codexThreadId":null,"sessionConfig":{"resolved":resolved},"connectionState":"connecting","createdAt":now(),"runtimeState":"unknown","lastKnownState":"unknown","lastKnownAt":now(),"observedAt":now(),"activeTurnId":null,"latestCursor":0,"managed":true,"name":"New conversation","native":null})
             } else {
                 self.summary(&sid).await?
             };
@@ -603,11 +653,7 @@ impl Service {
                         "Exact interaction is no longer pending."
                     )
                 );
-                let (raw, _) = self
-                    .store
-                    .content(&sid, text(&interaction["content"], "contentId")?)?
-                    .ok_or_else(|| error("NOT_FOUND", "Interaction content is unavailable."))?;
-                let mut details: Value = serde_json::from_str(&raw)?;
+                let mut details = interaction["details"].clone();
                 let response = if name == "answerQuestions" {
                     anyhow::ensure!(
                         interaction["kind"] == "questions",
@@ -647,13 +693,7 @@ impl Service {
                         result.insert(key.into(), json!({"answers":values}));
                     }
                     details["answers"] = input["answers"].clone();
-                    self.store.save_content(
-                        &sid,
-                        interaction_id,
-                        "output",
-                        &details.to_string(),
-                        true,
-                    )?;
+                    interaction["details"] = details.clone();
                     json!({"answers":result})
                 } else {
                     anyhow::ensure!(
@@ -714,20 +754,23 @@ impl Service {
         }
         Ok(())
     }
-    async fn recover(&self) -> anyhow::Result<()> {
-        for mut interaction in self.store.list("interaction")? {
-            if ["pending", "requested", "delivered"]
+    pub(crate) fn confirm_delivery(&self, turn: &Value) -> anyhow::Result<()> {
+        let request = text(turn, "requestId")?;
+        if let Some(mut operation) = self.store.get("operation", request)?
+            && operation["operation"] == "sendMessage"
+            && operation["sessionId"] == turn["sessionId"]
+            && operation["turnId"] == turn["turnId"]
+            && ["accepted", "unknown"]
                 .iter()
-                .any(|s| interaction["status"] == *s)
-            {
-                interaction["status"] = json!("invalidated");
-                self.store.put(
-                    "interaction",
-                    interaction["interactionId"].as_str().unwrap(),
-                    &interaction,
-                )?;
-            }
+                .any(|state| operation["status"] == *state)
+        {
+            operation["status"] = json!("delivered");
+            operation["error"] = Value::Null;
+            self.store.put("operation", request, &operation)?;
         }
+        Ok(())
+    }
+    async fn recover(&self) -> anyhow::Result<()> {
         for mut operation in self.store.list("operation")? {
             if operation["status"] == "accepted" {
                 operation["status"] = json!("unknown");
@@ -738,7 +781,11 @@ impl Service {
                 )?;
             }
         }
-        for mut session in self.store.list("session")? {
+        for retained in self.store.list("session")? {
+            let sid = text(&retained, "sessionId")?;
+            let lock = self.state_lock(sid);
+            let _guard = lock.lock().await;
+            let mut session = self.session(sid)?;
             session["connectionState"] = json!("error");
             session["runtimeState"] = json!("unknown");
             if let Some(thread) = session["codexThreadId"].as_str() {
@@ -760,6 +807,9 @@ impl Service {
                                 .as_array()
                                 .and_then(|turns| turns.iter().find(|t| t["id"] == id))
                         });
+                        if saved.is_some() {
+                            self.confirm_delivery(&turn)?;
+                        }
                         if let Some(saved) = saved.filter(|t| {
                             ["completed", "interrupted", "failed"]
                                 .iter()

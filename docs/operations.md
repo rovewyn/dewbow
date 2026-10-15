@@ -36,7 +36,7 @@ On Linux/macOS, `SIGTERM`, `SIGINT` and `SIGHUP` request the same owned-runtime 
 
 Unknown delivery after a restart is not successful execution. Inspect the turn, request and native history. Retry the original request only with identical input and request ID; an unresolved turn blocks another send. Old runtime callbacks cannot be replayed. Empty native conversations that cannot resume require explicit recovery rather than silent replacement.
 
-To reset obsolete Dewbow state, stop the daemon and verify its owned native runtime is gone, then retain the old private state as a backup and initialize a fresh directory. Do not remove native Codex home, conversations, credentials or workspace files. Previous TypeScript management databases are not imported or deleted. Keep backups and local acceptance results out of Git.
+To reset obsolete Dewbow state, stop the daemon and verify its owned native runtime is gone, then retain the old private state as a backup and initialize a fresh directory with `dewbow --state-dir <fresh-directory> init`. Startup rejects earlier Rust state containing a separate content database or the obsolete journal schema. Old Rust and TypeScript management databases are not imported or deleted. Do not remove native Codex home, conversations, credentials or workspace files. Keep backups and local acceptance results out of Git.
 
 ## Acceptance
 

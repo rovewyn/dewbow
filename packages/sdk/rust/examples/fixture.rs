@@ -177,7 +177,9 @@ fn main() {
                 .unwrap();
                 let item = json!({"type":"userMessage","id":id(),"content":[{"type":"text","text":text}],"clientId":params["clientUserMessageId"]});
                 save(&db, thread, &turn, &item, true);
-                emit(json!({"id":request,"result":{"turn":{"id":turn,"status":"inProgress"}}}));
+                if text != "UNCERTAIN_COMPLETE" {
+                    emit(json!({"id":request,"result":{"turn":{"id":turn,"status":"inProgress"}}}));
+                }
                 notify(
                     "turn/started",
                     json!({"threadId":thread,"turn":{"id":turn}}),
@@ -214,11 +216,17 @@ fn main() {
                             json!({"threadId":thread,"turnId":turn,"itemId":command,"delta":std::str::from_utf8(chunk).unwrap()}),
                         );
                     }
-                    let completed = json!({"type":"commandExecution","id":command,"command":"synthetic Unicode output","status":"completed","aggregatedOutput":"truncated native aggregate"});
+                    let completed = json!({"type":"commandExecution","id":command,"command":"synthetic Unicode output","status":"completed","aggregatedOutput":format!("{}[truncated]", "中文 🚀\n".repeat(10000))});
                     save(&db, thread, &turn, &completed, true);
                     notify(
                         "item/completed",
                         json!({"threadId":thread,"turnId":turn,"item":completed}),
+                    );
+                    let change = json!({"type":"fileChange","id":id(),"status":"completed","changes":[{"path":"synthetic.txt","diff":"@@ -0,0 +1 @@\n+DIFF_CANARY\n"}]});
+                    save(&db, thread, &turn, &change, true);
+                    notify(
+                        "item/completed",
+                        json!({"threadId":thread,"turnId":turn,"item":change}),
                     );
                     finish(&db, thread, &turn, "completed", "Output complete");
                 } else if text != "WAIT" {

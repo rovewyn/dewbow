@@ -15,7 +15,7 @@ export interface ResolvedSessionConfig {
   approvalPolicy: "on-request"; approvalsReviewer: "user"; sandbox: WorkspaceSandbox;
 }
 export interface SessionConfig {
-  overrides: SessionOptions; resolved: ResolvedSessionConfig | null;
+  resolved: ResolvedSessionConfig | null;
 }
 export interface Session {
   sessionId: string; hostId: string; workDir: string | null; codexThreadId: string | null;
@@ -101,7 +101,7 @@ export interface SessionHistory extends EventHistory, Omit<NativeHistory, "obser
   historyError: ManagementErrorData | null; eventsError?: ManagementErrorData | null;
 }
 export interface HistoryPosition { cursor?: number | undefined; updateCursor?: string | undefined }
-export interface SessionUpdates { contractVersion: "v1"; details: SessionDetails; history: SessionHistory }
+export interface SessionUpdates { contractVersion: "v1"; instanceId: string; details: SessionDetails; history: SessionHistory }
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;

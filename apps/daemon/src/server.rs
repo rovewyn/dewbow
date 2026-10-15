@@ -249,7 +249,7 @@ async fn subscribe(
                     ),
                 ));
             }
-            let mut query = json!({"cursor":cursor});
+            let mut query = json!({"cursor":if first {0} else {cursor}});
             if let Some(cursor) = &native_cursor {
                 query["updateCursor"] = json!(cursor);
             }
@@ -257,7 +257,7 @@ async fn subscribe(
                 let details = service.details(&sid).await?;
                 let history = service.history(&sid, &query).await?;
                 Ok::<_, anyhow::Error>(
-                    json!({"contractVersion":"v1","details":details,"history":history}),
+                    json!({"contractVersion":"v1","instanceId":service.instance,"details":details,"history":history}),
                 )
             }
             .await;
