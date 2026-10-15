@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
+import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -27,7 +28,7 @@ async function prepare() {
 }
 async function until(read, predicate, description) { for (let i = 0; i < 100; i++) { const value = await read(); if (predicate(value)) return value; await delay(100); } throw new Error(`Timed out: ${description}`); }
 async function operator(env) {
-  const control = async name => { const response = await fetch(`${env.origin}/internal/${name}`, { method: 'POST', headers: { Connection: 'close', Authorization: `Bearer ${env.config.controlToken}` } }); return (await response.json()).result; };
+  const control = async (name, input) => { const response = await fetch(`${env.origin}/internal/${name}`, { method: 'POST', headers: { Connection: 'close', Authorization: `Bearer ${env.config.controlToken}`, ...(input ? { 'Content-Type': 'application/json' } : {}) }, ...(input ? { body: JSON.stringify(input) } : {}) }); const data = await response.json(); if (data.error) throw Object.assign(new Error(data.error.message), data.error); return data.result; };
   const { ticket } = await control('ticket');
   const response = await fetch(`${env.origin}/auth/login`, { method: 'POST', headers: { Connection: 'close', Origin: env.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
   assert.equal(response.status, 200);
@@ -35,6 +36,65 @@ async function operator(env) {
   const request = async (operation, input = {}) => { const response = await fetch(`${env.origin}/api/${operation}`, { method: 'POST', headers: { Connection: 'close', Origin: env.origin, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); const data = await response.json(); if (data.error) throw Object.assign(new Error(data.error.message), data.error); return data.result; };
   return { request, cookie, ticket, control };
 }
+
+test('upgrade preflight preserves service and maintenance drains admitted work', { timeout: 45000 }, async () => {
+  const env = await prepare();
+  try {
+    const first = JSON.parse(invoke(env.state, 'daemon', 'start'));
+    const op = await operator(env);
+    const install = join(env.state, 'installation'); await fs.mkdir(install);
+    const installed = join(install, `dewbow${suffix}`); await fs.copyFile(binary, installed); await fs.chmod(installed, 0o755);
+    const archive = join(install, 'corrupt-release');
+    await fs.writeFile(archive, 'synthetic interrupted download');
+    await fs.writeFile(`${archive}.sha256`, `${'0'.repeat(64)}  archive\n`);
+    assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', archive], { encoding: 'utf8', timeout: 10000, windowsHide: true }), /checksum/);
+    assert.equal((await op.control('status')).instanceId, first.instanceId, 'A preflight failure must not stop the live daemon');
+    assert.equal((await op.control('status')).maintenance, false);
+    const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : process.platform === 'linux' ? 'x86_64-unknown-linux-gnu' : process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+    const releaseName = `dewbow-99.0.0-${target}`, packageRoot = join(install, releaseName);
+    await fs.mkdir(packageRoot); await fs.copyFile(binary, join(packageRoot, `dewbow${suffix}`)); await fs.writeFile(join(packageRoot, 'CLI.md'), '# Synthetic release');
+    const packagePath = join(install, `${releaseName}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`);
+    const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+    for (const rollbackSafe of [false, true]) {
+      await fs.writeFile(join(packageRoot, 'release.json'), JSON.stringify({ version: '99.0.0', target, executable: `dewbow${suffix}`, binarySha256: hash(await fs.readFile(binary)), upgrade: { contractVersion: 'v1', stateSchema: 1, rollbackSafe } }));
+      const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
+      execFileSync(tar, [process.platform === 'win32' ? '-acf' : '-czf', packagePath, '-C', install, releaseName], { windowsHide: true });
+      await fs.writeFile(`${packagePath}.sha256`, `${hash(await fs.readFile(packagePath))}  ${packagePath.slice(install.length + 1)}\n`);
+      assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', packagePath], { encoding: 'utf8', timeout: 10000, windowsHide: true }), rollbackSafe ? /wrong version/ : /manual state/);
+      assert.equal((await op.control('status')).instanceId, first.instanceId);
+      assert.equal((await op.control('status')).maintenance, false);
+    }
+    const ownership = { instanceId: first.instanceId, token: crypto.randomUUID() };
+    await fs.writeFile(join(env.home, 'upgrade-slow-start-once'), 'synthetic');
+    const connecting = op.request('createSession', { hostId: env.config.hostId, workDir: env.work, requestId: 'upgrade-create' });
+    await until(async () => fs.access(join(env.home, 'upgrade-slow-start-once')).then(() => false, () => true), Boolean, 'admitted native create');
+    assert.equal((await op.control('beginUpgrade', ownership)).inFlight, 1);
+    await assert.rejects(op.control('stopUpgrade', ownership), { code: 'SESSION_BUSY' });
+    await assert.rejects(op.control('pollUpgrade', { ...ownership, token: crypto.randomUUID() }), { code: 'UNAVAILABLE' });
+    await assert.rejects(op.control('cancelUpgrade', { ...ownership, instanceId: 'another-instance' }), { code: 'RECOVERY_REQUIRED' });
+    const created = await connecting; assert.equal(created.status, 'delivered');
+    await op.control('cancelUpgrade', ownership);
+    const sid = created.sessionId;
+    const input = { sessionId: sid, message: 'QUESTIONS', requestId: 'upgrade-question' };
+    await op.request('sendMessage', input);
+    const detail = await until(() => op.request('getSession', { sessionId: sid }), d => d.interactions.some(i => i.status === 'pending'), 'draining question');
+    assert.equal((await op.control('beginUpgrade', ownership)).activeTurns, 1);
+    for (const [name, input] of [
+      ['createSession', { hostId: env.config.hostId, workDir: env.work, requestId: 'blocked-create' }],
+      ['connectSession', { sessionId: sid, requestId: 'blocked-connect' }],
+      ['sendMessage', { sessionId: sid, message: 'blocked', requestId: 'blocked-send' }],
+    ]) await assert.rejects(op.request(name, input), { code: 'UNAVAILABLE' });
+    assert.equal((await op.request('sendMessage', input)).status, 'delivered', 'Idempotent reads do not execute new work');
+    const question = detail.interactions.find(i => i.status === 'pending');
+    assert.equal((await op.request('answerQuestions', { sessionId: sid, turnId: detail.session.activeTurnId, interactionId: question.interactionId, requestId: 'upgrade-answer', answers: [{ questionId: 'choice', answers: ['One'] }] })).status, 'delivered');
+    await until(() => op.control('pollUpgrade', ownership), v => v.activeTurns === 0 && v.inFlight === 0, 'drained native work');
+    await op.control('cancelUpgrade', ownership);
+    assert.equal((await op.control('status')).maintenance, false);
+    assert.equal((await op.request('sendMessage', { sessionId: sid, message: 'admission restored', requestId: 'upgrade-restored' })).status, 'delivered');
+  } finally {
+    try { invoke(env.state, 'daemon', 'stop'); } finally { await fs.rm(env.state, { recursive: true, force: true }); }
+  }
+});
 
 test('Rust lifecycle, operator authority, execution, callback identity and recovery', { timeout: 180000 }, async () => {
   const env = await prepare(); let started = false, passed = false;

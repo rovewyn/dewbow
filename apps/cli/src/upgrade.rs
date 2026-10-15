@@ -33,7 +33,7 @@ fn target() -> anyhow::Result<&'static str> {
     }
 }
 
-fn hash(path: &Path) -> anyhow::Result<String> {
+pub(crate) fn hash(path: &Path) -> anyhow::Result<String> {
     let mut source = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0; 65536];
@@ -80,7 +80,20 @@ impl Drop for Stage {
     }
 }
 
-fn tar(args: &[&std::ffi::OsStr]) -> anyhow::Result<String> {
+async fn output(mut command: Command) -> anyhow::Result<std::process::Output> {
+    config::hidden(&mut command);
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::from(command)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("Release verification subprocess timed out")?
+    .context("Release verification subprocess could not run")
+}
+
+async fn tar(args: &[&std::ffi::OsStr]) -> anyhow::Result<String> {
     // Git for Windows' tar cannot safely handle native drive-qualified paths.
     let executable = if cfg!(windows) {
         PathBuf::from(std::env::var_os("SystemRoot").context("SystemRoot is unavailable")?)
@@ -89,17 +102,22 @@ fn tar(args: &[&std::ffi::OsStr]) -> anyhow::Result<String> {
         PathBuf::from("tar")
     };
     let mut command = Command::new(executable);
-    config::hidden(&mut command);
-    let output = command
-        .args(args)
-        .output()
-        .context("A system tar executable is required")?;
+    command.args(args);
+    let output = output(command).await?;
     ensure!(output.status.success(), "Release archive operation failed");
-    Ok(String::from_utf8(output.stdout)?)
+    // Windows tar can localize verbose dates and owner names using the system
+    // code page. Entries must still match our ASCII allowlist exactly; verbose
+    // validation uses only the ASCII file-type prefix on each line.
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn unpack(archive: &Path, stage: &Path, name: &str, executable: &str) -> anyhow::Result<PathBuf> {
-    let listing = tar(&["-tf".as_ref(), archive.as_os_str()])?;
+async fn unpack(
+    archive: &Path,
+    stage: &Path,
+    name: &str,
+    executable: &str,
+) -> anyhow::Result<PathBuf> {
+    let listing = tar(&["-tf".as_ref(), archive.as_os_str()]).await?;
     let allowed = [executable, "CLI.md", "release.json"].map(|file| format!("{name}/{file}"));
     let entries: Vec<_> = listing.lines().collect();
     ensure!(
@@ -111,7 +129,7 @@ fn unpack(archive: &Path, stage: &Path, name: &str, executable: &str) -> anyhow:
                 .all(|file| entries.iter().filter(|entry| *entry == file).count() == 1),
         "Unexpected or missing release archive entries"
     );
-    let details = tar(&["-tvf".as_ref(), archive.as_os_str()])?;
+    let details = tar(&["-tvf".as_ref(), archive.as_os_str()]).await?;
     ensure!(
         details
             .lines()
@@ -123,7 +141,8 @@ fn unpack(archive: &Path, stage: &Path, name: &str, executable: &str) -> anyhow:
         archive.as_os_str(),
         "-C".as_ref(),
         stage.as_os_str(),
-    ])?;
+    ])
+    .await?;
     let directory = stage.join(name);
     for file in &allowed {
         dewbow_sdk::private::regular(&stage.join(file))?;
@@ -131,13 +150,10 @@ fn unpack(archive: &Path, stage: &Path, name: &str, executable: &str) -> anyhow:
     Ok(directory)
 }
 
-fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
+async fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
     let mut command = Command::new(binary);
-    config::hidden(&mut command);
-    let output = command
-        .arg("--version")
-        .output()
-        .context("Could not run the downloaded executable")?;
+    command.arg("--version");
+    let output = output(command).await?;
     ensure!(
         output.status.success()
             && String::from_utf8(output.stdout)?.trim() == format!("dewbow {expected}"),
@@ -146,6 +162,7 @@ fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn lock_state(state: &Path) -> anyhow::Result<Option<dewbow_daemon::lifecycle::DaemonLock>> {
     if !state.exists() {
         return Ok(None);
@@ -155,8 +172,31 @@ fn lock_state(state: &Path) -> anyhow::Result<Option<dewbow_daemon::lifecycle::D
     Ok(Some(lock))
 }
 
-pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> anyhow::Result<()> {
+pub async fn run(
+    state: Option<&Path>,
+    check: bool,
+    requested: Option<&str>,
+    archive_path: Option<&Path>,
+    recover: bool,
+    wait: Duration,
+    duration: Duration,
+) -> anyhow::Result<()> {
     let target = target()?;
+    let state = std::path::absolute(match state {
+        Some(state) => state.to_path_buf(),
+        None => config::default_state()?,
+    })?;
+    if recover {
+        let executable = std::env::current_exe()?;
+        let _lock = installation_lock(&executable)?;
+        return crate::transaction::recover(&state, &executable, duration).await;
+    }
+    if !check && dewbow_daemon::maintenance::transaction(&state)?.is_some() {
+        ensure!(
+            dewbow_daemon::maintenance::committed(&state)?,
+            "An interrupted upgrade requires upgrade --recover first"
+        );
+    }
     if let Some(requested) = requested {
         version(requested)?;
     }
@@ -170,13 +210,17 @@ pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> 
         || format!("{RELEASE_API}/latest"),
         |value| format!("{RELEASE_API}/tags/{value}"),
     );
-    let release: Value = client
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let release: Value = if archive_path.is_some() {
+        serde_json::json!({"tag_name":requested,"draft":false,"prerelease":false})
+    } else {
+        client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?
+    };
     let selected = release["tag_name"]
         .as_str()
         .context("Release has no version tag")?;
@@ -212,26 +256,9 @@ pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> 
     let parent = executable
         .parent()
         .context("Executable has no installation directory")?;
-    ensure!(
-        !parent.ends_with("target/debug") && !parent.ends_with("target/release"),
-        "Use an installed release executable to upgrade; rebuild development executables from source"
-    );
-    let lock_path = parent.join(".dewbow-upgrade.lock");
-    dewbow_sdk::private::no_links(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("Another Dewbow upgrade is in progress")?;
-    let state = std::path::absolute(match state {
-        Some(state) => state.to_path_buf(),
-        None => config::default_state()?,
-    })?;
-    let _state_lock = lock_state(&state)?;
+    let _lock = installation_lock(&executable)?;
     let stage = Stage(parent.join(format!(".dewbow-upgrade-{}", dewbow_protocol::id())));
-    fs::create_dir(&stage.0)?;
+    config::secure_directory(&stage.0)?;
     let name = format!("dewbow-{selected}-{target}");
     let binary_name = if cfg!(windows) {
         "dewbow.exe"
@@ -242,10 +269,24 @@ pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> 
     let archive = stage.0.join(&archive_name);
     let checksum = stage.0.join("checksum");
     let base = format!("{REPOSITORY}/releases/download/{selected}/{archive_name}");
-    download(&client, &base, &archive, 128 * 1024 * 1024).await?;
-    download(&client, &format!("{base}.sha256"), &checksum, 512).await?;
+    if let Some(source) = archive_path {
+        dewbow_sdk::private::regular(source)?;
+        let source_checksum =
+            PathBuf::from(format!("{}.sha256", source.as_os_str().to_string_lossy()));
+        dewbow_sdk::private::regular(&source_checksum)?;
+        ensure!(
+            fs::metadata(source)?.len() <= 128 * 1024 * 1024
+                && fs::metadata(&source_checksum)?.len() <= 512,
+            "Offline release exceeds the size limit"
+        );
+        fs::copy(source, &archive)?;
+        fs::copy(source_checksum, &checksum)?;
+    } else {
+        download(&client, &base, &archive, 128 * 1024 * 1024).await?;
+        download(&client, &format!("{base}.sha256"), &checksum, 512).await?;
+    }
     verify_checksum(&fs::read_to_string(checksum)?, &archive, &archive_name)?;
-    let directory = unpack(&archive, &stage.0, &name, binary_name)?;
+    let directory = unpack(&archive, &stage.0, &name, binary_name).await?;
     let candidate = directory.join(binary_name);
     let manifest: Value = serde_json::from_slice(&fs::read(directory.join("release.json"))?)?;
     ensure!(
@@ -255,22 +296,40 @@ pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> 
             && manifest["binarySha256"] == hash(&candidate)?,
         "Release manifest does not match the executable, version or target"
     );
+    ensure!(
+        manifest["upgrade"]["contractVersion"] == "v1"
+            && manifest["upgrade"]["stateSchema"] == 1
+            && manifest["upgrade"]["rollbackSafe"] == true,
+        "Release requires manual state or rollback handling; review its upgrade requirements before stopping the daemon"
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755))?;
     }
-    verify_binary(&candidate, selected)?;
-    let backup = parent.join(format!(
-        "{binary_name}.previous-{current}-{}",
-        dewbow_protocol::id()
-    ));
-    crate::replacement::replace(&executable, &candidate, &backup)?;
-    println!(
-        "Upgraded to {selected}. Previous executable retained as {}. Review release notes before restarting the daemon.",
-        backup.file_name().unwrap().to_string_lossy()
+    verify_binary(&candidate, selected).await?;
+    crate::transaction::apply(&executable, &candidate, &state, selected, wait, duration).await
+}
+
+fn installation_lock(executable: &Path) -> anyhow::Result<File> {
+    dewbow_sdk::private::regular(executable)?;
+    let parent = executable
+        .parent()
+        .context("Executable has no installation directory")?;
+    ensure!(
+        !parent.ends_with("target/debug") && !parent.ends_with("target/release"),
+        "Use an installed release executable to upgrade; rebuild development executables from source"
     );
-    Ok(())
+    let path = parent.join(".dewbow-upgrade.lock");
+    dewbow_sdk::private::no_links(&path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    fs2::FileExt::try_lock_exclusive(&lock).context("Another Dewbow upgrade is in progress")?;
+    Ok(lock)
 }
 
 #[cfg(test)]
@@ -297,5 +356,63 @@ mod tests {
         drop(lock);
         fs::write(stage.0.join("instance.json"), b"{}").unwrap();
         assert!(lock_state(&stage.0).is_err());
+    }
+
+    #[tokio::test]
+    async fn download_aborts_on_incomplete_or_oversized_responses() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let stage = Stage(
+            fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!("dewbow-download-test-{}", dewbow_protocol::id())),
+        );
+        fs::create_dir(&stage.0).unwrap();
+        for (name, response, limit) in [
+            (
+                "incomplete",
+                "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort",
+                200,
+            ),
+            (
+                "oversized",
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nlarge",
+                4,
+            ),
+            (
+                "stalled",
+                "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n",
+                200,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let length = stream.read(&mut request).await.unwrap();
+                assert!(length > 0);
+                stream.write_all(response.as_bytes()).await.unwrap();
+                if name == "stalled" {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_millis(200))
+                .build()
+                .unwrap();
+            let error = download(&client, &url, &stage.0.join(name), limit)
+                .await
+                .unwrap_err();
+            if name == "oversized" {
+                assert!(error.to_string().contains("size limit"));
+            }
+            if name == "stalled" {
+                assert!(error.downcast_ref::<reqwest::Error>().unwrap().is_timeout());
+            }
+            server.abort();
+        }
     }
 }
