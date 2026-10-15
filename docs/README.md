@@ -34,3 +34,7 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Operator Web](web.md)
 - [Chat UI](chat-ui.md)
 - [Session update subscriptions](session-updates.md)
+
+## Design proposals
+
+- [Decentralized Network design](network-design.md) records the agreed product behavior; Network functionality is not implemented.
