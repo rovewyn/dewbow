@@ -13,7 +13,7 @@ For an optimized candidate already built by the Release workflow:
 npm run test:upgrade -- --release
 ```
 
-The command archives tracked `HEAD` into an ignored private source directory, changes only that copy's product version to `0.0.0-upgrade-acceptance.0`, and builds it with Cargo's locked dependencies and separate outputs. The candidate keeps the workspace's actual development version. The real release packager creates a synthetic compatible archive containing that candidate. No installed user binary, repository version, published artifact, release tag or real Codex home is changed. Synthetic files use separate state, work, installation and marked native directories under `outputs/`; successful runs remove their own directory and failures retain it for private inspection.
+The command archives tracked `HEAD` into an ignored private source directory, changes only that copy's product version to `0.0.0-upgrade-acceptance.0`, and builds it with Cargo's locked dependencies and separate outputs. The candidate keeps the workspace's actual development version. The real release packager supplies the candidate's archive layout and metadata; separate synthetic archives declare a compatible transaction and a manual-only transition so both policies are exercised independently of the real release policy. No installed user binary, repository version, published artifact, release tag or real Codex home is changed. Synthetic files use separate state, work, installation and marked native directories under `outputs/`; successful runs remove their own directory and failures retain it for private inspection.
 
 The baseline is deliberately a current-format synthetic predecessor. It does not establish support for any published source release. In particular, the released 0.1.0 executable has no upgrade command or maintenance protocol, and its management-state transition is excluded by the [0.2.0 release notes](release-notes/0.2.0.md). Testing the automatic transaction with a compatible predecessor does not override the target release's published upgrade or rollback policy. `--release` tests the same optimized executable that packaging verifies, using a compatible synthetic archive; it does not rewrite the real distribution archive or establish 0.1.0 migration support.
 
@@ -21,6 +21,7 @@ The baseline is deliberately a current-format synthetic predecessor. It does not
 
 | Scenario | Required observation |
 | --- | --- |
+| Manual-transition policy | A synthetic archive declaring `rollbackSafe: false` is rejected before maintenance, with the original service and state preserved. |
 | Interrupted archive delivery | The public upgrader rejects a truncated archive against its original checksum before maintenance. The original daemon instance keeps serving. |
 | Download connection loss | An explicit loopback proxy tunnels authentic GitHub release discovery with ordinary TLS verification, then closes the archive connection. The download must actually hit this fault, and the original daemon must remain unchanged. No certificate store or host trust policy is changed. |
 | Candidate startup failure | The marked native fixture fails the candidate's model probe once. The public upgrader restores and verifies the original executable and service. |

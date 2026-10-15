@@ -103,8 +103,26 @@ try {
   const packageBinary = join(source, 'target', target, 'release', executable);
   await fs.mkdir(dirname(packageBinary), { recursive: true });
   await fs.copyFile(candidate, packageBinary);
-  const archive = packageRelease(source, { target, sourceCommit }).archive;
+  const packaged = packageRelease(source, { target, sourceCommit });
   const candidateHash = await hash(candidate);
+  const packageStage = join(root, 'package');
+  await fs.mkdir(packageStage);
+  execFileSync(tar, ['-xf', packaged.archive, '-C', packageStage], { windowsHide: true });
+  const manifestPath = join(packageStage, packaged.name, 'release.json');
+  const manifest = await readJson(manifestPath);
+  assert.equal(manifest.binarySha256, candidateHash);
+  async function syntheticArchive(rollbackSafe) {
+    // Both declarations belong only to this current-format fixture. In particular,
+    // a real release requiring manual transition must keep its original policy.
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, upgrade: { ...manifest.upgrade, rollbackSafe } }));
+    const destination = join(root, rollbackSafe ? 'compatible' : 'manual');
+    await fs.mkdir(destination);
+    const archive = join(destination, packaged.archive.split(/[\\/]/).at(-1));
+    execFileSync(tar, [windows ? '-acf' : '-czf', archive, '-C', packageStage, packaged.name], { windowsHide: true });
+    await fs.writeFile(`${archive}.sha256`, `${await hash(archive)}  ${archive.split(/[\\/]/).at(-1)}\n`);
+    return archive;
+  }
+  const archive = await syntheticArchive(true), manualArchive = await syntheticArchive(false);
 
   async function prepare(name) {
     const directory = join(root, name);
@@ -213,6 +231,15 @@ try {
     assert.equal(await hash(env.installed), candidateHash, 'Fault must occur after real replacement');
   }
 
+  await scenario('manual-transition-policy', async env => {
+    const args = [...env.upgradeArgs]; args[args.indexOf('--archive') + 1] = manualArchive;
+    const result = await start(env.installed, args).finished;
+    assert.equal(result.code, 1); assert.match(result.stdout + result.stderr, /manual state or rollback/);
+    assert.equal((await env.status()).status, 'failed');
+    assert.equal((await env.control('status')).instanceId, env.first.instanceId);
+    assert.equal(await exists(join(env.job, 'intent.json')), false);
+    await env.preserved(baselineVersion);
+  });
   await scenario('interrupted-archive', async env => {
     const partial = join(root, 'partial-release');
     await fs.writeFile(partial, (await fs.readFile(archive)).subarray(0, 4096));
