@@ -23,7 +23,7 @@ The [store](../apps/daemon/src/store.rs) uses `records(kind, id, data)` with a p
 | Record | Retained purpose | Upgrade invariant |
 | --- | --- | --- |
 | `session` | Management/native IDs, working directory, resolved creation configuration, creation time and active management turn ID | Keep native associations and frozen execution policy; do not silently adopt another thread or change its settings |
-| `operation` | Request and command IDs, operation, input fingerprint, target associations, delivery status, creation time and error | An identical retry must find the original receipt; retain unknown delivery and input conflicts |
+| `operation` | Request and command IDs, operation, input fingerprint, target associations, delivery status, creation time and error | Preserve the receipt and input-conflict check throughout the retry window and while required for recovery |
 | `turn` | Only active or unresolved turn IDs, request/session/native associations, mode and creation time | Reconcile with Codex after restart; a missing callback or stopped runtime does not prove completion |
 | `meta/owner` | Owned native PID | Check ownership and process exit before migration or restoration |
 
@@ -37,7 +37,7 @@ Keep this small management model; a second live database or a table redesign is 
 2. Inspect schema versions, table definitions and required record shapes before initialization or writeback. Reject unsupported and future formats without initializing their schema, dropping data or setting their version to the current one.
 3. Acquire exclusive lifecycle ownership and verify daemon/native exit. Retain a private, consistent backup before changing state. Include WAL data and all Dewbow files needed to restore the supported source release.
 4. Run ordered migrations with atomic commits or an explicit crash-recovery transaction across files. Update `user_version` only when the matching data transformation commits. Reopening after interruption must finish or safely recover without applying a transformation twice.
-5. Preserve management identities, resolved configuration, original fingerprints, request receipts and unresolved execution relationships. Transform only the required management fields. Do not change native Codex storage or introduce duplicate content/event storage.
+5. Preserve management identities, resolved configuration, original fingerprints, receipts required by the retention policy and unresolved execution relationships. Transform only the required management fields. Do not change native Codex storage or introduce duplicate content/event storage.
 6. Validate the migrated relationships before admitting requests, then reconcile native execution state. Keep delivery unknown when the retained evidence is insufficient. Validate every supported upgrade source, not just a fresh install.
 
 Product SemVer, public management contract `v1`, SQLite schema versions and private upgrade-transaction formats serve different purposes. They must be reviewed together, without using one as proof that the others are compatible. Removing support for a released format needs an explicit support-window decision and an upgrade path.
@@ -46,9 +46,21 @@ Product SemVer, public management contract `v1`, SQLite schema versions and priv
 
 - **Version validation:** only an empty, unversioned database may be initialized. Existing databases must have schema version 1 and the expected table/column/key structure. Unknown versions, extra schema objects and malformed tables are rejected before write PRAGMAs or initialization. New table creation and its version marker commit together.
 - **Record validation:** startup and upgrade checkpoint inspect all persisted records before writeback. Required fields, record-key identities, types, frozen configuration and receipt status/fingerprint shapes are checked. A missing native turn ID remains a valid unknown-acknowledgement state and is reconciled conservatively. Unknown fields or record kinds are rejected rather than silently stripped. Invalid records return a recovery error without exposing their contents or modifying their data.
-- **Receipt retention:** receipts are retained indefinitely and loaded into memory on startup. This preserves deduplication but grows with request count. Any future expiry or compaction policy must define the retry window and preserve uncertain operations; silently deleting receipts to reduce storage changes execution semantics.
+- **Receipt retention:** retained receipts are loaded into memory on startup. The daemon applies the bounded policy below to SQLite and its memory projection together; history reads never trigger cleanup or storage writes.
 
 Storage regression tests protect rejection without modification and retention of frozen configuration and uncertain receipts. Lifecycle tests cover restart and deduplication within the current format. These checks do not establish compatibility with a different persisted format; validate each supported migration separately.
+
+## Receipt retention
+
+The request deduplication guarantee lasts at least 24 hours from the server's first acceptance time (`operation.createdAt`) within the same state directory. An identical operation and input returns the retained receipt, and changed input under that ID returns `REQUEST_CONFLICT`. Restart preserves the original timestamp and does not start a new window. Request IDs remain client-chosen strings; there is no expiry token or automatic rejection of an old request.
+
+Only receipts with a known delivery outcome (`delivered` or `error`) and an acceptance time at least 24 hours old are eligible for cleanup. Keep `accepted` and `unknown` receipts regardless of age. Also retain receipts associated with an active or unresolved turn, that turn's original request, or a retained runtime callback. A delivered command can still have an active turn, so delivery alone is insufficient. Unparseable or future timestamps are retained conservatively. Recovery records and managed session bindings are not removed by receipt cleanup.
+
+The daemon cleans once after startup recovery, then every 24 hours while running. Its own timer stops with the runtime and skips missed ticks rather than running a backlog. Cleanup is serialized with request admission; upgrade maintenance blocks new cleanup and waits for any admitted cleanup before checkpointing. A skipped maintenance pass waits until the next daily tick or restart. Without such delays, eligible settled receipts are normally retained for about 24–48 hours. The guarantee remains 24 hours, and protected receipts can remain longer.
+
+Cleanup deletes eligible SQLite rows in one transaction, then removes the same rows from memory while holding the store locks. A failure before commit retains the receipts; an interruption after commit reloads the committed set on restart. There is no additional database or request tombstone. Once a receipt has been removed, the same request ID can be admitted as a new operation and may execute again, even with the original input. Clients should reconcile an old outcome before deliberately submitting it again; absence of a receipt does not prove that it never executed.
+
+The retention window and daily cadence are fixed; there is no user-configurable TTL or cleanup command. SQLite row deletion makes space reusable but does not promise that the database file immediately shrinks. Routine cleanup does not run `VACUUM` or change schema version `1`. Uncertain delivery can still accumulate and requires recovery rather than automatic age-based deletion.
 
 ## Rollback and release evidence
 

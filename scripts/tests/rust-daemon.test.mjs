@@ -96,6 +96,56 @@ test('upgrade preflight preserves service and maintenance drains admitted work',
   }
 });
 
+test('receipt cleanup survives restart and permits new execution outside the retry window', { timeout: 90000 }, async () => {
+  const env = await prepare(); let started = false;
+  try {
+    invoke(env.state, 'daemon', 'start'); started = true;
+    let op = await operator(env);
+    const created = await op.request('createSession', { hostId: env.config.hostId, workDir: env.work, requestId: 'retention-create' });
+    const input = { sessionId: created.sessionId, message: 'Synthetic retained message', requestId: 'retention-send' };
+    const first = await op.request('sendMessage', input);
+    await until(() => op.request('getSession', { sessionId: created.sessionId }), d => !d.session.activeTurnId, 'first retention turn completion');
+    assert.equal((await op.request('sendMessage', input)).commandId, first.commandId);
+    invoke(env.state, 'daemon', 'stop'); started = false;
+    const db = new DatabaseSync(join(env.state, 'daemon.sqlite'));
+    try {
+      const receipt = JSON.parse(db.prepare("SELECT data FROM records WHERE kind='operation' AND id=?").get(input.requestId).data);
+      const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      receipt.createdAt = old;
+      db.prepare("UPDATE records SET data=? WHERE kind='operation' AND id=?").run(JSON.stringify(receipt), input.requestId);
+      for (const [requestId, status, createdAt] of [
+        ['retention-accepted', 'accepted', old],
+        ['retention-unknown', 'unknown', old],
+        ['retention-recent', 'delivered', new Date().toISOString()],
+      ]) {
+        const retained = { ...receipt, requestId, commandId: `command-${requestId}`, operation: 'connectSession', turnId: null, status, createdAt };
+        db.prepare("INSERT INTO records VALUES('operation',?,?)").run(requestId, JSON.stringify(retained));
+      }
+    } finally { db.close(); }
+    invoke(env.state, 'daemon', 'start'); started = true; op = await operator(env);
+    let detail = await op.request('getSession', { sessionId: created.sessionId });
+    assert.ok(!detail.operations.some(r => r.requestId === input.requestId), 'Expired settled receipt is removed at startup');
+    for (const requestId of ['retention-accepted', 'retention-unknown']) {
+      assert.equal(detail.operations.find(r => r.requestId === requestId)?.status, 'unknown', 'Uncertain delivery remains durable beyond the window');
+    }
+    assert.ok(detail.operations.some(r => r.requestId === 'retention-recent'));
+    const replay = await Promise.all([op.request('sendMessage', input), op.request('sendMessage', input)]);
+    assert.equal(replay[0].status, 'delivered');
+    assert.notEqual(replay[0].commandId, first.commandId, 'Reusing a pruned request ID creates a new operation');
+    assert.equal(replay[0].commandId, replay[1].commandId, 'Concurrent retries still claim only one new operation');
+    await assert.rejects(op.request('sendMessage', { ...input, message: 'Changed within the new window' }), { code: 'REQUEST_CONFLICT' });
+    await until(() => op.request('getSession', { sessionId: created.sessionId }), d => !d.session.activeTurnId, 'new retention turn completion');
+    const history = await op.request('readSessionHistory', { sessionId: created.sessionId });
+    assert.equal(history.messages.filter(m => m.role === 'user' && m.text === input.message).length, 2);
+    invoke(env.state, 'daemon', 'stop'); started = false;
+    invoke(env.state, 'daemon', 'start'); started = true; op = await operator(env);
+    assert.equal((await op.request('sendMessage', input)).commandId, replay[0].commandId, 'The new retry window survives another restart');
+  } finally {
+    if (started) invoke(env.state, 'daemon', 'stop');
+    await fs.rm(env.state, { recursive: true, force: true });
+  }
+});
+
 test('Rust lifecycle, operator authority, execution, callback identity and recovery', { timeout: 180000 }, async () => {
   const env = await prepare(); let started = false, passed = false;
   try {

@@ -173,7 +173,49 @@ impl Service {
             }
         });
         service.recover().await?;
+        service.prune_operations().await?;
+        let weak = Arc::downgrade(&service);
+        let mut changes = service.changed.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                let cleanup = tokio::select! {
+                    _ = interval.tick() => true,
+                    change = changes.recv() => {
+                        if matches!(change, Err(broadcast::error::RecvError::Closed)) {
+                            break;
+                        }
+                        false
+                    }
+                };
+                let Some(service) = weak.upgrade() else {
+                    break;
+                };
+                if service.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if cleanup && service.prune_operations().await.is_err() {
+                    service.shutting_down.notify_one();
+                    break;
+                }
+            }
+        });
         Ok(service)
+    }
+    async fn prune_operations(&self) -> anyhow::Result<()> {
+        let _requests = self.requests.lock().await;
+        if self.stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+        let Some(_admission) = self.maintenance.admit_cleanup() else {
+            return Ok(());
+        };
+        if self.store.prune_operations(chrono::Utc::now())? > 0 {
+            let _ = self.changed.send(());
+        }
+        Ok(())
     }
     pub fn host(&self) -> Value {
         json!({"hostId":self.config.host_id,"name":self.config.name,"status":"connected","lastSeenAt":now()})

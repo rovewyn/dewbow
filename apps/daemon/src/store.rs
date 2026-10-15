@@ -43,6 +43,8 @@ pub fn verify_runtime_stopped(state: &Path) -> anyhow::Result<()> {
 type Records = BTreeMap<(String, String), Value>;
 type Events = BTreeMap<String, (u64, VecDeque<Value>)>;
 
+const RECEIPT_RETENTION_HOURS: i64 = 24;
+
 const INVALID_STATE: &str =
     "RECOVERY_REQUIRED: unsupported or malformed management state; preserve it for recovery";
 
@@ -344,7 +346,9 @@ impl Store {
     pub fn put(&self, kind: &str, id: &str, value: &Value) -> anyhow::Result<()> {
         // Project an explicit allowlist. Runtime presentation and callbacks never reach SQLite.
         let fields = fields(kind, id)?;
-        if !fields.is_empty() {
+        // Keep the journal lock until the memory projection is updated, so
+        // receipt cleanup cannot observe a partially updated store.
+        let _journal = if !fields.is_empty() {
             let mut saved = if value.is_null() {
                 Value::Null
             } else {
@@ -367,12 +371,82 @@ impl Store {
                 transaction.execute("DELETE FROM records WHERE kind='turn' AND json_extract(data,'$.sessionId')=?1 AND (?2 IS NULL OR id<>?2)", rusqlite::params![id,value["activeTurnId"].as_str()])?;
             }
             transaction.commit()?;
-        }
+            Some(db)
+        } else {
+            None
+        };
         self.records
             .lock()
             .unwrap()
             .insert((kind.into(), id.into()), value.clone());
         Ok(())
+    }
+    /// The caller serializes cleanup with request admission and upgrade maintenance.
+    pub fn prune_operations(&self, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<usize> {
+        let cutoff = now - chrono::Duration::hours(RECEIPT_RETENTION_HOURS);
+        let mut db = self.journal.lock().unwrap();
+        let mut records = self.records.lock().unwrap();
+        let mut turns = std::collections::HashSet::new();
+        let mut requests = std::collections::HashSet::new();
+        for ((kind, id), value) in records.iter() {
+            if kind == "session"
+                && let Some(turn) = value["activeTurnId"].as_str()
+            {
+                turns.insert(turn.to_string());
+            }
+            if kind == "turn"
+                && !matches!(
+                    value["state"].as_str(),
+                    Some("completed" | "interrupted" | "error")
+                )
+            {
+                turns.insert(id.clone());
+            }
+            if kind == "interaction"
+                && let Some(request) = value["requestId"].as_str()
+            {
+                requests.insert(request.to_string());
+            }
+        }
+        for ((kind, id), value) in records.iter() {
+            if kind == "turn"
+                && turns.contains(id)
+                && let Some(request) = value["requestId"].as_str()
+            {
+                requests.insert(request.to_string());
+            }
+        }
+        let expired = records
+            .iter()
+            .filter(|((kind, id), value)| {
+                kind == "operation"
+                    && matches!(value["status"].as_str(), Some("delivered" | "error"))
+                    && !requests.contains(id)
+                    && !value["turnId"]
+                        .as_str()
+                        .is_some_and(|id| turns.contains(id))
+                    && value["createdAt"]
+                        .as_str()
+                        .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                        .is_some_and(|time| time <= cutoff)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        if expired.is_empty() {
+            return Ok(0);
+        }
+        let transaction = db.transaction()?;
+        {
+            let mut delete = transaction.prepare("DELETE FROM records WHERE kind=?1 AND id=?2")?;
+            for (kind, id) in &expired {
+                delete.execute(rusqlite::params![kind, id])?;
+            }
+        }
+        transaction.commit()?;
+        for key in &expired {
+            records.remove(key);
+        }
+        Ok(expired.len())
     }
     pub fn get(&self, kind: &str, id: &str) -> anyhow::Result<Option<Value>> {
         Ok(self
@@ -574,6 +648,106 @@ mod upgrade_tests {
         assert_eq!(store.get("turn", "synthetic-turn").unwrap(), Some(pending));
         drop(store);
         checkpoint_for_upgrade(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn receipt_cleanup_preserves_retry_window_and_recovery_references() {
+        let root = temporary_state();
+        let store = Store::open(&root).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-03T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let old = (now - chrono::Duration::hours(25)).to_rfc3339();
+        let fresh = (now - chrono::Duration::hours(23)).to_rfc3339();
+        let save = |request: &str, status: &str, created: &str, turn: Value| {
+            let mut value = receipt();
+            value["requestId"] = json!(request);
+            value["commandId"] = json!(format!("command-{request}"));
+            value["createdAt"] = json!(created);
+            value["status"] = json!(status);
+            value["turnId"] = turn;
+            store.put("operation", request, &value).unwrap();
+        };
+        for (request, status, time) in [
+            ("old-delivered", "delivered", old.as_str()),
+            ("old-error", "error", old.as_str()),
+            ("old-accepted", "accepted", old.as_str()),
+            ("old-unknown", "unknown", old.as_str()),
+            ("recent", "delivered", fresh.as_str()),
+            ("invalid-time", "delivered", "synthetic-time"),
+            ("future", "delivered", "2027-01-01T00:00:00Z"),
+        ] {
+            save(request, status, time, Value::Null);
+        }
+        save(
+            "boundary",
+            "delivered",
+            &(now - chrono::Duration::hours(24)).to_rfc3339(),
+            Value::Null,
+        );
+        save("synthetic-request", "delivered", &old, Value::Null);
+        save("active-steer", "delivered", &old, json!("synthetic-turn"));
+        save("callback-request", "delivered", &old, Value::Null);
+        let mut active = json!({"turnId":"synthetic-turn","sessionId":"synthetic-session",
+            "requestId":"synthetic-request","codexTurnId":null,"mode":"default",
+            "createdAt":old,"state":"running"});
+        store.put("turn", "synthetic-turn", &active).unwrap();
+        store
+            .put("session", "synthetic-session", &session())
+            .unwrap();
+        store
+            .put(
+                "interaction",
+                "synthetic-callback",
+                &json!({"sessionId":"synthetic-session","requestId":"callback-request"}),
+            )
+            .unwrap();
+        assert_eq!(store.prune_operations(now).unwrap(), 3);
+        for request in ["old-delivered", "old-error", "boundary"] {
+            assert!(store.get("operation", request).unwrap().is_none());
+        }
+        for request in [
+            "old-accepted",
+            "old-unknown",
+            "recent",
+            "invalid-time",
+            "future",
+            "synthetic-request",
+            "active-steer",
+            "callback-request",
+        ] {
+            assert!(store.get("operation", request).unwrap().is_some());
+        }
+        active["state"] = json!("completed");
+        store.put("turn", "synthetic-turn", &active).unwrap();
+        let mut settled = session();
+        settled["activeTurnId"] = Value::Null;
+        store.put("session", "synthetic-session", &settled).unwrap();
+        store.forget_interactions("synthetic-session");
+        assert_eq!(store.prune_operations(now).unwrap(), 3);
+        assert_eq!(store.prune_operations(now).unwrap(), 0);
+        save("old-delivered", "delivered", &now.to_rfc3339(), Value::Null);
+        drop(store);
+        let reopened = Store::open(&root).unwrap();
+        assert!(reopened.get("operation", "old-error").unwrap().is_none());
+        assert!(
+            reopened
+                .get("operation", "synthetic-request")
+                .unwrap()
+                .is_none()
+        );
+        for request in [
+            "old-delivered",
+            "old-accepted",
+            "old-unknown",
+            "recent",
+            "invalid-time",
+            "future",
+        ] {
+            assert!(reopened.get("operation", request).unwrap().is_some());
+        }
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 

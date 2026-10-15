@@ -176,6 +176,14 @@ impl Maintenance {
     pub fn active(&self) -> bool {
         self.lock().lease.is_some()
     }
+    pub fn admit_cleanup(&self) -> Option<Operation<'_>> {
+        let mut gate = self.lock();
+        if gate.lease.is_some() {
+            return None;
+        }
+        gate.in_flight += 1;
+        Some(Operation(self))
+    }
 }
 impl Service {
     pub(crate) async fn upgrade_control(&self, name: &str, input: &Value) -> anyhow::Result<Value> {
@@ -378,23 +386,28 @@ mod tests {
     fn draining_lease_expires_but_startup_seal_does_not() {
         let maintenance = Maintenance::default();
         let accepted = maintenance.admit("sendMessage").unwrap();
+        let cleanup = maintenance.admit_cleanup().unwrap();
         maintenance.0.lock().unwrap().lease = Some((
             "synthetic".into(),
             Some(Instant::now() + Duration::from_secs(30)),
         ));
         assert!(maintenance.admit("sendMessage").is_err());
         assert!(maintenance.admit("connectSession").is_err());
+        assert!(maintenance.admit_cleanup().is_none());
         let answer = maintenance.admit("answerQuestions").unwrap();
-        assert_eq!(maintenance.lock().in_flight, 2);
+        assert_eq!(maintenance.lock().in_flight, 3);
         drop(answer);
         drop(accepted);
+        drop(cleanup);
         assert_eq!(maintenance.lock().in_flight, 0);
         maintenance.0.lock().unwrap().lease = Some(("synthetic".into(), Some(Instant::now())));
         assert!(!maintenance.active());
         assert!(maintenance.admit("sendMessage").is_ok());
+        assert!(maintenance.admit_cleanup().is_some());
         maintenance.0.lock().unwrap().lease = Some(("synthetic".into(), None));
         assert!(maintenance.admit("answerQuestions").is_err());
         assert!(maintenance.admit("interruptTurn").is_err());
+        assert!(maintenance.admit_cleanup().is_none());
         assert!(maintenance.active());
     }
 }

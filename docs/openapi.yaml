@@ -14,6 +14,10 @@ info:
     and an Origin equal to the server URL. This is not a remote or agent API.
     HTTP 200 acknowledges the result envelope, not native execution completion.
     Inspect operation status, turn state and embedded history/discovery errors.
+    Request deduplication is guaranteed for at least 24 hours from first acceptance
+    in the same state directory. Older settled receipts can be removed after startup
+    recovery and by daily cleanup; reusing a removed ID may execute new work.
+    Accepted/unknown delivery and active execution/callback associations are retained.
   license:
     name: MIT
     url: https://opensource.org/license/mit/
@@ -630,7 +634,9 @@ components:
       description: |
         Durable request receipt. Inspect status and error even on HTTP 200.
         delivered means native command acceptance, not turn completion.
-        Retrying the same operation/input/requestId returns the original receipt.
+        Retrying the same operation/input/requestId returns the original receipt
+        while retained, guaranteed for at least 24 hours from first acceptance.
+        After eligible older receipts are pruned, reusing an ID may execute new work.
         Unknown delivery must be reconciled rather than resubmitted under a new ID.
       content:
         application/json:
@@ -650,8 +656,14 @@ components:
       $ref: '#/components/schemas/Text'
       description: |
         Client-chosen identity, unique across operations in this state directory.
-        Identical retries return the same command/receipt; changed operation or
-        input produces REQUEST_CONFLICT. Survives restart with the same state.
+        While retained, identical retries return the same command/receipt; changed
+        operation or input produces REQUEST_CONFLICT. Deduplication is guaranteed
+        for at least 24 hours from server acceptance, including across restart
+        with the same state. Restart does not reset the acceptance timestamp.
+        Older delivered/error receipts without active execution or retained callback
+        associations can be pruned after startup recovery and every 24 hours.
+        Accepted/unknown receipts remain. After pruning, the same ID may execute
+        as a new request; IDs contain no expiry token and are not rejected for age.
         A fresh state directory cannot recognize receipts from the original one.
     EventCursor:
       type: integer
@@ -809,7 +821,9 @@ components:
         sessionId: {type: string}
         turnId: {type: [string, 'null']}
         status: {type: string, enum: [accepted, delivered, error, unknown]}
-        createdAt: {type: string}
+        createdAt:
+          type: string
+          description: Server's first acceptance timestamp; starts the minimum 24-hour deduplication window.
         error:
           anyOf:
             - $ref: '#/components/schemas/ManagementError'
