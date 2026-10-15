@@ -1,8 +1,8 @@
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 #[cfg(unix)]
 use std::process::{Command, Stdio};
+use std::{ffi::OsString, path::Path};
 
 pub struct Background {
     #[cfg(windows)]
@@ -15,6 +15,28 @@ impl Background {
         Self::spawn_executable(&std::env::current_exe()?, state)
     }
     pub fn spawn_executable(executable: &Path, state: &Path) -> anyhow::Result<Self> {
+        Self::spawn_with(
+            executable,
+            &[
+                "--state-dir".into(),
+                state.as_os_str().into(),
+                "daemon".into(),
+                "run".into(),
+                "--background".into(),
+            ],
+            &state.join("daemon.log"),
+            false,
+        )
+    }
+    pub fn spawn_args(executable: &Path, args: &[OsString], log: &Path) -> anyhow::Result<Self> {
+        Self::spawn_with(executable, args, log, true)
+    }
+    fn spawn_with(
+        executable: &Path,
+        args: &[OsString],
+        log: &Path,
+        independent: bool,
+    ) -> anyhow::Result<Self> {
         #[cfg(windows)]
         {
             use std::{
@@ -24,11 +46,12 @@ impl Background {
                 },
                 ptr,
             };
-            use windows_sys::Win32::{
-                Foundation::CloseHandle,
-                System::Threading::{
-                    CREATE_NEW_PROCESS_GROUP, CreateProcessW, DETACHED_PROCESS,
-                    PROCESS_INFORMATION, STARTUPINFOW,
+            use windows_sys::Win32::System::{
+                JobObjects::IsProcessInJob,
+                Threading::{
+                    CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED,
+                    CreateProcessW, DETACHED_PROCESS, PROCESS_INFORMATION, ResumeThread,
+                    STARTUPINFOW, TerminateProcess,
                 },
             };
             let exe = executable
@@ -36,19 +59,34 @@ impl Background {
                 .encode_wide()
                 .chain(Some(0))
                 .collect::<Vec<_>>();
-            let quote = |path: &Path| {
-                let text = path.as_os_str().to_string_lossy();
-                let trailing = text.chars().rev().take_while(|c| *c == '\\').count();
-                format!("\"{}{}\"", text, "\\".repeat(trailing))
+            let quote = |value: &std::ffi::OsStr| {
+                let mut result = String::from("\"");
+                let mut slashes = 0;
+                for character in value.to_string_lossy().chars() {
+                    if character == '\\' {
+                        slashes += 1;
+                        continue;
+                    }
+                    result.push_str(&"\\".repeat(if character == '"' {
+                        slashes * 2 + 1
+                    } else {
+                        slashes
+                    }));
+                    result.push(character);
+                    slashes = 0;
+                }
+                result.push_str(&"\\".repeat(slashes * 2));
+                result.push('"');
+                result
             };
-            let mut line = format!(
-                "{} --state-dir {} daemon run --background",
-                quote(executable),
-                quote(state)
-            )
-            .encode_utf16()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
+            let _ = log; // Detached children write durable progress/results themselves on Windows.
+            let mut parts = vec![quote(executable.as_os_str())];
+            parts.extend(args.iter().map(|arg| quote(arg)));
+            let mut line = parts
+                .join(" ")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
             let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
             startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
             let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
@@ -60,7 +98,14 @@ impl Background {
                     ptr::null(),
                     ptr::null(),
                     0,
-                    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                    DETACHED_PROCESS
+                        | CREATE_NEW_PROCESS_GROUP
+                        | CREATE_SUSPENDED
+                        | if independent {
+                            CREATE_BREAKAWAY_FROM_JOB
+                        } else {
+                            0
+                        },
                     ptr::null(),
                     ptr::null(),
                     &startup,
@@ -69,35 +114,54 @@ impl Background {
             };
             anyhow::ensure!(
                 success != 0,
-                "Background startup failed: {}",
+                "Background startup failed (independent upgrades require host job breakaway): {}",
                 std::io::Error::last_os_error()
             );
-            unsafe {
-                CloseHandle(process.hThread);
+            let thread = unsafe {
+                std::os::windows::io::OwnedHandle::from_raw_handle(process.hThread as RawHandle)
+            };
+            let handle = unsafe {
+                std::os::windows::io::OwnedHandle::from_raw_handle(process.hProcess as RawHandle)
+            };
+            let mut in_job = 0;
+            // Console detachment alone does not escape an SSH host's kill-on-close
+            // job. Check before any child code executes; refuse unsafe handoff.
+            let detached = !independent
+                || (unsafe { IsProcessInJob(process.hProcess, ptr::null_mut(), &mut in_job) } != 0
+                    && in_job == 0);
+            if !detached || unsafe { ResumeThread(process.hThread) } == u32::MAX {
+                unsafe { TerminateProcess(process.hProcess, 1) };
+                anyhow::bail!(
+                    "Cannot detach the upgrade runner from the host job; no upgrade was started"
+                );
             }
-            Ok(Self {
-                handle: unsafe {
-                    std::os::windows::io::OwnedHandle::from_raw_handle(
-                        process.hProcess as RawHandle,
-                    )
-                },
-            })
+            drop(thread);
+            Ok(Self { handle })
         }
         #[cfg(unix)]
         {
+            let _ = independent;
             let log = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(state.join("daemon.log"))?;
-            let child = Command::new(executable)
-                .arg("--state-dir")
-                .arg(state)
-                .args(["daemon", "run", "--background"])
+                .open(log)?;
+            let mut command = Command::new(executable);
+            command
+                .args(args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(log.try_clone()?))
-                .stderr(Stdio::from(log))
-                .process_group(0)
-                .spawn()?;
+                .stderr(Stdio::from(log));
+            // A new session has no controlling terminal and is outside the SSH
+            // terminal's process group. Only async-signal-safe work runs after fork.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn()?;
             Ok(Self { child: Some(child) })
         }
     }

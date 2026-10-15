@@ -288,5 +288,9 @@ fn main() {
         };
         emit(json!({"id":request,"result":result}));
     }
+    if home.join("upgrade-hang-exit-once").exists() {
+        fs::remove_file(home.join("upgrade-hang-exit-once")).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(8));
+    }
     let _ = now();
 }

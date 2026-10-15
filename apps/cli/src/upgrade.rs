@@ -1,6 +1,7 @@
 use anyhow::{Context, bail, ensure};
 use dewbow_daemon::config;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,6 +14,54 @@ use std::{
 
 const REPOSITORY: &str = "https://github.com/rovewyn/dewbow";
 const RELEASE_API: &str = "https://api.github.com/repos/rovewyn/dewbow/releases";
+
+#[derive(Clone, clap::Args, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Options {
+    /// Check for a release without changing files or launching an updater.
+    #[arg(long, conflicts_with_all = ["status", "detach", "recover", "archive"])]
+    pub check: bool,
+    /// Read the last installation upgrade's durable status.
+    #[arg(long, conflicts_with_all = ["version", "archive", "recover", "detach"])]
+    pub status: bool,
+    /// Return after the independent supervisor accepts the job.
+    #[arg(long)]
+    pub detach: bool,
+    /// Select an exact published version, including a prerelease.
+    #[arg(long)]
+    pub version: Option<String>,
+    /// Use a downloaded release archive and its adjacent .sha256 file.
+    #[arg(long, requires = "version", conflicts_with = "recover")]
+    pub archive: Option<PathBuf>,
+    /// Restore an uncommitted transaction through the independent updater.
+    #[arg(long, conflicts_with = "version")]
+    pub recover: bool,
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(0..=86400))]
+    pub wait_seconds: u64,
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
+    pub timeout_seconds: u64,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            check: false,
+            status: false,
+            detach: false,
+            version: None,
+            archive: None,
+            recover: false,
+            wait_seconds: 300,
+            timeout_seconds: 60,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Prepared {
+    pub version: String,
+    pub binary_hash: String,
+}
 
 fn version(value: &str) -> anyhow::Result<Version> {
     let parsed = Version::parse(value).context("Expected an unprefixed SemVer release version")?;
@@ -150,7 +199,7 @@ async fn unpack(
     Ok(directory)
 }
 
-async fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
+pub(crate) async fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
     let mut command = Command::new(binary);
     command.arg("--version");
     let output = output(command).await?;
@@ -173,32 +222,55 @@ fn lock_state(state: &Path) -> anyhow::Result<Option<dewbow_daemon::lifecycle::D
 }
 
 pub async fn run(
-    state: Option<&Path>,
-    check: bool,
-    requested: Option<&str>,
-    archive_path: Option<&Path>,
-    recover: bool,
-    wait: Duration,
-    duration: Duration,
+    executable: &Path,
+    state: &Path,
+    options: &Options,
+    job: Option<&Path>,
 ) -> anyhow::Result<()> {
+    let check = options.check;
+    let requested = options.version.as_deref();
+    let archive_path = options.archive.as_deref();
+    let duration = Duration::from_secs(options.timeout_seconds);
+    let wait = Duration::from_secs(options.wait_seconds);
     let target = target()?;
-    let state = std::path::absolute(match state {
-        Some(state) => state.to_path_buf(),
-        None => config::default_state()?,
-    })?;
-    if recover {
-        let executable = std::env::current_exe()?;
-        let _lock = installation_lock(&executable)?;
-        return crate::transaction::recover(&state, &executable, duration).await;
+    if options.recover {
+        return crate::transaction::recover(state, executable, duration).await;
     }
-    if !check && dewbow_daemon::maintenance::transaction(&state)?.is_some() {
+    if !check && dewbow_daemon::maintenance::transaction(state)?.is_some() {
         ensure!(
-            dewbow_daemon::maintenance::committed(&state)?,
+            dewbow_daemon::maintenance::committed(state)?,
             "An interrupted upgrade requires upgrade --recover first"
         );
     }
     if let Some(requested) = requested {
         version(requested)?;
+    }
+    if let Some(job) = job
+        && job.join("prepared.json").exists()
+    {
+        let prepared: Prepared = crate::updater::read_json(&job.join("prepared.json"))?;
+        version(&prepared.version)?;
+        ensure!(
+            requested.is_none_or(|v| v == prepared.version),
+            "Prepared release version changed"
+        );
+        let candidate = job.join("candidate");
+        dewbow_sdk::private::regular(&candidate)?;
+        ensure!(
+            hash(&candidate)? == prepared.binary_hash,
+            "Prepared candidate is corrupt"
+        );
+        verify_binary(&candidate, &prepared.version).await?;
+        return crate::transaction::apply(
+            executable,
+            &candidate,
+            state,
+            &prepared.version,
+            wait,
+            duration,
+            Some(job),
+        )
+        .await;
     }
     let client = reqwest::Client::builder()
         .user_agent(concat!("dewbow/", env!("CARGO_PKG_VERSION")))
@@ -251,13 +323,15 @@ pub async fn run(
         return Ok(());
     }
 
-    let executable = std::env::current_exe()?;
-    dewbow_sdk::private::no_links(&executable)?;
+    dewbow_sdk::private::no_links(executable)?;
     let parent = executable
         .parent()
         .context("Executable has no installation directory")?;
-    let _lock = installation_lock(&executable)?;
-    let stage = Stage(parent.join(format!(".dewbow-upgrade-{}", dewbow_protocol::id())));
+    let stage = Stage(if let Some(job) = job {
+        job.join(format!("download-{}", dewbow_protocol::id()))
+    } else {
+        parent.join(format!(".dewbow-upgrade-{}", dewbow_protocol::id()))
+    });
     config::secure_directory(&stage.0)?;
     let name = format!("dewbow-{selected}-{target}");
     let binary_name = if cfg!(windows) {
@@ -308,10 +382,45 @@ pub async fn run(
         fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755))?;
     }
     verify_binary(&candidate, selected).await?;
-    crate::transaction::apply(&executable, &candidate, &state, selected, wait, duration).await
+    if let Some(job) = job {
+        let retained = job.join("candidate");
+        if retained.try_exists()? {
+            // A worker may exit during candidate copying or before publishing its
+            // verified checkpoint. Preserve that incomplete copy before retrying.
+            dewbow_sdk::private::no_links(&retained)?;
+            dewbow_sdk::private::regular(&retained)?;
+            fs::rename(
+                &retained,
+                job.join(format!("unprepared-{}", dewbow_protocol::id())),
+            )?;
+        }
+        crate::transaction::copy(&candidate, &retained)?;
+        crate::updater::write_new(
+            &job.join("prepared.json"),
+            &Prepared {
+                version: selected.into(),
+                binary_hash: hash(&retained)?,
+            },
+        )?;
+        crate::transaction::apply(
+            executable,
+            &retained,
+            state,
+            selected,
+            wait,
+            duration,
+            Some(job),
+        )
+        .await
+    } else {
+        crate::transaction::apply(
+            executable, &candidate, state, selected, wait, duration, None,
+        )
+        .await
+    }
 }
 
-fn installation_lock(executable: &Path) -> anyhow::Result<File> {
+pub(crate) fn installation_lock(executable: &Path) -> anyhow::Result<File> {
     dewbow_sdk::private::regular(executable)?;
     let parent = executable
         .parent()

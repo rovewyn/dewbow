@@ -65,6 +65,28 @@ pub fn commit(state: &Path) -> anyhow::Result<()> {
     file.sync_all()?;
     sync_directory(&state.join("upgrade"))
 }
+pub fn rollback_started(state: &Path) -> anyhow::Result<bool> {
+    let path = state.join("upgrade/rollback");
+    dewbow_sdk::private::no_links(&path)?;
+    if !path.exists() {
+        return Ok(false);
+    }
+    dewbow_sdk::private::regular(&path)?;
+    anyhow::ensure!(fs::read(path)? == b"v1\n", "Invalid rollback record");
+    Ok(true)
+}
+pub fn begin_rollback(state: &Path) -> anyhow::Result<()> {
+    if rollback_started(state)? {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(state.join("upgrade/rollback"))?;
+    file.write_all(b"v1\n")?;
+    file.sync_all()?;
+    sync_directory(&state.join("upgrade"))
+}
 pub fn sync_directory(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     fs::File::open(path)?.sync_all()?;

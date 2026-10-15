@@ -8,7 +8,7 @@ Codex owns native conversations, history, tool content, execution status and cre
 
 | Directory | Project | Responsibility |
 | --- | --- | --- |
-| `apps/cli` | `dewbow-cli` | The single `dewbow` executable, initialization, diagnosis, upgrades and user background processes |
+| `apps/cli` | `dewbow-cli` | The single `dewbow` executable, initialization, diagnosis, independent upgrade supervision and recovery, and user background processes |
 | `apps/daemon` | `dewbow-daemon` | Local management, persistence, owned Codex runtime and embedded Web |
 | `packages/protocol` | `@dewbow/protocol`, `rust/dewbow-protocol` | TypeScript and Rust management contracts and shared helpers |
 | `packages/sdk` | `@dewbow/sdk`, `rust/dewbow-sdk` | Native Codex integration, read-only discovery and history |

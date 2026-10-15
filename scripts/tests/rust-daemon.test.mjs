@@ -37,7 +37,7 @@ async function operator(env) {
   return { request, cookie, ticket, control };
 }
 
-test('upgrade preflight preserves service and maintenance drains admitted work', { timeout: 45000 }, async () => {
+test('upgrade preflight preserves service and maintenance drains admitted work', { timeout: 90000 }, async () => {
   const env = await prepare();
   try {
     const first = JSON.parse(invoke(env.state, 'daemon', 'start'));
@@ -47,7 +47,7 @@ test('upgrade preflight preserves service and maintenance drains admitted work',
     const archive = join(install, 'corrupt-release');
     await fs.writeFile(archive, 'synthetic interrupted download');
     await fs.writeFile(`${archive}.sha256`, `${'0'.repeat(64)}  archive\n`);
-    assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', archive], { encoding: 'utf8', timeout: 10000, windowsHide: true }), /checksum/);
+    assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', archive], { encoding: 'utf8', timeout: 30000, windowsHide: true }), /checksum/);
     assert.equal((await op.control('status')).instanceId, first.instanceId, 'A preflight failure must not stop the live daemon');
     assert.equal((await op.control('status')).maintenance, false);
     const target = process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : process.platform === 'linux' ? 'x86_64-unknown-linux-gnu' : process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -60,7 +60,7 @@ test('upgrade preflight preserves service and maintenance drains admitted work',
       const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
       execFileSync(tar, [process.platform === 'win32' ? '-acf' : '-czf', packagePath, '-C', install, releaseName], { windowsHide: true });
       await fs.writeFile(`${packagePath}.sha256`, `${hash(await fs.readFile(packagePath))}  ${packagePath.slice(install.length + 1)}\n`);
-      assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', packagePath], { encoding: 'utf8', timeout: 10000, windowsHide: true }), rollbackSafe ? /wrong version/ : /manual state/);
+      assert.throws(() => execFileSync(installed, ['--state-dir', env.state, 'upgrade', '--version', '99.0.0', '--archive', packagePath], { encoding: 'utf8', timeout: 30000, windowsHide: true }), rollbackSafe ? /wrong version/ : /manual state/);
       assert.equal((await op.control('status')).instanceId, first.instanceId);
       assert.equal((await op.control('status')).maintenance, false);
     }
