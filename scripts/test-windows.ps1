@@ -1,4 +1,4 @@
-param([string]$workerDirectory)
+param([string]$workerDirectory, [switch]$upgradeAcceptance, [switch]$releaseCandidate)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -16,11 +16,18 @@ if ($workerDirectory) {
         $env:CI = 'true'
         $env:GITHUB_ACTIONS = 'true'
         $env:RUNNER_TRACKING_ID = $settings.trackingId
-        & $settings.node scripts/test-rust.mjs *> $log
-        $code = $LASTEXITCODE
-        if ($code -eq 0) {
-            & $settings.npm test *>> $log
+        if ($settings.upgradeAcceptance) {
+            $arguments = @('scripts/upgrade-acceptance.mjs')
+            if ($settings.releaseCandidate) { $arguments += '--release' }
+            & $settings.node @arguments *> $log
             $code = $LASTEXITCODE
+        } else {
+            & $settings.node scripts/test-rust.mjs *> $log
+            $code = $LASTEXITCODE
+            if ($code -eq 0) {
+                & $settings.npm test *>> $log
+                $code = $LASTEXITCODE
+            }
         }
     } catch {
         $_.ToString() | Out-File -LiteralPath $log -Append -Encoding utf8
@@ -45,6 +52,8 @@ New-Item -ItemType Directory -Path $workerDirectory | Out-Null
     npm = (Get-Command npm.cmd).Source
     trackingId = $env:RUNNER_TRACKING_ID
     sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    upgradeAcceptance = [bool]$upgradeAcceptance
+    releaseCandidate = [bool]$releaseCandidate
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workerDirectory 'settings.json') -Encoding utf8
 
 # Cargo and the Actions command host both use jobs. WMI creates a same-user
@@ -64,8 +73,8 @@ $process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Argumen
     ProcessStartupInformation = $startup
 }
 if ($process.ReturnValue -ne 0) { throw "Independent Windows validation failed to start ($($process.ReturnValue))." }
-Write-Output 'Independent Windows Rust and npm validation started.'
-$deadline = [DateTime]::UtcNow.AddMinutes(20)
+Write-Output 'Independent Windows validation started.'
+$deadline = [DateTime]::UtcNow.AddMinutes($(if ($upgradeAcceptance) { 40 } else { 20 }))
 $result = Join-Path $workerDirectory 'result.json'
 while (!(Test-Path -LiteralPath $result)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'Independent Windows validation exceeded its deadline; private diagnostics retained.' }
