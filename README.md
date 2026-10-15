@@ -8,6 +8,8 @@ Dewbow is a self-hosted CLI and daemon for managing local Codex conversations th
 
 Documentation is in [docs/](docs/).
 
+Browse the [API reference in Swagger UI](https://petstore31.swagger.io/?url=https%3A%2F%2Fraw.githubusercontent.com%2Frovewyn%2Fdewbow%2Fmain%2Fdocs%2Fopenapi.yaml).
+
 ## Install
 
 Install and log in to the Codex CLI first. Node.js and Rust are not required.
