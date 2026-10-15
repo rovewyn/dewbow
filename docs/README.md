@@ -38,4 +38,5 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 
 ## Design proposals
 
-- [Decentralized Network design](network-design.md) records membership, automatic merges, forks and offline return rules; Network functionality is not implemented.
+- [Decentralized Network design](network-design.md) defines membership, automatic merges, forks and offline return behavior.
+- [Network protocol v1](network-protocol.md) specifies signed records, validation, peer exchange, departure delivery and request admission. Both Network documents are design only; the feature is not implemented.
