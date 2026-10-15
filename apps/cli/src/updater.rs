@@ -261,10 +261,15 @@ fn create_job(executable: &Path, state: &Path, options: &Options) -> anyhow::Res
             completed(&job)?.is_some_and(|v| v.status != "recoveryRequired"),
             "The preceding upgrade needs recovery; use upgrade --recover"
         );
-        let _guard = lock(&job.join("supervisor.lock"))?
+        let guard = lock(&job.join("supervisor.lock"))?
             .context("The preceding updater is still exiting; retry shortly")?;
-        let _worker = lock(&job.join("worker.lock"))?
+        let worker = lock(&job.join("worker.lock"))?
             .context("The preceding worker is still exiting; retry shortly")?;
+        // The caller holds launch.lock, so no child can acquire a role between
+        // this check and archival. Windows requires these directory-contained
+        // lock handles to be closed before renaming the completed job.
+        drop(worker);
+        drop(guard);
         fs::rename(&job, root.join(format!("history-{}", previous.job_id)))?;
     }
     let id = dewbow_protocol::id();
