@@ -14,7 +14,7 @@ use dewbow_protocol::{error, id};
 use serde_json::{Value, json};
 use std::{
     convert::Infallible,
-    fs::{self, OpenOptions},
+    fs,
     path::Path,
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
@@ -333,14 +333,9 @@ async fn assets(State(service): State<Arc<Service>>, headers: HeaderMap, uri: Ur
 pub async fn run(state: &Path) -> anyhow::Result<()> {
     config::secure_directory(state)?;
     let config = config::load(state)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(state.join("daemon.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| anyhow::anyhow!("Daemon already owns this state directory"))?;
+    let lock = crate::lifecycle::DaemonLock::acquire(state)?;
+    lock.recover_instance()?;
+    let mut signals = crate::shutdown::Signals::register()?;
     anyhow::ensure!(
         WEB_ASSETS.iter().any(|(name, _)| *name == "index.html"),
         "Build the Web assets before compiling the daemon"
@@ -369,10 +364,17 @@ pub async fn run(state: &Path) -> anyhow::Result<()> {
     let shutdown = service.clone();
     let shutdown_result = Arc::new(MutexResult::default());
     let outcome = shutdown_result.clone();
-    let result=axum::serve(listener,router).with_graceful_shutdown(async move{
-        tokio::select!{_ = shutdown.shutting_down.notified()=>{},_ = tokio::signal::ctrl_c()=>{}}
-        *outcome.0.lock().unwrap()=Some(shutdown.shutdown().await.map_err(|_|"Owned runtime shutdown failed".to_string()));
-    }).await;
+    let result = axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            tokio::select! {_ = shutdown.shutting_down.notified()=>{},_ = signals.wait()=>{}}
+            *outcome.0.lock().unwrap() = Some(
+                shutdown
+                    .shutdown()
+                    .await
+                    .map_err(|_| "Owned runtime shutdown failed".to_string()),
+            );
+        })
+        .await;
     if let Some(Err(cause)) = shutdown_result.0.lock().unwrap().take() {
         anyhow::bail!(cause);
     }

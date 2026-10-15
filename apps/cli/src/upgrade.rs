@@ -146,46 +146,12 @@ fn verify_binary(binary: &Path, expected: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn replace(executable: &Path, candidate: &Path, backup: &Path) -> anyhow::Result<()> {
-    ensure!(
-        !backup.exists(),
-        "A previous executable backup already exists; retain it elsewhere before upgrading"
-    );
-    fs::rename(executable, backup).context(
-        "Cannot retain the old executable; check permissions and stop all Dewbow daemons",
-    )?;
-    if let Err(cause) = fs::rename(candidate, executable) {
-        fs::rename(backup, executable).with_context(|| {
-            format!(
-                "Replacement and rollback failed; restore {} manually",
-                backup.display()
-            )
-        })?;
-        return Err(cause).context("Replacement failed; the original executable was restored");
-    }
-    Ok(())
-}
-
-fn lock_state(state: &Path) -> anyhow::Result<Option<File>> {
+fn lock_state(state: &Path) -> anyhow::Result<Option<dewbow_daemon::lifecycle::DaemonLock>> {
     if !state.exists() {
         return Ok(None);
     }
-    dewbow_sdk::private::no_links(state)?;
-    let lock_path = state.join("daemon.lock");
-    dewbow_sdk::private::no_links(&lock_path)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock)
-        .context("Stop the selected daemon with dewbow daemon stop before upgrading")?;
-    ensure!(
-        !state.join("instance.json").exists(),
-        "A daemon ownership record remains; stop or recover the selected daemon before upgrading"
-    );
-    dewbow_daemon::verify_runtime_stopped(state)?;
+    let lock = dewbow_daemon::lifecycle::DaemonLock::acquire(state)?;
+    lock.recover_instance()?;
     Ok(Some(lock))
 }
 
@@ -299,7 +265,7 @@ pub async fn run(state: Option<&Path>, check: bool, requested: Option<&str>) -> 
         "{binary_name}.previous-{current}-{}",
         dewbow_protocol::id()
     ));
-    replace(&executable, &candidate, &backup)?;
+    crate::replacement::replace(&executable, &candidate, &backup)?;
     println!(
         "Upgraded to {selected}. Previous executable retained as {}. Review release notes before restarting the daemon.",
         backup.file_name().unwrap().to_string_lossy()
@@ -312,28 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replacement_rolls_back_and_preserves_existing_backups() {
-        let root = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!("dewbow-upgrade-test-{}", dewbow_protocol::id()));
-        fs::create_dir(&root).unwrap();
-        let stage = Stage(root);
-        let binary = stage.0.join("dewbow");
-        let candidate = stage.0.join("candidate");
-        let backup = stage.0.join("dewbow.previous");
-        fs::write(&binary, b"previous").unwrap();
-        assert!(replace(&binary, &candidate, &backup).is_err());
-        assert_eq!(fs::read(&binary).unwrap(), b"previous");
-        fs::write(&candidate, b"next").unwrap();
-        replace(&binary, &candidate, &backup).unwrap();
-        assert_eq!(fs::read(&binary).unwrap(), b"next");
-        assert_eq!(fs::read(&backup).unwrap(), b"previous");
-        assert!(replace(&binary, &candidate, &backup).is_err());
-        assert_eq!(fs::read(&backup).unwrap(), b"previous");
-    }
-
-    #[test]
-    fn rejects_corruption_and_a_running_or_stale_daemon() {
+    fn rejects_corruption_and_a_running_or_invalid_daemon() {
         let stage = Stage(
             // macOS temporary paths can include system-managed symlinks.
             fs::canonicalize(std::env::temp_dir())

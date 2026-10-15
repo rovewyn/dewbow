@@ -30,7 +30,9 @@ The runtime prefers the documented native MXC sandbox on supported Windows devic
 
 ## Recovery and state resets
 
-Stop the selected daemon before editing or backing up its configuration/databases. Stop verifies instance identity, its own native runtime, daemon process exit and listener release. It never kills an arbitrary saved PID. Stale records, an occupied port or a still-live recorded runtime require inspection. Verify ownership and stop only the intended instance; do not stop Desktop or other sessions.
+Stop the selected daemon before editing or backing up its configuration/databases. Stop verifies instance identity, its own native runtime, daemon process exit and listener release. It never kills an arbitrary saved PID. Start, stop, foreground run and actual upgrades can remove a valid stale instance record only under the daemon lock, after both recorded processes have exited and the matching configured port can be reserved. Invalid records, configuration mismatches, occupied ports and live or reused PIDs still require inspection. `daemon status` and `upgrade --check` never clean up records. Verify ownership and stop only the intended instance; do not stop Desktop or other sessions.
+
+On Linux/macOS, `SIGTERM`, `SIGINT` and `SIGHUP` request the same owned-runtime cleanup as an authenticated stop. On Windows, delivered console stop events use that cleanup; detached background processes should be stopped through the CLI. Forced process termination leaves recovery to the next start after the safety checks above. See [CLI lifecycle](cli.md#lifecycle) for platform boundaries.
 
 Unknown delivery after a restart is not successful execution. Inspect the turn, request and native history. Retry the original request only with identical input and request ID; an unresolved turn blocks another send. Old runtime callbacks cannot be replayed. Empty native conversations that cannot resume require explicit recovery rather than silent replacement.
 
