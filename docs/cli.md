@@ -64,7 +64,7 @@ Linux and macOS handle `SIGINT`, `SIGTERM` and `SIGHUP` through the same shutdow
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace --bins --examples
-cargo test --workspace --all-targets
+node scripts/test-rust.mjs
 node --test scripts/tests/rust-daemon.test.mjs
 ```
 

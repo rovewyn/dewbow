@@ -107,7 +107,7 @@ jobs:
         run: cargo build --locked --workspace --bins --examples
       - name: Test Rust, SDK, Web and synthetic lifecycle
         run: |
-          cargo test --locked --workspace --all-targets
+          node scripts/test-rust.mjs
           npm test
       - name: Build optimized executable
         run: cargo build --locked --release --bin dewbow --target "$DEWBOW_TARGET"

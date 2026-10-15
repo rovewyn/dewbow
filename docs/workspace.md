@@ -46,7 +46,7 @@ npm run test:release
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace --bins --examples
-cargo test --workspace --all-targets
+node scripts/test-rust.mjs
 npm test
 git diff --check
 ```

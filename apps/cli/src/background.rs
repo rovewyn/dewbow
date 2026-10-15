@@ -82,61 +82,81 @@ impl Background {
             let _ = log; // Detached children write durable progress/results themselves on Windows.
             let mut parts = vec![quote(executable.as_os_str())];
             parts.extend(args.iter().map(|arg| quote(arg)));
-            let mut line = parts
+            let line = parts
                 .join(" ")
                 .encode_utf16()
                 .chain(Some(0))
                 .collect::<Vec<_>>();
             let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
             startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-            let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-            // No launcher pipes, console, or arbitrary parent handles are inherited.
-            let success = unsafe {
-                CreateProcessW(
-                    exe.as_ptr(),
-                    line.as_mut_ptr(),
-                    ptr::null(),
-                    ptr::null(),
-                    0,
-                    DETACHED_PROCESS
-                        | CREATE_NEW_PROCESS_GROUP
-                        | CREATE_SUSPENDED
-                        | if independent {
-                            CREATE_BREAKAWAY_FROM_JOB
-                        } else {
-                            0
-                        },
-                    ptr::null(),
-                    ptr::null(),
-                    &startup,
-                    &mut process,
-                )
-            };
-            anyhow::ensure!(
-                success != 0,
-                "Background startup failed (independent upgrades require host job breakaway): {}",
-                std::io::Error::last_os_error()
-            );
-            let thread = unsafe {
-                std::os::windows::io::OwnedHandle::from_raw_handle(process.hThread as RawHandle)
-            };
-            let handle = unsafe {
-                std::os::windows::io::OwnedHandle::from_raw_handle(process.hProcess as RawHandle)
-            };
-            let mut in_job = 0;
-            // Console detachment alone does not escape an SSH host's kill-on-close
-            // job. Check before any child code executes; refuse unsafe handoff.
-            let detached = !independent
-                || (unsafe { IsProcessInJob(process.hProcess, ptr::null_mut(), &mut in_job) } != 0
-                    && in_job == 0);
-            if !detached || unsafe { ResumeThread(process.hThread) } == u32::MAX {
-                unsafe { TerminateProcess(process.hProcess, 1) };
-                anyhow::bail!(
-                    "Cannot detach the upgrade runner from the host job; no upgrade was started"
+            for breakaway in [false, true] {
+                let mut command_line = line.clone();
+                let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+                // No launcher pipes, console, or arbitrary parent handles are inherited.
+                let success = unsafe {
+                    CreateProcessW(
+                        exe.as_ptr(),
+                        command_line.as_mut_ptr(),
+                        ptr::null(),
+                        ptr::null(),
+                        0,
+                        DETACHED_PROCESS
+                            | CREATE_NEW_PROCESS_GROUP
+                            | CREATE_SUSPENDED
+                            | if breakaway {
+                                CREATE_BREAKAWAY_FROM_JOB
+                            } else {
+                                0
+                            },
+                        ptr::null(),
+                        ptr::null(),
+                        &startup,
+                        &mut process,
+                    )
+                };
+                anyhow::ensure!(
+                    success != 0,
+                    "Background startup failed: {}",
+                    std::io::Error::last_os_error()
                 );
+                let thread = unsafe {
+                    std::os::windows::io::OwnedHandle::from_raw_handle(process.hThread as RawHandle)
+                };
+                let handle = unsafe {
+                    std::os::windows::io::OwnedHandle::from_raw_handle(
+                        process.hProcess as RawHandle,
+                    )
+                };
+                let mut in_job = 0;
+                // Console detachment alone does not escape an SSH host's kill-on-close
+                // job. Check before any child code executes; refuse unsafe handoff.
+                let detached = !independent
+                    || (unsafe { IsProcessInJob(process.hProcess, ptr::null_mut(), &mut in_job) }
+                        != 0
+                        && in_job == 0);
+                if !detached {
+                    anyhow::ensure!(
+                        unsafe { TerminateProcess(process.hProcess, 1) } != 0,
+                        "Cannot terminate the suspended upgrade runner"
+                    );
+                    if !breakaway {
+                        // SILENT_BREAKAWAY_OK hosts detach without an explicit flag;
+                        // other hosts need BREAKAWAY_OK. Neither child executes until
+                        // IsProcessInJob confirms that every job was left behind.
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "Cannot detach the upgrade runner from the host job; no upgrade was started"
+                    );
+                }
+                if unsafe { ResumeThread(process.hThread) } == u32::MAX {
+                    unsafe { TerminateProcess(process.hProcess, 1) };
+                    anyhow::bail!("Cannot resume the background process");
+                }
+                drop(thread);
+                return Ok(Self { handle });
             }
-            drop(thread);
-            Ok(Self { handle })
+            unreachable!("Every successful creation returns or refuses handoff")
         }
         #[cfg(unix)]
         {

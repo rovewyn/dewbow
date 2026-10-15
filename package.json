@@ -31,7 +31,7 @@
     "demo": "npm run demo --workspace @dewbow/sdk",
     "demo:history": "npm run demo:history --workspace @dewbow/sdk --",
     "build:rust": "npm run build && cargo build --workspace --bins --examples",
-    "test:rust": "cargo test --workspace --all-targets && node --test scripts/tests/rust-daemon.test.mjs",
+    "test:rust": "node scripts/test-rust.mjs && node --test scripts/tests/rust-daemon.test.mjs",
     "web": "npm run dev --workspace @dewbow/web --",
     "web:preview": "npm run preview --workspace @dewbow/web --"
   },

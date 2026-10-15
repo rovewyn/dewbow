@@ -861,7 +861,7 @@ mod tests {
     #[cfg(windows)]
     fn job_front(
         env: &Environment,
-        allow_breakaway: bool,
+        breakaway: u32,
     ) -> (
         std::os::windows::io::OwnedHandle,
         std::os::windows::io::OwnedHandle,
@@ -875,9 +875,9 @@ mod tests {
         };
         use windows_sys::Win32::System::{
             JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
-                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JobObjectExtendedLimitInformation, SetInformationJobObject,
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
             },
             Threading::{
                 CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, PROCESS_INFORMATION,
@@ -891,12 +891,8 @@ mod tests {
             assert!(!job.is_null());
             let job_handle = std::os::windows::io::OwnedHandle::from_raw_handle(job as RawHandle);
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                | if allow_breakaway {
-                    JOB_OBJECT_LIMIT_BREAKAWAY_OK
-                } else {
-                    0
-                };
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | breakaway;
             assert_ne!(
                 SetInformationJobObject(
                     job,
@@ -953,12 +949,20 @@ mod tests {
     #[tokio::test]
     async fn windows_host_job_close_survives_or_refuses_before_maintenance() {
         use std::os::windows::io::AsRawHandle;
-        for allowed in [true, false] {
+        use windows_sys::Win32::System::JobObjects::{
+            JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+        };
+        for mode in [
+            JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+            JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+            0,
+        ] {
+            let allowed = mode != 0;
             let env = Environment::new();
             let old = env.start().await;
             let job = prepared(&env);
             fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
-            let (host_job, front) = job_front(&env, allowed);
+            let (host_job, front) = job_front(&env, mode);
             if allowed {
                 at_phase(&job, "validating").await;
             } else {
