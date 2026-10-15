@@ -33,8 +33,11 @@ fn atomic_replace(candidate: &Path, executable: &Path) -> std::io::Result<()> {
     let name: Vec<u16> = std::path::absolute(executable)?
         .as_os_str()
         .encode_wide()
+        .chain(Some(0))
         .collect();
-    let length = offset_of!(FILE_RENAME_INFO, FileName) + size_of_val(name.as_slice());
+    let filename_bytes = size_of_val(&name[..name.len() - 1]);
+    let length = (offset_of!(FILE_RENAME_INFO, FileName) + size_of_val(name.as_slice()))
+        .max(size_of::<FILE_RENAME_INFO>());
     let mut buffer = vec![0usize; length.div_ceil(size_of::<usize>())];
     let file = OpenOptions::new().access_mode(DELETE).open(candidate)?;
     // FileRenameInfoEx with POSIX semantics can replace a mapped executable.
@@ -43,8 +46,9 @@ fn atomic_replace(candidate: &Path, executable: &Path) -> std::io::Result<()> {
     unsafe {
         let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
         (*info).Anonymous.Flags = 0x1 | 0x2; // REPLACE_IF_EXISTS | POSIX_SEMANTICS
-        (*info).FileNameLength =
-            u32::try_from(size_of_val(name.as_slice())).map_err(std::io::Error::other)?;
+        // The Win32 wrapper expects a NUL-terminated name even though the byte
+        // count excludes it. Alignment padding must never supply the terminator.
+        (*info).FileNameLength = u32::try_from(filename_bytes).map_err(std::io::Error::other)?;
         std::ptr::copy_nonoverlapping(
             name.as_ptr(),
             std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
@@ -89,6 +93,30 @@ pub fn replace(executable: &Path, candidate: &Path, backup: &Path) -> anyhow::Re
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_preserves_exact_names_at_every_wide_string_alignment() {
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-rename-test-{}", dewbow_protocol::id()));
+        fs::create_dir(&root).unwrap();
+        for existing in [false, true] {
+            for length in 1..=8 {
+                let destination = root.join(format!("{}-界🚀.json", "x".repeat(length)));
+                let candidate = root.join("candidate");
+                fs::write(&candidate, b"next").unwrap();
+                if existing {
+                    fs::write(&destination, b"previous").unwrap();
+                }
+                commit(&destination, &candidate).unwrap();
+                assert_eq!(fs::read(&destination).unwrap(), b"next");
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+                fs::remove_file(destination).unwrap();
+            }
+        }
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn interrupted_replacement_keeps_a_launchable_path_and_immutable_backup() {
