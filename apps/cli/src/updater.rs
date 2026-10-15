@@ -1115,6 +1115,10 @@ mod tests {
             fs::write(env.home.join(fault), "synthetic").unwrap();
             let _supervisor = spawn(&job, None).unwrap();
             at_phase(&job, phase).await;
+            if phase == "stopping" {
+                until(|| !env.home.join(fault).exists()).await;
+                assert!(maintenance::transaction(&env.state).unwrap().is_none());
+            }
             kill_fixture(pid(&job, "worker"));
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "recovered", "{}", outcome.message);
