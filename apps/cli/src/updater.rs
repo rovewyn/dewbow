@@ -252,6 +252,31 @@ fn status(job: &Path) -> anyhow::Result<Value> {
     // Status never acquires a lock, creates files or restarts a process.
     Ok(json!({"jobId":request.job_id,"status":"pending","phase":progress["phase"]}))
 }
+fn rename_job(from: &Path, to: &Path) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
+    fs::rename(from, to).context("Cannot rename the private upgrade job")?;
+    #[cfg(windows)]
+    {
+        // Publication holds launch.lock and checks role fences first. A delayed
+        // child may still have the runner image open while waiting for that lock;
+        // its five-second acquisition deadline must expire before archival can
+        // rename the directory. Never kill diagnostic PIDs or release publication.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match fs::rename(from, to) {
+                Ok(()) => break,
+                Err(cause)
+                    if matches!(cause.raw_os_error(), Some(5 | 32))
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(cause) => return Err(cause).context("Cannot rename the private upgrade job"),
+            }
+        }
+    }
+    Ok(())
+}
 fn create_job(executable: &Path, state: &Path, options: &Options) -> anyhow::Result<PathBuf> {
     let root = root(executable)?;
     let job = root.join("active");
@@ -270,7 +295,7 @@ fn create_job(executable: &Path, state: &Path, options: &Options) -> anyhow::Res
         // lock handles to be closed before renaming the completed job.
         drop(worker);
         drop(guard);
-        fs::rename(&job, root.join(format!("history-{}", previous.job_id)))?;
+        rename_job(&job, &root.join(format!("history-{}", previous.job_id)))?;
     }
     let id = dewbow_protocol::id();
     let stage = root.join(format!(".stage-{id}"));
@@ -298,7 +323,7 @@ fn create_job(executable: &Path, state: &Path, options: &Options) -> anyhow::Res
         },
     )?;
     config::secure_directory(&stage.join("attempts"))?;
-    fs::rename(stage, &job)?;
+    rename_job(&stage, &job)?;
     maintenance::sync_directory(&root)?;
     Ok(job)
 }
@@ -817,6 +842,44 @@ mod tests {
     use std::process::{Command, Stdio};
     const LIMIT: Duration = Duration::from_secs(30);
     const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    #[cfg(windows)]
+    #[test]
+    fn job_directory_rename_waits_for_a_temporary_windows_handle() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let parent = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let root = parent.join(format!("dewbow-job-rename-test-{}", dewbow_protocol::id()));
+        fs::create_dir(&root).unwrap();
+        let active = root.join("active");
+        let history = root.join("history");
+        fs::create_dir(&active).unwrap();
+        fs::write(active.join("synthetic.fixture"), "synthetic").unwrap();
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(active.join("synthetic.fixture"))
+            .unwrap();
+        let blocked = fs::rename(&active, &history).unwrap_err();
+        assert!(matches!(blocked.raw_os_error(), Some(5 | 32)));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+        rename_job(&active, &history).unwrap();
+        release.join().unwrap();
+        assert!(!active.exists());
+        assert_eq!(
+            fs::read_to_string(history.join("synthetic.fixture")).unwrap(),
+            "synthetic"
+        );
+        assert_eq!(
+            fs::canonicalize(&root).unwrap().parent(),
+            Some(parent.as_path())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn prepared(env: &Environment) -> PathBuf {
         config::secure_directory(&root(&env.executable).unwrap()).unwrap();
