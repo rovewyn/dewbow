@@ -52,6 +52,16 @@ During initial development, direct breaking naming changes are acceptable. Do no
 
 The project is in early development. Backward compatibility, data migrations, and legacy protocol support are not required. Pin all Dewbow-owned contract versions to `v1` during this phase. Change the `v1` contract and update the daemon and clients together; do not introduce a new contract version, version negotiation, or compatibility branches. Recreate obsolete Dewbow-owned tables instead of adding migration code. Stop the daemon and its owned native runtime before resetting their state. Preserve native Codex conversations, credentials, and unrelated user files. Document state resets and validate with fresh synthetic databases.
 
+## Database Ownership Boundary
+
+Codex is the only durable source of conversation history and native execution status. Read messages, tool items, command output, file diffs, ordering, and completed turn status from native Codex storage through the SDK. History, activity, and content reads must never write to Dewbow's database. Do not persist native metadata snapshots, derived presentation objects, raw protocol items, output chunks, or a second conversation/event history.
+
+Dewbow owns one SQLite database, `daemon.sqlite`, in each selected state directory. Durable records are limited to managed conversation bindings and frozen creation configuration, request deduplication receipts (request identity, input fingerprint, required target associations, and delivery outcome), and the minimum active or uncertain execution and process ownership information needed for recovery. Do not retain completed native turn status as a parallel history. Remove obsolete recovery records when their outcome is confirmed; keep uncertain delivery explicit and never infer success from missing callbacks. Runtime display state is rebuilt from Codex after restart.
+
+Question and approval details, answers, callback identities, live messages/output, and bounded notification buffers are runtime memory only. Release callbacks when their turn ends; evict live content after native persistence is confirmed or its buffer limit is reached, and release all volatile content with its runtime. Browser refresh must not invalidate a pending callback, but daemon restart must invalidate callbacks tied to the previous native process. Persist the associated request receipt before responding to a native callback; do not replay approvals automatically. Reconnection restores managed bindings and the saved configuration, then reads actual native state. A stopped or interrupted native turn must never be presented as continuing solely because it was active before shutdown.
+
+Historical command output is exactly what Codex retained; Dewbow does not keep an independent complete-output archive. Treat potentially truncated native output as having unknown completeness. Do not restore a separate content database, durable event stream, or content cache without an explicitly authorized change to this boundary. Obsolete Dewbow storage requires a stopped daemon and owned native runtime, a retained backup, and a fresh state directory; do not migrate, erase, or reset native Codex data.
+
 ## Validation Guidelines
 
 Choose validation that matches the change and the repository's existing practices. Run relevant checks and inspect the affected behavior directly.

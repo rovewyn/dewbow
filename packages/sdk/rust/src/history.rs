@@ -10,6 +10,15 @@ fn scope(home: &Path, thread: &str) -> String {
         format!("{}:{thread}", home.display()).as_bytes(),
     ))
 }
+/// Read one bounded native item without creating a Dewbow content copy.
+pub fn read_item(home: &Path, thread: &str, item: &str) -> anyhow::Result<Value> {
+    use rusqlite::OptionalExtension;
+    let db = database(home, "thread_history_")?;
+    let mut record = db.query_row("SELECT item_json,turn_id,rollout_ordinal,updated_at_ordinal,created_at_ms,completed_at_ms FROM thread_items WHERE thread_id=?1 AND item_id=?2 AND item_type<>'reasoning' AND length(CAST(item_json AS BLOB))<=8388608", [thread,item], |r| Ok(json!({"itemJson":r.get::<_,String>(0)?,"turnId":r.get::<_,String>(1)?,"ordinal":r.get::<_,i64>(2)?,"updatedOrdinal":r.get::<_,i64>(3)?,"createdAtMs":r.get::<_,i64>(4)?,"completedAtMs":r.get::<_,Option<i64>>(5)?}))).optional()?.ok_or_else(|| error("NOT_FOUND", "Native item is unavailable."))?;
+    record["item"] = serde_json::from_str(record["itemJson"].as_str().unwrap())?;
+    record.as_object_mut().unwrap().remove("itemJson");
+    Ok(record)
+}
 pub fn persisted_items(
     home: &Path,
     thread: &str,

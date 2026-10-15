@@ -19,6 +19,19 @@ function fixture(t) {
   return join(root, "private");
 }
 
+test("private files preserve existing contents and reject shared state roots", t => {
+  const directory = fixture(t), path = join(directory, "credential.txt");
+  assert.equal(createPrivateFile(path, "synthetic-original"), true);
+  assert.equal(createPrivateFile(path, "synthetic-replacement"), false);
+  assert.equal(readFileSync(path, "utf8"), "synthetic-original");
+  const guard = `import assert from 'node:assert/strict'; import {ensurePrivateDirectory} from ${JSON.stringify(new URL("../dist/files.js", import.meta.url).href)}; assert.throws(() => ensurePrivateDirectory(process.platform === 'win32' ? process.cwd().toUpperCase() : process.cwd()), /dedicated directory/);`;
+  childProcess.execFileSync(process.execPath, ["--input-type=module", "-e", guard], { cwd: directory, windowsHide: true });
+  if (process.platform === "win32") {
+    const check = "$ErrorActionPreference='Stop'; $acl=[IO.FileInfo]::new($env:DEWBOW_ACL_TEST_FILE).GetAccessControl(); $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if(-not $acl.AreAccessRulesProtected) { exit 1 }; $seen=@(); foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) { if($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin @($user,'S-1-5-18') -or $rule.IsInherited -or $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) { exit 2 }; $seen+=$rule.IdentityReference.Value }; if($user -notin $seen -or 'S-1-5-18' -notin $seen) { exit 3 }";
+    childProcess.execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(check,"utf16le").toString("base64")], { windowsHide: true, env: { ...process.env, DEWBOW_ACL_TEST_FILE: path } });
+  }
+});
+
 test("Windows ACL protection completes after a slow helper start", windowsOnly, t => {
   const directory = fixture(t);
   const runProcess = childProcess.execFileSync;
