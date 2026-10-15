@@ -313,8 +313,9 @@ mod tests {
 
     #[test]
     fn replacement_rolls_back_and_preserves_existing_backups() {
-        let root =
-            std::env::temp_dir().join(format!("dewbow-upgrade-test-{}", dewbow_protocol::id()));
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-upgrade-test-{}", dewbow_protocol::id()));
         fs::create_dir(&root).unwrap();
         let stage = Stage(root);
         let binary = stage.0.join("dewbow");
@@ -334,7 +335,10 @@ mod tests {
     #[test]
     fn rejects_corruption_and_a_running_or_stale_daemon() {
         let stage = Stage(
-            std::env::temp_dir().join(format!("dewbow-upgrade-test-{}", dewbow_protocol::id())),
+            // macOS temporary paths can include system-managed symlinks.
+            fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!("dewbow-upgrade-test-{}", dewbow_protocol::id())),
         );
         fs::create_dir(&stage.0).unwrap();
         let archive = stage.0.join("archive");

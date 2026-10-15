@@ -233,8 +233,9 @@ mod upgrade_tests {
 
     #[test]
     fn upgrade_rejects_live_native_ownership_without_reinitializing_storage() {
-        let root =
-            std::env::temp_dir().join(format!("dewbow-owner-test-{}", dewbow_protocol::id()));
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-owner-test-{}", dewbow_protocol::id()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("daemon.sqlite");
         let db = Connection::open(&path).unwrap();
