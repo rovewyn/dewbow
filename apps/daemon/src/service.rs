@@ -15,30 +15,31 @@ use std::{
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 
 pub(crate) async fn verify_cli(config: &Config) -> anyhow::Result<Value> {
-    let executable = config.codex_executable.clone();
-    let home = config.codex_home.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut command = std::process::Command::new(&executable);
+    async fn invoke(config: &Config, args: &[&str]) -> anyhow::Result<std::process::Output> {
+        let mut command = std::process::Command::new(&config.codex_executable);
         hidden(&mut command);
-        let version = command.arg("--version").output()?;
-        anyhow::ensure!(
-            version.status.success()
-                && String::from_utf8_lossy(&version.stdout).trim() == "codex-cli 0.162.1",
-            "A standalone Codex CLI 0.162.1 is required"
-        );
-        let mut command = std::process::Command::new(&executable);
-        hidden(&mut command);
-        let login = command
-            .args(["login", "status"])
-            .env("CODEX_HOME", home)
-            .output()?;
-        anyhow::ensure!(
-            login.status.success(),
-            "Codex login is required for this native home"
-        );
-        Ok(json!({"codexVersion":"0.162.1","login":"configured"}))
-    })
-    .await?
+        command.args(args).env("CODEX_HOME", &config.codex_home);
+        Ok(tokio::time::timeout(
+            Duration::from_secs(15),
+            tokio::process::Command::from(command)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Codex prerequisite check timed out"))??)
+    }
+    let version = invoke(config, &["--version"]).await?;
+    anyhow::ensure!(
+        version.status.success()
+            && String::from_utf8_lossy(&version.stdout).trim() == "codex-cli 0.162.1",
+        "A standalone Codex CLI 0.162.1 is required"
+    );
+    let login = invoke(config, &["login", "status"]).await?;
+    anyhow::ensure!(
+        login.status.success(),
+        "Codex login is required for this native home"
+    );
+    Ok(json!({"codexVersion":"0.162.1","login":"configured"}))
 }
 pub async fn doctor(config: &Config) -> anyhow::Result<Value> {
     let mut result = verify_cli(config).await?;
@@ -71,6 +72,8 @@ pub async fn doctor(config: &Config) -> anyhow::Result<Value> {
     Ok(result)
 }
 pub struct Service {
+    pub(crate) state: PathBuf,
+    pub(crate) maintenance: crate::maintenance::Maintenance,
     pub config: Config,
     pub runtime: Arc<Runtime>,
     pub store: Store,
@@ -102,6 +105,7 @@ pub fn public(mut value: Value) -> Value {
 }
 impl Service {
     pub async fn open(config: Config, state: &Path) -> anyhow::Result<Arc<Self>> {
+        let maintenance = crate::maintenance::Maintenance::open(state)?;
         let store = Store::open(state)?;
         if let Some(owner) = store.get("meta", "owner")?
             && let Some(pid) = owner["pid"].as_u64()
@@ -140,6 +144,8 @@ impl Service {
         }
         let (changed, _) = broadcast::channel(32);
         let service = Arc::new(Self {
+            state: state.to_path_buf(),
+            maintenance,
             config,
             runtime,
             store,
@@ -357,6 +363,7 @@ impl Service {
             operation["authority"] = json!("operator");
             return Ok(public(operation));
         }
+        let _admission = self.maintenance.admit(name)?;
         anyhow::ensure!(
             !self.stopped.load(std::sync::atomic::Ordering::Relaxed),
             error("UNAVAILABLE", "Daemon is shutting down.")

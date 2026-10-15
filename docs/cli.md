@@ -2,7 +2,7 @@
 
 The `dewbow` executable contains the local daemon and the built Web. Node.js is a development dependency, not a Dewbow runtime requirement. Codex remains a separately installed native dependency.
 
-Use the [standalone installers and upgrade guide](installation.md) for released binaries. `dewbow upgrade --check` checks the latest stable release; `dewbow upgrade` installs a newer release after the selected daemon has stopped.
+Use the [standalone installers and upgrade guide](installation.md) for released binaries. `dewbow upgrade --check` checks the latest stable release; `dewbow upgrade` downloads and verifies it, waits for existing work, then switches and validates the selected daemon with guarded rollback. `--archive` uses a downloaded release; `--recover` restores an interrupted, uncommitted transaction.
 
 ## Build and prerequisites
 

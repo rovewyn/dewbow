@@ -8,10 +8,13 @@ pub struct Background {
     #[cfg(windows)]
     handle: std::os::windows::io::OwnedHandle,
     #[cfg(unix)]
-    child: std::process::Child,
+    child: Option<std::process::Child>,
 }
 impl Background {
     pub fn spawn(state: &Path) -> anyhow::Result<Self> {
+        Self::spawn_executable(&std::env::current_exe()?, state)
+    }
+    pub fn spawn_executable(executable: &Path, state: &Path) -> anyhow::Result<Self> {
         #[cfg(windows)]
         {
             use std::{
@@ -28,7 +31,6 @@ impl Background {
                     PROCESS_INFORMATION, STARTUPINFOW,
                 },
             };
-            let executable = std::env::current_exe()?;
             let exe = executable
                 .as_os_str()
                 .encode_wide()
@@ -41,7 +43,7 @@ impl Background {
             };
             let mut line = format!(
                 "{} --state-dir {} daemon run --background",
-                quote(&executable),
+                quote(executable),
                 quote(state)
             )
             .encode_utf16()
@@ -87,7 +89,7 @@ impl Background {
                 .create(true)
                 .append(true)
                 .open(state.join("daemon.log"))?;
-            let child = Command::new(std::env::current_exe()?)
+            let child = Command::new(executable)
                 .arg("--state-dir")
                 .arg(state)
                 .args(["daemon", "run", "--background"])
@@ -96,8 +98,43 @@ impl Background {
                 .stderr(Stdio::from(log))
                 .process_group(0)
                 .spawn()?;
-            Ok(Self { child })
+            Ok(Self { child: Some(child) })
         }
+    }
+    pub fn pid(&self) -> u32 {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            unsafe {
+                windows_sys::Win32::System::Threading::GetProcessId(self.handle.as_raw_handle())
+            }
+        }
+        #[cfg(unix)]
+        {
+            self.child.as_ref().unwrap().id()
+        }
+    }
+    /// Terminate only the process represented by our launch handle, never a recorded PID.
+    pub fn terminate(&mut self) -> anyhow::Result<()> {
+        if self.exited()? {
+            return Ok(());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            anyhow::ensure!(
+                unsafe {
+                    windows_sys::Win32::System::Threading::TerminateProcess(
+                        self.handle.as_raw_handle(),
+                        1,
+                    )
+                } != 0,
+                "Cannot terminate the launched candidate"
+            );
+        }
+        #[cfg(unix)]
+        self.child.as_mut().unwrap().kill()?;
+        Ok(())
     }
     pub fn exited(&mut self) -> anyhow::Result<bool> {
         #[cfg(windows)]
@@ -116,6 +153,23 @@ impl Background {
             Ok(code != 259)
         }
         #[cfg(unix)]
-        Ok(self.child.try_wait()?.is_some())
+        Ok(self.child.as_mut().unwrap().try_wait()?.is_some())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Background {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take()
+            && !matches!(child.try_wait(), Ok(Some(_)))
+        {
+            // Long-lived launchers must reap exited children. Do not tie this wait
+            // to the Tokio runtime: its shutdown would wait for a running daemon.
+            let _ = std::thread::Builder::new()
+                .name("dewbow-reaper".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
     }
 }

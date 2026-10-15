@@ -1,5 +1,6 @@
 mod background;
 mod replacement;
+mod transaction;
 mod upgrade;
 use clap::{Parser, Subcommand};
 use dewbow_daemon::config::{self, Config};
@@ -34,7 +35,7 @@ enum Commands {
         command: Daemon,
     },
     Web,
-    /// Install a newer GitHub release in place (stop all Dewbow daemons first).
+    /// Download, drain, validate and install a newer release with guarded rollback.
     Upgrade {
         /// Check for a release without changing the installation.
         #[arg(long)]
@@ -42,6 +43,18 @@ enum Commands {
         /// Select an exact release, including a release candidate.
         #[arg(long)]
         version: Option<String>,
+        /// Use an already downloaded release archive and its adjacent .sha256 file.
+        #[arg(long, requires = "version", conflicts_with_all = ["check", "recover"])]
+        archive: Option<PathBuf>,
+        /// Recover an interrupted, uncommitted upgrade from its retained snapshot.
+        #[arg(long, conflicts_with_all = ["check", "version", "archive"])]
+        recover: bool,
+        /// Maximum time to wait for existing and unresolved tasks; never interrupts them.
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(0..=86400))]
+        wait_seconds: u64,
+        /// Deadline for each startup or shutdown phase.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
+        timeout_seconds: u64,
     },
 }
 #[derive(Subcommand)]
@@ -54,24 +67,37 @@ enum Daemon {
     Status,
     Stop,
 }
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
+fn client(duration: Duration) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .unwrap()
+        .timeout(duration)
+        .build()?)
 }
 async fn control(config: &Config, name: &str) -> anyhow::Result<Value> {
-    let response = client()
+    control_input(config, name, &json!({})).await
+}
+async fn control_input(config: &Config, name: &str, input: &Value) -> anyhow::Result<Value> {
+    control_timeout(config, name, input, Duration::from_secs(3)).await
+}
+async fn control_timeout(
+    config: &Config,
+    name: &str,
+    input: &Value,
+    duration: Duration,
+) -> anyhow::Result<Value> {
+    let response = client(duration)?
         .post(format!("http://127.0.0.1:{}/internal/{name}", config.port))
         .bearer_auth(&config.control_token)
+        .json(input)
         .send()
         .await?;
-    anyhow::ensure!(
-        response.status().is_success(),
-        "Local control authentication failed; verify the selected daemon instance"
-    );
+    let success = response.status().is_success();
     let value: Value = response.json().await?;
+    anyhow::ensure!(
+        success && value.get("result").is_some(),
+        "Local control {name} failed: {}",
+        value["error"]["code"].as_str().unwrap_or("UNAVAILABLE")
+    );
     Ok(value["result"].clone())
 }
 async fn status(state: &std::path::Path, config: &Config) -> anyhow::Result<Value> {
@@ -143,8 +169,25 @@ async fn main() {
 }
 async fn execute() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if let Commands::Upgrade { check, version } = &cli.command {
-        return upgrade::run(cli.state_dir.as_deref(), *check, version.as_deref()).await;
+    if let Commands::Upgrade {
+        check,
+        version,
+        archive,
+        recover,
+        wait_seconds,
+        timeout_seconds,
+    } = &cli.command
+    {
+        return upgrade::run(
+            cli.state_dir.as_deref(),
+            *check,
+            version.as_deref(),
+            archive.as_deref(),
+            *recover,
+            Duration::from_secs(*wait_seconds),
+            Duration::from_secs(*timeout_seconds),
+        )
+        .await;
     }
     let state = std::path::absolute(cli.state_dir.unwrap_or(config::default_state()?))?;
     if let Commands::Init {

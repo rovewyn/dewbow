@@ -5,6 +5,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    fs,
     io::{self, BufRead, Write},
     path::PathBuf,
 };
@@ -109,6 +110,29 @@ fn main() {
         if method == "initialized" {
             continue;
         }
+        if method == "initialize" && home.join("upgrade-fail-initialize-once").exists() {
+            fs::remove_file(home.join("upgrade-fail-initialize-once")).unwrap();
+            emit(
+                json!({"id":request,"error":{"code":-32000,"message":"synthetic initialization failure"}}),
+            );
+            continue;
+        }
+        // Explicit, one-shot faults are confined to this marked synthetic native fixture.
+        if method == "model/list" && home.join("upgrade-fail-models-once").exists() {
+            fs::remove_file(home.join("upgrade-fail-models-once")).unwrap();
+            emit(
+                json!({"id":request,"error":{"code":-32000,"message":"synthetic startup probe failure"}}),
+            );
+            continue;
+        }
+        if method == "model/list" && home.join("upgrade-slow-models-once").exists() {
+            fs::remove_file(home.join("upgrade-slow-models-once")).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(4));
+        }
+        if method == "initialize" && home.join("upgrade-hang-initialize-once").exists() {
+            fs::remove_file(home.join("upgrade-hang-initialize-once")).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(8));
+        }
         let result = match method {
             "initialize" => json!({"userAgent":"fixture"}),
             "config/read" => {
@@ -125,6 +149,10 @@ fn main() {
                 json!({"data":rows,"nextCursor":null})
             }
             "thread/start" | "thread/resume" => {
+                if method == "thread/start" && home.join("upgrade-slow-start-once").exists() {
+                    fs::remove_file(home.join("upgrade-slow-start-once")).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                }
                 if method == "thread/resume"
                     && home
                         .join(format!("{}.writer", params["threadId"].as_str().unwrap()))

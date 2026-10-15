@@ -43,6 +43,42 @@ pub fn verify_runtime_stopped(state: &Path) -> anyhow::Result<()> {
 type Records = BTreeMap<(String, String), Value>;
 type Events = BTreeMap<String, (u64, VecDeque<Value>)>;
 
+/// The caller must hold the daemon lock and verify both owned processes have exited.
+pub fn checkpoint_for_upgrade(state: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !state.join("content.sqlite").exists(),
+        "Obsolete storage requires an explicit state reset before upgrading"
+    );
+    let path = state.join("daemon.sqlite");
+    for name in ["daemon.sqlite", "daemon.sqlite-wal", "daemon.sqlite-shm"] {
+        let file = state.join(name);
+        dewbow_sdk::private::no_links(&file)?;
+        if file.exists() {
+            dewbow_sdk::private::regular(&file)?;
+        }
+    }
+    if !path.exists() {
+        return Ok(());
+    }
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    anyhow::ensure!(version == 1, "Unsupported management state for upgrade");
+    let integrity: String = db.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    anyhow::ensure!(
+        integrity == "ok",
+        "Management state failed its integrity check"
+    );
+    let (busy, remaining): (u32, i64) =
+        db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+    anyhow::ensure!(
+        busy == 0 && remaining == 0,
+        "Management state could not be checkpointed"
+    );
+    Ok(())
+}
+
 pub struct Store {
     journal: Mutex<Connection>,
     records: Mutex<Records>,
@@ -222,6 +258,35 @@ impl Store {
 #[cfg(test)]
 mod upgrade_tests {
     use super::*;
+    #[test]
+    fn upgrade_checkpoint_preserves_committed_wal_and_refuses_an_active_writer() {
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-checkpoint-test-{}", dewbow_protocol::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("daemon.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; PRAGMA user_version=1; CREATE TABLE records(kind TEXT,id TEXT,data TEXT); INSERT INTO records VALUES('operation','synthetic','\"retained\"');").unwrap();
+        assert!(root.join("daemon.sqlite-wal").metadata().unwrap().len() > 0);
+        checkpoint_for_upgrade(&root).unwrap();
+        std::fs::copy(&path, root.join("snapshot.sqlite")).unwrap();
+        let snapshot = Connection::open(root.join("snapshot.sqlite")).unwrap();
+        assert_eq!(
+            snapshot
+                .query_row("SELECT data FROM records", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "\"retained\""
+        );
+        drop(snapshot);
+        db.execute_batch(
+            "BEGIN IMMEDIATE; INSERT INTO records VALUES('operation','unfinished','null');",
+        )
+        .unwrap();
+        assert!(checkpoint_for_upgrade(&root).is_err());
+        db.execute_batch("ROLLBACK").unwrap();
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn upgrade_rejects_live_native_ownership_without_reinitializing_storage() {
         let root = std::fs::canonicalize(std::env::temp_dir())

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod lifecycle;
+pub mod maintenance;
 mod observation;
 mod server;
 mod service;
@@ -7,4 +8,5 @@ mod shutdown;
 mod store;
 pub use server::run;
 pub use service::doctor;
+pub use store::checkpoint_for_upgrade;
 pub use store::verify_runtime_stopped;

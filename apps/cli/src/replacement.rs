@@ -1,7 +1,7 @@
 use anyhow::Context;
 use std::{fs, fs::OpenOptions, path::Path};
 
-fn retain(executable: &Path, candidate: &Path, backup: &Path) -> anyhow::Result<()> {
+pub(crate) fn retain(executable: &Path, candidate: &Path, backup: &Path) -> anyhow::Result<()> {
     for path in [executable, candidate] {
         dewbow_sdk::private::no_links(path)?;
         dewbow_sdk::private::regular(path)?;
@@ -71,7 +71,7 @@ fn sync_directory(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn commit(executable: &Path, candidate: &Path) -> anyhow::Result<()> {
+pub(crate) fn commit(executable: &Path, candidate: &Path) -> anyhow::Result<()> {
     atomic_replace(candidate, executable).context(
         "Atomic replacement failed; the original executable and its backup were retained",
     )?;

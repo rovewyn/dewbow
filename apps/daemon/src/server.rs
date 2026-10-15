@@ -104,13 +104,14 @@ async fn internal(
     State(service): State<Arc<Service>>,
     RoutePath(name): RoutePath<String>,
     headers: HeaderMap,
+    input: Option<Json<Value>>,
 ) -> Response {
     if !control(&service, &headers) {
         return failure(error("UNAUTHORIZED", "Local control authentication failed.").into());
     }
     let result = match name.as_str() {
         "status" => {
-            json!({"instanceId":service.instance,"pid":std::process::id(),"runtimePid":service.runtime.pid,"status":if service.stopped.load(Ordering::Relaxed){"stopping"}else{"ready"},"url":format!("http://127.0.0.1:{}",service.config.port)})
+            json!({"instanceId":service.instance,"pid":std::process::id(),"runtimePid":service.runtime.pid,"version":env!("CARGO_PKG_VERSION"),"upgradeProtocol":"v1","maintenance":service.maintenance.active(),"status":if service.stopped.load(Ordering::Relaxed){"stopping"}else{"ready"},"url":format!("http://127.0.0.1:{}",service.config.port)})
         }
         "ticket" => {
             let mut tickets = service.tickets.lock().unwrap();
@@ -126,7 +127,13 @@ async fn internal(
             service.shutting_down.notify_one();
             json!({"instanceId":service.instance,"status":"stopping"})
         }
-        _ => return failure(error("NOT_FOUND", "Unknown local control operation.").into()),
+        _ => match service
+            .upgrade_control(&name, &input.map(|v| v.0).unwrap_or(Value::Null))
+            .await
+        {
+            Ok(value) => value,
+            Err(cause) => return failure(cause),
+        },
     };
     Json(json!({"result":result})).into_response()
 }
