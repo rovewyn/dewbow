@@ -70,13 +70,16 @@ Automated changelog generation and release PR maintenance can be added later. Th
 
 The workflow installs pinned Node/npm and Rust directly, without mise, uses `npm ci` and Cargo `--locked`, builds Web before Rust, runs typechecking and the Rust/npm checks, builds the optimized executable, and verifies the extracted archive's executable with `--version` and `--help`. All matrix jobs must succeed before the publication job can run.
 
-The initial distribution targets are:
+The distribution targets for future releases are:
 
 | Runner | Target | Archive |
 | --- | --- | --- |
 | Ubuntu 24.04 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
 | Windows 2025 | `x86_64-pc-windows-msvc` | `.zip` |
-| macOS 15 | `aarch64-apple-darwin` | `.tar.gz` |
+| macOS 15 Apple Silicon (`macos-15`) | `aarch64-apple-darwin` | `.tar.gz` |
+| macOS 15 Intel (`macos-15-intel`) | `x86_64-apple-darwin` | `.tar.gz` |
+
+The macOS archives are separate native builds, not universal binaries. Select `aarch64-apple-darwin` for Apple Silicon or `x86_64-apple-darwin` for Intel. Both architectures run the full PR checks and the Release workflow builds, tests and verifies each package on its matching native runner. The already published `0.1.0` release has only the Apple Silicon macOS archive; Intel distribution starts with the next release.
 
 These targets are explicit; CI operating-system coverage does not imply other architectures or older OS versions are supported. Linux uses GNU libc, not a musl static build. Binary signing, notarization, installers, self-update and package-registry publication are deferred.
 

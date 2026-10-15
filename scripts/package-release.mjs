@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { synchronizeVersions } from './sync-version.mjs';
 
-const targets = new Set(['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin']);
+const targets = new Set(['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin', 'x86_64-apple-darwin']);
 const tarExecutable = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const invoke = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
