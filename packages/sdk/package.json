@@ -1,6 +1,6 @@
 {
   "name": "@dewbow/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Dewbow local Codex discovery, history, and runtime SDK for Node.js",
   "type": "module",

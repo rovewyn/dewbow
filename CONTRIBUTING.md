@@ -16,7 +16,9 @@ Use `dewbow init`, `dewbow doctor` and `dewbow web` for local native setup. `dew
 
 Write only the necessary unit tests described in `AGENTS.md`. Use synthetic temporary fixtures. Keep real discovery results in ignored local directories and out of package contents.
 
-Run `npm run version:check` and `npm run test:release` when changing manifests or release tooling. Product versions are synchronized from the root Cargo workspace with `npm run version:sync`; `npm run version:set -- <version>` prepares a new version without tagging or publishing. See [Versioning and releases](docs/releasing.md) for release PRs and the separately authorized publication workflow.
+Read `[workspace.package].version` in the root `Cargo.toml` for the current development target and consult `docs/release-notes/<that-version>.md`. Run `npm run version:check` to print and verify that version, and run `npm run test:release` when changing manifests or release tooling. Product versions are synchronized from the root Cargo workspace with `npm run version:sync`; at the start of a development cycle, `npm run version:set -- <version>` sets the agreed target without tagging or publishing. Create its unreleased notes at the same time. See [Versioning and releases](docs/releasing.md) for release PRs and the separately authorized publication workflow.
+
+Review persistent configuration and database changes against supported published formats. Follow [management storage and compatibility](docs/storage.md); retain released identities, request receipts and recovery relationships through versioned migrations. Validate synthetic released-format fixtures and interrupted upgrades as well as fresh installations. A new state directory does not demonstrate compatibility with existing state.
 
 Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. See [installation and upgrades](docs/installation.md) for release installers and the explicit upgrade command. Remote enrollment, automatic background updates, system services and boot startup are deferred.
 

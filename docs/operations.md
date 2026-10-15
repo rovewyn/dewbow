@@ -8,7 +8,7 @@ The state directory is Dewbow's private local data directory for configuration, 
 
 Every CLI command accepts `--state-dir <directory>`. Use the same directory for `init`, `doctor`, `web`, daemon commands and upgrades; omitting the option selects the default directory again. Relative paths are resolved from the command's current working directory. For separate instances, use distinct state directories and available ports. Use an ignored directory for synthetic demos.
 
-Restarting with the same state directory preserves its host identity, managed conversation bindings, frozen configuration, request receipts and recovery records. Initializing a fresh directory creates a new host identity and independent management state; request deduplication does not span state directories. Use the original directory to recover an existing instance.
+Restarting with the same state directory preserves its host identity, managed conversation bindings, frozen configuration, request receipts and recovery records. Use the original directory to recover an existing instance.
 
 The directory can contain these files:
 
@@ -19,8 +19,17 @@ The directory can contain these files:
 | `daemon.sqlite-wal`, `daemon.sqlite-shm` | SQLite support files for the same database |
 | `init.lock`, `daemon.lock`, `instance.json` | Initialization locking, exclusive daemon ownership and process identity used for lifecycle checks and recovery |
 | `daemon.log` | Daemon diagnostics when written; it is not an archive of conversation content or complete command output |
+| `upgrade/`, `upgrade-history-*`, `upgrade-failed-state-*` | Private upgrade transactions and inactive state snapshots retained for guarded recovery; these are not additional runtime databases |
 
 Conversation working files belong to the conversation's `workDir`. Native Codex conversations, history, execution status and credentials belong to Codex home, selected during `init` with `--codex-home <directory>`, otherwise `CODEX_HOME` or `~/.codex`. Selecting a different Dewbow state directory does not itself select a different Codex home. Use separate state and work directories; see [daemon ownership](daemon.md#ownership-and-interfaces) for the durable storage boundary.
+
+### Fresh initialization and request continuity
+
+Initializing Dewbow in an empty state directory creates an independent host identity and set of management records. The stable `hostId` is stored in `config.json`; the request IDs, input fingerprints, target associations and delivery receipts are stored in `daemon.sqlite`. Merely creating a directory does not initialize an instance. A fresh initialization does not import these records from another directory, even on the same computer or with the same Codex home. The old directory's data remains where it was.
+
+For example, a client submits `req-123`, Dewbow sends it to Codex, and the connection drops before the client receives a response. After restarting with the original state directory, an identical retry can find the receipt and return its known result or explicit unknown-delivery state without submitting the command again. A newly initialized directory has no such receipt. After connecting the intended native conversation, it can treat that request ID as new and execute it again; deduplication does not span state directories.
+
+Codex history can help establish what happened in the native conversation, but cannot reconstruct Dewbow's complete request identity and delivery associations. An absent receipt in a new directory does not prove a request never ran. Reuse the original state directory for restart recovery, and inspect uncertain outcomes before retrying from a replacement instance. Native Codex conversations and credentials remain in the selected Codex home.
 
 ## Start, inspect and stop
 
@@ -56,7 +65,9 @@ On Linux/macOS, `SIGTERM`, `SIGINT` and `SIGHUP` request the same owned-runtime 
 
 Unknown delivery after a restart is not successful execution. Inspect the turn, request and native history. Retry the original request only with identical input and request ID; an unresolved turn blocks another send. Old runtime callbacks cannot be replayed. Empty native conversations that cannot resume require explicit recovery rather than silent replacement.
 
-To reset obsolete Dewbow state, stop the daemon and verify its owned native runtime is gone, then retain the old private state as a backup and initialize a fresh directory with `dewbow --state-dir <fresh-directory> init`. Startup rejects earlier Rust state containing a separate content database or the obsolete journal schema. Old Rust and TypeScript management databases are not imported or deleted. Do not remove native Codex home, conversations, credentials or workspace files. Keep backups and local acceptance results out of Git.
+Read the target [release's notes](release-notes/README.md) for supported upgrade sources, migration steps and any exceptional reset requirements. The general preserving upgrade policy is in [management storage and compatibility](storage.md). Inspect uncertain operations before changing management state; native history alone cannot restore a lost deduplication boundary.
+
+For an explicitly authorized reset, including unsupported unpublished development state or synthetic fixtures, stop the daemon and verify its owned native runtime is gone, retain the old private state as a backup, then initialize a fresh directory with `dewbow --state-dir <fresh-directory> init`. This creates a new host identity and independent deduplication/recovery state. Do not remove native Codex home, conversations, credentials or workspace files. Keep backups and local acceptance results out of Git.
 
 ## Acceptance
 
