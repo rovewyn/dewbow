@@ -190,8 +190,21 @@ try {
   }
   async function scenario(name, action) {
     console.log(`Upgrade acceptance: ${name}`);
-    const env = await prepare(name);
-    try { await action(env); } finally { await env.cleanup(); }
+    let env;
+    try { env = await prepare(name); }
+    catch (error) {
+      const state = join(root, name, 'state');
+      if (await exists(join(state, 'config.json'))) {
+        try { await run(join(root, name, 'bin space', executable), ['--state-dir', state, 'daemon', 'stop']); }
+        catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Fixture setup and cleanup failed'); }
+      }
+      throw error;
+    }
+    let failure;
+    try { await action(env); } catch (error) { failure = error; }
+    try { await env.cleanup(); }
+    catch (error) { if (failure) throw new AggregateError([failure, error], 'Acceptance and cleanup failed'); throw error; }
+    if (failure) throw failure;
     console.log(`Upgrade acceptance passed: ${name}`);
   }
   async function gate(env) {
@@ -308,6 +321,12 @@ try {
   passed = true;
   console.log(`Upgrade acceptance passed on ${target}: synthetic ${baselineVersion} -> ${version}`);
 } finally {
-  if (passed) await fs.rm(root, { recursive: true });
+  if (passed) {
+    const cleanupTarget = await fs.realpath(root), cleanupParent = await fs.realpath(parent);
+    const normalize = path => windows ? path.toLowerCase() : path;
+    assert.equal(normalize(dirname(cleanupTarget)), normalize(cleanupParent));
+    assert.equal(await fs.readFile(join(cleanupTarget, 'synthetic.fixture'), 'utf8'), 'synthetic upgrade acceptance');
+    await fs.rm(cleanupTarget, { recursive: true });
+  }
   else console.error('Upgrade acceptance failed; private synthetic files retained under outputs/.');
 }
