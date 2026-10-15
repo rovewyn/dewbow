@@ -757,6 +757,31 @@ pub(crate) mod tests {
                     "Synthetic failure state retained for inspection: {}",
                     self.root.display()
                 );
+                let job = self.root.join(".dewbow-updater/active");
+                if fs::read(self.home.join("synthetic.fixture")).is_ok_and(|v| v == b"synthetic") {
+                    if let Ok(entries) = fs::read_dir(&job) {
+                        eprintln!(
+                            "Synthetic job files: {:?}",
+                            entries
+                                .filter_map(Result::ok)
+                                .map(|v| v.file_name())
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    for name in [
+                        "supervisor.json",
+                        "worker.json",
+                        "progress.json",
+                        "runner.log",
+                    ] {
+                        if let Ok(bytes) = fs::read(job.join(name)) {
+                            eprintln!(
+                                "Synthetic {name}: {}",
+                                String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(8192)..])
+                            );
+                        }
+                    }
+                }
                 return;
             }
             let mut command = std::process::Command::new(&self.executable);

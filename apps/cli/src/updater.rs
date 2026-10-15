@@ -804,7 +804,7 @@ mod tests {
             &env.state,
             &Options {
                 version: Some(VERSION.into()),
-                timeout_seconds: 10,
+                timeout_seconds: 30,
                 ..Options::default()
             },
         )
@@ -834,6 +834,13 @@ mod tests {
     async fn at_phase(job: &Path, phase: &str) {
         until(|| read_json::<Value>(&job.join("progress.json")).is_ok_and(|v| v["phase"] == phase))
             .await;
+    }
+    async fn validating(env: &Environment, job: &Path) {
+        at_phase(job, "validating").await;
+        until(|| env.home.join("upgrade-models-blocked").exists()).await;
+    }
+    fn release(env: &Environment) {
+        fs::remove_file(env.home.join("upgrade-models-blocked")).unwrap();
     }
     async fn done(job: &Path) -> Outcome {
         until(|| completed(job).is_ok_and(|v| v.is_some())).await;
@@ -1007,10 +1014,10 @@ mod tests {
             let env = Environment::new();
             let old = env.start().await;
             let job = prepared(&env);
-            fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
+            fs::write(env.home.join("upgrade-block-models-once"), "synthetic").unwrap();
             let (host_job, front) = job_front(&env, mode);
             if allowed {
-                at_phase(&job, "validating").await;
+                validating(&env, &job).await;
             } else {
                 until(|| {
                     let mut code = 259;
@@ -1035,7 +1042,9 @@ mod tests {
             drop(front);
             if !allowed {
                 spawn(&job, None).unwrap();
+                validating(&env, &job).await;
             }
+            release(&env);
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "succeeded", "{}", outcome.message);
         }
@@ -1114,7 +1123,7 @@ mod tests {
             let env = Environment::new();
             let old = env.start().await;
             let job = prepared(&env);
-            fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
+            fs::write(env.home.join("upgrade-block-models-once"), "synthetic").unwrap();
             let mut command = Command::new(&env.executable);
             config::hidden(&mut command);
             command
@@ -1138,7 +1147,7 @@ mod tests {
                 }
             }
             let front = command.spawn().unwrap();
-            at_phase(&job, "validating").await;
+            validating(&env, &job).await;
             let original_supervisor = observed_pid(&job, "supervisor").await;
             #[cfg(unix)]
             assert_eq!(unsafe { libc::kill(-(front.id() as i32), libc::SIGHUP) }, 0);
@@ -1161,6 +1170,7 @@ mod tests {
                 until(|| pid(&job, "supervisor").is_some_and(|pid| pid != original_supervisor))
                     .await;
             }
+            release(&env);
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "succeeded", "{}", outcome.message);
             let current = crate::status(&env.state, &env.config).await.unwrap();
@@ -1173,7 +1183,7 @@ mod tests {
     async fn killed_worker_recovers_both_sides_of_the_transaction_publication() {
         for (phase, fault) in [
             ("stopping", "upgrade-hang-exit-once"),
-            ("validating", "upgrade-slow-models-once"),
+            ("validating", "upgrade-block-models-once"),
         ] {
             let env = Environment::new();
             env.start().await;
@@ -1184,8 +1194,13 @@ mod tests {
             if phase == "stopping" {
                 until(|| !env.home.join(fault).exists()).await;
                 assert!(maintenance::transaction(&env.state).unwrap().is_none());
+            } else {
+                validating(&env, &job).await;
             }
             kill_fixture(observed_pid(&job, "worker").await);
+            if phase == "validating" {
+                release(&env);
+            }
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "recovered", "{}", outcome.message);
             let current = crate::status(&env.state, &env.config).await.unwrap();
@@ -1200,10 +1215,11 @@ mod tests {
         let env = Environment::new();
         env.start().await;
         let job = prepared(&env);
-        fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
+        fs::write(env.home.join("upgrade-block-models-once"), "synthetic").unwrap();
         let _supervisor = spawn(&job, None).unwrap();
-        at_phase(&job, "validating").await;
+        validating(&env, &job).await;
         let fence = fence_and_kill(&job).await;
+        release(&env);
         assert!(completed(&job).unwrap().is_none());
         let supervisor_record = fs::read(job.join("supervisor.json")).ok();
         submit(
@@ -1305,10 +1321,11 @@ mod tests {
         let env = Environment::new();
         env.start().await;
         let job = prepared(&env);
-        fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
+        fs::write(env.home.join("upgrade-block-models-once"), "synthetic").unwrap();
         let _supervisor = spawn(&job, None).unwrap();
-        at_phase(&job, "validating").await;
+        validating(&env, &job).await;
         let fence = fence_and_kill(&job).await;
+        release(&env);
         let record = maintenance::transaction(&env.state).unwrap().unwrap();
         let saved = fs::read(&record.previous).unwrap();
         fs::write(&record.previous, "synthetic corrupt backup").unwrap();
