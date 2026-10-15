@@ -81,7 +81,7 @@ The distribution targets for future releases are:
 
 The macOS archives are separate native builds, not universal binaries. Select `aarch64-apple-darwin` for Apple Silicon or `x86_64-apple-darwin` for Intel. Both architectures run the full PR checks and the Release workflow builds, tests and verifies each package on its matching native runner. The already published `0.1.0` release has only the Apple Silicon macOS archive; Intel distribution starts with the next release.
 
-These targets are explicit; CI operating-system coverage does not imply other architectures or older OS versions are supported. Linux uses GNU libc, not a musl static build. Binary signing, notarization, installers, self-update and package-registry publication are deferred.
+These targets are explicit; CI operating-system coverage does not imply other architectures or older OS versions are supported. Linux uses GNU libc, not a musl static build. [Standalone installers and the explicit upgrade command](installation.md) consume these checked release archives. Binary signing, notarization, automatic background updates and package-registry publication are deferred.
 
 Each archive is named `dewbow-<version>-<target>.<extension>` and contains only `dewbow` (or `dewbow.exe`), `CLI.md` and `release.json`. The manifest records the product version, full source commit, target and executable SHA-256. A separate `<archive>.sha256` records the archive checksum. Actions keeps build artifacts for 14 days. Local state, Codex data, environment files and build logs are never package inputs.
 
@@ -111,6 +111,8 @@ The built-in `GITHUB_TOKEN` is used only by the workflow. Build jobs have read-o
 The publication command requires an existing remote tag and fails if the release already exists. It never updates a release or clobbers assets. Never move a released tag or replace published binaries; fixes receive a new version. Workflow artifacts are temporary build outputs and are distinct from published release assets. For a fresh build after a completed artifact upload, use a new manual dispatch rather than rerunning all jobs with the same artifact names.
 
 ## Upgrade and recovery
+
+The installation scripts live under `scripts/` and are served from `main`; merge them before advertising their raw GitHub URLs. Installer integration checks run with `npm test` after the Rust build on Linux, Windows and both macOS architectures. They exercise execution through shell standard input and PowerShell's `Invoke-Expression` without saving a downloaded installer. Transport is simulated while archive verification, executable checks, installation, collision handling and cleanup use the real platform tools. Prepare and publish product releases separately, including their upgrade requirements and rollback guidance; never replace released binaries or move released tags to add commands.
 
 Stop the selected Dewbow daemon and its owned native runtime before replacing its executable or changing Dewbow-owned state. Preserve native Codex conversations, credentials and unrelated files. State resets are release-specific, require documented instructions, and must be validated with fresh synthetic databases; early development does not require migration code.
 

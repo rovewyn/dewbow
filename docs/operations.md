@@ -14,7 +14,7 @@ dewbow daemon stop
 
 The default private state directory is `~/.dewbow`. Every command accepts `--state-dir <directory>`. Initialization also accepts `--codex-home <directory>` and `--port <available-port>`. Existing configuration and host identity are retained; conflicting initialization options fail. Use a separate ignored directory for synthetic demos.
 
-`doctor` checks private configuration, CLI version and login, and read-only native app-server capabilities. It does not send a model prompt. `daemon run` runs in the foreground; `daemon start` launches a user background process. Readiness requires private storage, initialized Codex and Web. Duplicate starts return the same instance. No system service, boot startup or self-update is installed.
+`doctor` checks private configuration, CLI version and login, and read-only native app-server capabilities. It does not send a model prompt. `daemon run` runs in the foreground; `daemon start` launches a user background process. Readiness requires private storage, initialized Codex and Web. Duplicate starts return the same instance. No system service, boot startup or automatic background update is installed. See [install and upgrade](installation.md) for the explicit `upgrade` command and executable backups.
 
 `web` opens an authenticated one-use local login link. Use its printed plain loopback URL for sharing locally; never share the ticket or private configuration. Unauthenticated direct visits instruct the user to open through CLI. Sign-out clears the operator cookie.
 

@@ -1,6 +1,40 @@
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::{path::Path, sync::Mutex};
+
+/// Read the retained native ownership record without initializing or changing state.
+pub fn verify_runtime_stopped(state: &Path) -> anyhow::Result<()> {
+    let path = state.join("daemon.sqlite");
+    if !path.exists() {
+        return Ok(());
+    }
+    dewbow_sdk::private::regular(&path)?;
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT data FROM records WHERE kind='meta' AND id='owner'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(raw) = raw {
+        let owner: Value = serde_json::from_str(&raw)?;
+        if !owner.is_null() {
+            let pid = owner["pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .filter(|pid| *pid != 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Invalid native ownership record; recovery is required")
+                })?;
+            anyhow::ensure!(
+                !dewbow_sdk::private::process_alive(pid)?,
+                "The previously owned native process is still alive; recover the selected daemon before upgrading"
+            );
+        }
+    }
+    Ok(())
+}
 
 pub struct Store {
     journal: Mutex<Connection>,
@@ -190,5 +224,37 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_rejects_live_native_ownership_without_reinitializing_storage() {
+        let root = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-owner-test-{}", dewbow_protocol::id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("daemon.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE records(kind TEXT,id TEXT,data TEXT);")
+            .unwrap();
+        db.execute(
+            "INSERT INTO records VALUES('meta','owner',?)",
+            [serde_json::json!({"pid":std::process::id()}).to_string()],
+        )
+        .unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        assert!(verify_runtime_stopped(&root).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!root.join("content.sqlite").exists());
+        let db = Connection::open(&path).unwrap();
+        db.execute("UPDATE records SET data='null'", []).unwrap();
+        drop(db);
+        verify_runtime_stopped(&root).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,4 +1,5 @@
 mod background;
+mod upgrade;
 use clap::{Parser, Subcommand};
 use dewbow_daemon::config::{self, Config};
 use serde_json::{Value, json};
@@ -32,6 +33,15 @@ enum Commands {
         command: Daemon,
     },
     Web,
+    /// Install a newer GitHub release in place (stop all Dewbow daemons first).
+    Upgrade {
+        /// Check for a release without changing the installation.
+        #[arg(long)]
+        check: bool,
+        /// Select an exact release, including a release candidate.
+        #[arg(long)]
+        version: Option<String>,
+    },
 }
 #[derive(Subcommand)]
 enum Daemon {
@@ -127,6 +137,9 @@ async fn main() {
 }
 async fn execute() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Commands::Upgrade { check, version } = &cli.command {
+        return upgrade::run(cli.state_dir.as_deref(), *check, version.as_deref()).await;
+    }
     let state = std::path::absolute(cli.state_dir.unwrap_or(config::default_state()?))?;
     if let Commands::Init {
         codex_executable,
@@ -201,7 +214,7 @@ async fn execute() -> anyhow::Result<()> {
             ))?;
             println!("{url}");
         }
-        Commands::Init { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Upgrade { .. } => unreachable!(),
     }
     Ok(())
 }

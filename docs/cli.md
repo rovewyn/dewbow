@@ -2,6 +2,8 @@
 
 The `dewbow` executable contains the local daemon and the built Web. Node.js is a development dependency, not a Dewbow runtime requirement. Codex remains a separately installed native dependency.
 
+Use the [standalone installers and upgrade guide](installation.md) for released binaries. `dewbow upgrade --check` checks the latest stable release; `dewbow upgrade` installs a newer release after the selected daemon has stopped.
+
 ## Build and prerequisites
 
 Use the stable Rust 1.99.0 pinned in `rust-toolchain.toml`, Node.js 24.21.0 and npm 12.2.0 with the committed root lockfiles. Follow [workspace setup](workspace.md#setup-and-builds) to verify the active versions before running these commands from the repository root. mise is an [optional local environment manager](workspace.md#optional-local-environment-management). On Windows, install the MSVC C++ build tools and Windows SDK if they are missing.
@@ -50,7 +52,7 @@ All commands accept `--state-dir`. Initialization also accepts `--codex-home`; o
 
 ## Lifecycle
 
-`daemon run` runs in the foreground. `daemon start` launches a user background process and waits for storage, native initialization and the Web listener. Repeating start returns the existing ready instance. `daemon status` verifies the protected local endpoint against the saved instance identity. `daemon stop` shuts down its owned Codex process and verifies both process exit and listener release. There is no system service, boot startup or self-update command.
+`daemon run` runs in the foreground. `daemon start` launches a user background process and waits for storage, native initialization and the Web listener. Repeating start returns the existing ready instance. `daemon status` verifies the protected local endpoint against the saved instance identity. `daemon stop` shuts down its owned Codex process and verifies both process exit and listener release. There is no system service or boot startup.
 
 An occupied port is never adopted. A stale instance, live recorded native process or identity mismatch requires recovery rather than a PID kill. Inspect the selected directory's private log and ownership record, verify the actual processes, and stop only the intended instance. Foreground `daemon run` can recover after confirming the previous native process has exited. Do not erase native Codex storage to repair Dewbow state.
 
