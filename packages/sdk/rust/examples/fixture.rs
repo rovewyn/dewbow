@@ -125,6 +125,10 @@ fn main() {
             );
             continue;
         }
+        if method == "model/list" && home.join("upgrade-slow-models-once").exists() {
+            fs::remove_file(home.join("upgrade-slow-models-once")).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(4));
+        }
         if method == "initialize" && home.join("upgrade-hang-initialize-once").exists() {
             fs::remove_file(home.join("upgrade-hang-initialize-once")).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(8));

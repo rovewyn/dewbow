@@ -67,18 +67,25 @@ enum Daemon {
     Status,
     Stop,
 }
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
+fn client(duration: Duration) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .unwrap()
+        .timeout(duration)
+        .build()?)
 }
 async fn control(config: &Config, name: &str) -> anyhow::Result<Value> {
     control_input(config, name, &json!({})).await
 }
 async fn control_input(config: &Config, name: &str, input: &Value) -> anyhow::Result<Value> {
-    let response = client()
+    control_timeout(config, name, input, Duration::from_secs(3)).await
+}
+async fn control_timeout(
+    config: &Config,
+    name: &str,
+    input: &Value,
+    duration: Duration,
+) -> anyhow::Result<Value> {
+    let response = client(duration)?
         .post(format!("http://127.0.0.1:{}/internal/{name}", config.port))
         .bearer_auth(&config.control_token)
         .json(input)

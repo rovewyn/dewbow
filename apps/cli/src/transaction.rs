@@ -15,10 +15,20 @@ async fn control(
     token: &str,
     name: &str,
 ) -> anyhow::Result<Value> {
-    let result = crate::control_input(
+    control_timeout(config, instance, token, name, Duration::from_secs(3)).await
+}
+async fn control_timeout(
+    config: &Config,
+    instance: &Value,
+    token: &str,
+    name: &str,
+    duration: Duration,
+) -> anyhow::Result<Value> {
+    let result = crate::control_timeout(
         config,
         name,
         &json!({"instanceId":instance["instanceId"],"token":token}),
+        duration,
     )
     .await?;
     ensure!(
@@ -239,7 +249,13 @@ async fn launch(
         );
         let validation = timeout(
             duration,
-            control(config, &instance, &record.token, "validateUpgrade"),
+            control_timeout(
+                config,
+                &instance,
+                &record.token,
+                "validateUpgrade",
+                duration,
+            ),
         )
         .await
         .context("Native startup verification timed out")??;
@@ -536,7 +552,8 @@ mod tests {
         }
         async fn operator(&self) -> String {
             let ticket = crate::control(&self.config, "ticket").await.unwrap();
-            crate::client()
+            crate::client(Duration::from_secs(3))
+                .unwrap()
                 .post(format!("http://127.0.0.1:{}/auth/login", self.config.port))
                 .header("Origin", format!("http://127.0.0.1:{}", self.config.port))
                 .json(&ticket)
@@ -552,7 +569,8 @@ mod tests {
                 .into()
         }
         async fn api(&self, cookie: &str, name: &str, input: Value) -> Value {
-            let value: Value = crate::client()
+            let value: Value = crate::client(Duration::from_secs(3))
+                .unwrap()
                 .post(format!("http://127.0.0.1:{}/api/{name}", self.config.port))
                 .header("Origin", format!("http://127.0.0.1:{}", self.config.port))
                 .header("Cookie", cookie)
@@ -590,6 +608,9 @@ mod tests {
                 None
             };
             let config_before = hash(&env.state.join("config.json")).unwrap();
+            if running {
+                fs::write(env.home.join("upgrade-slow-models-once"), "synthetic").unwrap();
+            }
             apply(
                 &env.executable,
                 &env.candidate,
