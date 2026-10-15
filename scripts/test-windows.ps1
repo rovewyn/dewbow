@@ -53,11 +53,13 @@ New-Item -ItemType Directory -Path $workerDirectory | Out-Null
 # active, including the explicitly restrictive synthetic SSH job tests.
 $shell = Join-Path $PSHOME 'pwsh.exe'
 $script = Join-Path $PSScriptRoot 'test-windows.ps1'
-# Use the WMI-supported detached and breakaway flags, including escape from the
-# provider's own quota job. ShowWindow keeps the CI host noninteractive.
-$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; CreateFlags = [uint32]0x01000008 }
+# PowerShell needs valid console handles during startup. Create a hidden console
+# and escape the provider's quota job, with bootstrap diagnostics owned by this run.
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0; CreateFlags = [uint32]0x01000010 }
+$bootstrap = Join-Path $workerDirectory 'bootstrap.log'
+$invocation = "& '" + $script.Replace("'", "''") + "' -workerDirectory '" + $workerDirectory.Replace("'", "''") + "' *> '" + $bootstrap.Replace("'", "''") + "'"
 $process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-    CommandLine = "`"$shell`" -NoProfile -File `"$script`" -workerDirectory `"$workerDirectory`""
+    CommandLine = "`"$shell`" -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command `"$invocation`""
     CurrentDirectory = $repo
     ProcessStartupInformation = $startup
 }
@@ -68,6 +70,7 @@ $result = Join-Path $workerDirectory 'result.json'
 while (!(Test-Path -LiteralPath $result)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'Independent Windows validation exceeded its deadline; private diagnostics retained.' }
     if (!(Get-CimInstance Win32_Process -Filter "ProcessId = $($process.ProcessId)") -and !(Test-Path -LiteralPath $result)) {
+        if (Test-Path -LiteralPath $bootstrap) { Get-Content -LiteralPath $bootstrap }
         throw 'Independent Windows validation exited without publishing a result; private diagnostics retained.'
     }
     Start-Sleep -Seconds 1
