@@ -821,10 +821,19 @@ mod tests {
         sleep(Duration::from_millis(100)).await;
         outcome
     }
-    fn pid(job: &Path, role: &str) -> u32 {
-        read_json::<Value>(&job.join(format!("{role}.json"))).unwrap()["pid"]
+    fn pid(job: &Path, role: &str) -> Option<u32> {
+        read_json::<Value>(&job.join(format!("{role}.json"))).ok()?["pid"]
             .as_u64()
-            .unwrap() as u32
+            .and_then(|value| u32::try_from(value).ok())
+    }
+    async fn observed_pid(job: &Path, role: &str) -> u32 {
+        let mut observed = None;
+        until(|| {
+            observed = pid(job, role);
+            observed.is_some()
+        })
+        .await;
+        observed.unwrap()
     }
     fn kill_fixture(pid: u32) {
         // Test-only fault injection: these PIDs were just created for this private
@@ -845,17 +854,28 @@ mod tests {
     }
     async fn fence_and_kill(job: &Path) -> Lock {
         // Simulate losing both controllers while fencing their replacement loop.
-        loop {
-            if let Some(fence) = lock(&job.join("supervisor.lock")).unwrap() {
-                if lock(&job.join("worker.lock")).unwrap().is_none() {
-                    kill_fixture(pid(job, "worker"));
+        let mut killed = std::collections::HashSet::new();
+        tokio::time::timeout(LIMIT, async {
+            loop {
+                if let Some(fence) = lock(&job.join("supervisor.lock")).unwrap() {
+                    if lock(&job.join("worker.lock")).unwrap().is_none() {
+                        kill_fixture(observed_pid(job, "worker").await);
+                    }
+                    until(|| lock(&job.join("worker.lock")).unwrap().is_some()).await;
+                    return fence;
                 }
-                until(|| lock(&job.join("worker.lock")).unwrap().is_some()).await;
-                return fence;
+                // A killed supervisor can leave no diagnostic record, or its prior
+                // PID while a replacement acquires the role and publishes a new one.
+                if let Some(pid) = pid(job, "supervisor")
+                    && killed.insert(pid)
+                {
+                    kill_fixture(pid);
+                }
+                sleep(Duration::from_millis(10)).await;
             }
-            kill_fixture(pid(job, "supervisor"));
-            sleep(Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .unwrap()
     }
 
     #[cfg(windows)]
@@ -1078,7 +1098,7 @@ mod tests {
             }
             let front = command.spawn().unwrap();
             at_phase(&job, "validating").await;
-            let original_supervisor = pid(&job, "supervisor");
+            let original_supervisor = observed_pid(&job, "supervisor").await;
             #[cfg(unix)]
             assert_eq!(unsafe { libc::kill(-(front.id() as i32), libc::SIGHUP) }, 0);
             #[cfg(windows)]
@@ -1097,7 +1117,8 @@ mod tests {
             assert!(!output.status.success());
             if replace_supervisor {
                 kill_fixture(original_supervisor);
-                until(|| pid(&job, "supervisor") != original_supervisor).await;
+                until(|| pid(&job, "supervisor").is_some_and(|pid| pid != original_supervisor))
+                    .await;
             }
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "succeeded", "{}", outcome.message);
@@ -1123,7 +1144,7 @@ mod tests {
                 until(|| !env.home.join(fault).exists()).await;
                 assert!(maintenance::transaction(&env.state).unwrap().is_none());
             }
-            kill_fixture(pid(&job, "worker"));
+            kill_fixture(observed_pid(&job, "worker").await);
             let outcome = done(&job).await;
             assert_eq!(outcome.status, "recovered", "{}", outcome.message);
             let current = crate::status(&env.state, &env.config).await.unwrap();
@@ -1143,7 +1164,7 @@ mod tests {
         at_phase(&job, "validating").await;
         let fence = fence_and_kill(&job).await;
         assert!(completed(&job).unwrap().is_none());
-        let supervisor_record = fs::read(job.join("supervisor.json")).unwrap();
+        let supervisor_record = fs::read(job.join("supervisor.json")).ok();
         submit(
             &env.executable,
             &env.state,
@@ -1155,7 +1176,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            fs::read(job.join("supervisor.json")).unwrap(),
+            fs::read(job.join("supervisor.json")).ok(),
             supervisor_record
         );
         assert!(lock(&job.join("worker.lock")).unwrap().is_some());
