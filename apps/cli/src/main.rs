@@ -151,6 +151,27 @@ fn open_browser(url: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn follow_installation(executable: &std::path::Path) -> anyhow::Result<()> {
+    let mut command = Command::new(executable);
+    command.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Preserve the foreground PID and signal ownership after a binary switch.
+        Err(command.exec().into())
+    }
+    #[cfg(windows)]
+    {
+        if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
+            config::hidden(&mut command);
+        }
+        anyhow::ensure!(
+            command.status()?.success(),
+            "Command in the recovered installation failed"
+        );
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() {
     if let Err(cause) = execute().await {
@@ -180,7 +201,10 @@ async fn execute() -> anyhow::Result<()> {
                 command: Daemon::Start | Daemon::Run { background: false }
             }
     ) {
-        updater::recover_before_start(&std::env::current_exe()?, &state).await?;
+        let installed = std::env::current_exe()?;
+        if updater::recover_before_start(&installed, &state).await? {
+            return follow_installation(&installed);
+        }
     }
     if let Commands::Init {
         codex_executable,

@@ -415,7 +415,7 @@ pub async fn submit(executable: &Path, state: &Path, options: &Options) -> anyho
         println!("{}", status(&selected)?);
         return Ok(());
     }
-    let outcome = observe(&selected, &job_id, true).await?;
+    let outcome = observe(&selected, &job_id, true, vec![supervisor]).await?;
     ensure!(
         outcome.status == "succeeded" || (options.recover && outcome.status == "recovered"),
         "{}",
@@ -424,16 +424,41 @@ pub async fn submit(executable: &Path, state: &Path, options: &Options) -> anyho
     Ok(())
 }
 
-async fn observe(job: &Path, job_id: &str, report: bool) -> anyhow::Result<Outcome> {
+fn reap(children: &mut Vec<Background>) -> anyhow::Result<()> {
+    for index in (0..children.len()).rev() {
+        if children[index].exited()? {
+            children.swap_remove(index);
+        }
+    }
+    Ok(())
+}
+async fn observe(
+    job: &Path,
+    job_id: &str,
+    report: bool,
+    mut children: Vec<Background>,
+) -> anyhow::Result<Outcome> {
     let mut previous = Value::Null;
     let mut last_spawn = Instant::now();
     let mut replacements = 0;
     loop {
+        reap(&mut children)?;
         ensure!(
             request(job)?.job_id == job_id,
             "The observed upgrade was archived; inspect upgrade --status"
         );
         if let Some(outcome) = completed(job)? {
+            // Reap our own controllers before a startup command may exec the
+            // restored installation; exec would discard its reaper threads.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !children.is_empty() {
+                    reap(&mut children)?;
+                    sleep(Duration::from_millis(20)).await;
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .context("Upgrade finished but controller exit is unconfirmed; retry the command")??;
             if report {
                 println!("{}", serde_json::to_string(&outcome)?);
             }
@@ -453,7 +478,7 @@ async fn observe(job: &Path, job_id: &str, report: bool) -> anyhow::Result<Outco
                 replacements < ATTEMPTS,
                 "Supervisor restart limit reached; inspect private runner diagnostics and repeat upgrade after resolving the failure"
             );
-            spawn(job, None)?;
+            children.push(spawn(job, None)?);
             replacements += 1;
             last_spawn = Instant::now();
         }
@@ -461,10 +486,10 @@ async fn observe(job: &Path, job_id: &str, report: bool) -> anyhow::Result<Outco
     }
 }
 
-pub async fn recover_before_start(executable: &Path, state: &Path) -> anyhow::Result<()> {
+pub async fn recover_before_start(executable: &Path, state: &Path) -> anyhow::Result<bool> {
     let job = root(executable)?.join("active");
     if !job.exists() {
-        return Ok(());
+        return Ok(false);
     }
     let launch = lock(&job.parent().unwrap().join("launch.lock"))?
         .context("An upgrade handoff is being published; retry startup shortly")?;
@@ -472,23 +497,24 @@ pub async fn recover_before_start(executable: &Path, state: &Path) -> anyhow::Re
     if normalize(&prior.executable)? != normalize(executable)?
         || normalize(&prior.state)? != normalize(state)?
     {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(outcome) = completed(&job)? {
         ensure!(
             outcome.status != "recoveryRequired",
             "Upgrade recovery is blocked; inspect upgrade --status and retry upgrade --recover after resolving the condition"
         );
-        return Ok(());
+        return Ok(false);
     }
-    spawn(&job, None)?;
+    let before = upgrade::hash(executable)?;
+    let supervisor = spawn(&job, None)?;
     drop(launch);
-    let outcome = observe(&job, &prior.job_id, false).await?;
+    let outcome = observe(&job, &prior.job_id, false, vec![supervisor]).await?;
     ensure!(
         outcome.status != "recoveryRequired",
         "Automatic upgrade recovery requires inspection; use upgrade --status"
     );
-    Ok(())
+    Ok(upgrade::hash(executable)? != before)
 }
 
 pub async fn internal(job: &Path, job_id: &str, worker: Option<u32>) -> anyhow::Result<()> {
@@ -1020,6 +1046,11 @@ mod tests {
         for committed in [false, true] {
             let env = Environment::new();
             fs::remove_file(env.state.join("config.json")).unwrap();
+            if !committed {
+                // A distinct fixture image exercises actual executable restoration,
+                // without constructing or publishing another product version.
+                fs::copy(&env.config.codex_executable, &env.candidate).unwrap();
+            }
             let job = prepared(&env);
             record_intent(Some(&job), &dewbow_protocol::id(), false, None)
                 .await
@@ -1030,6 +1061,8 @@ mod tests {
                     &json!({"contractVersion":"v1"}),
                 )
                 .unwrap();
+            } else {
+                replacement::commit(&env.executable, &job.join("candidate")).unwrap();
             }
             let directory = attempt_dir(&job, 0);
             config::secure_directory(&directory).unwrap();
@@ -1042,16 +1075,24 @@ mod tests {
             )
             .unwrap();
             write_new(&directory.join("started.json"), &json!({"pid":1})).unwrap();
-            submit(
-                &env.executable,
-                &env.state,
-                &Options {
-                    detach: true,
-                    ..Options::default()
-                },
-            )
-            .await
-            .unwrap();
+            if !committed {
+                assert!(
+                    recover_before_start(&env.executable, &env.state)
+                        .await
+                        .unwrap()
+                );
+            } else {
+                submit(
+                    &env.executable,
+                    &env.state,
+                    &Options {
+                        detach: true,
+                        ..Options::default()
+                    },
+                )
+                .await
+                .unwrap();
+            }
             let outcome = done(&job).await;
             assert_eq!(
                 outcome.status,
