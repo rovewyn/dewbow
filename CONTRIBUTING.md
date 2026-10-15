@@ -20,6 +20,8 @@ Run `npm run version:check` and `npm run test:release` when changing manifests o
 
 Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. See [installation and upgrades](docs/installation.md) for release installers and the explicit upgrade command. Remote enrollment, automatic background updates, system services and boot startup are deferred.
 
+Windows GitHub Actions runs Rust and npm validation through `scripts/test-windows.ps1`. The Actions command host also retains an outer Job Object, so this CI-only script uses WMI to create a same-account validation host outside that job. It preserves the pinned tool paths and runner cleanup identity, captures private diagnostics under ignored `outputs/`, propagates failures and has a bounded wait. It changes no job policy, installs no service and supplies no production detachment bypass. Local hosts that forbid complete job escape will still reject upgrade handoff. The process fault scenarios run one synthetic installation at a time to avoid resource contention changing their timing on small CI machines.
+
 ## Enable commit checks
 
 On Windows, `npm --version` must report 12.2.0 and `node --version` must report v24.21.0 before installing dependencies. Install Gitleaks from a trusted distribution with the `git` scan command. If `sh` is not on PATH, run the hook installer using Git for Windows' `sh.exe`. The same environment must expose Gitleaks when committing, including when an optional environment manager is used. See [local operations](docs/operations.md#windows-runtime-and-private-state) for standalone Codex and Windows state protection.

@@ -52,9 +52,14 @@ jobs:
       - name: Build executable and synthetic native fixture
         run: cargo build --workspace --bins --examples
       - name: Test Rust crates
+        if: runner.os != 'Windows'
         run: node scripts/test-rust.mjs
       - name: Test SDK, Web, contracts and Rust lifecycle
+        if: runner.os != 'Windows'
         run: npm test
+      - name: Test Windows Rust, SDK, Web and lifecycle outside the launcher job
+        if: runner.os == 'Windows'
+        run: ./scripts/test-windows.ps1
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts

@@ -643,9 +643,11 @@ pub async fn apply(
 pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     const DEADLINE: Duration = Duration::from_secs(15);
+    static FIXTURE: Mutex<()> = Mutex::new(());
     pub(crate) struct Environment {
         pub root: PathBuf,
         pub state: PathBuf,
@@ -653,9 +655,14 @@ pub(crate) mod tests {
         pub candidate: PathBuf,
         pub home: PathBuf,
         pub config: Config,
+        _fixture: MutexGuard<'static, ()>,
     }
     impl Environment {
         pub(crate) fn new() -> Self {
+            // Each fixture copies executables and starts several native processes.
+            // Keep independent scenarios from starving each other's fault windows
+            // on small CI machines; no shared application state is protected here.
+            let fixture_guard = FIXTURE.lock().unwrap_or_else(|cause| cause.into_inner());
             let current = std::env::current_exe().unwrap();
             let debug = current.parent().unwrap().parent().unwrap();
             let name = if cfg!(windows) {
@@ -692,6 +699,7 @@ pub(crate) mod tests {
                 candidate,
                 home,
                 config,
+                _fixture: fixture_guard,
             }
         }
         pub(crate) async fn start(&self) -> Value {
