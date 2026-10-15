@@ -11,11 +11,15 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+fs2.workspace = true
 reqwest.workspace = true
+semver = "1"
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 dewbow-daemon.workspace = true
 dewbow-protocol.workspace = true
+dewbow-sdk.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }

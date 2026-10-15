@@ -8,18 +8,19 @@ Codex owns native conversations, messages and credentials. The daemon owns local
 
 | Directory | Project | Responsibility |
 | --- | --- | --- |
-| `apps/cli` | `dewbow-cli` | The single `dewbow` executable, initialization, diagnosis and user background processes |
+| `apps/cli` | `dewbow-cli` | The single `dewbow` executable, initialization, diagnosis, upgrades and user background processes |
 | `apps/daemon` | `dewbow-daemon` | Local management, persistence, owned Codex runtime and embedded Web |
 | `packages/protocol` | `@dewbow/protocol`, `rust/dewbow-protocol` | TypeScript and Rust management contracts and shared helpers |
 | `packages/sdk` | `@dewbow/sdk`, `rust/dewbow-sdk` | Native Codex integration, read-only discovery and history |
 | `packages/ui` | `@dewbow/ui` | Shared controlled ChatView, presentation and theme |
 | `apps/web` | `@dewbow/web` | React/TypeScript operator interface |
 
-The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm workspace builds retained TypeScript packages and Web. Dewbow-owned contracts remain `v1`. The earlier TypeScript Control Plane and Host Daemon have been removed. Network enrollment, remote routing, MCP, external agent management and self-update are deferred.
+The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm workspace builds retained TypeScript packages and Web. Dewbow-owned contracts remain `v1`. The earlier TypeScript Control Plane and Host Daemon have been removed. Network enrollment, remote routing, MCP and external agent management are deferred.
 
 ## Guides
 
-- [CLI installation and commands](cli.md)
+- [Install and upgrade](installation.md)
+- [CLI setup and commands](cli.md)
 - [Daemon ownership and recovery](daemon.md)
 - [Workspace development and CI](workspace.md)
 - [Versioning and releases](releasing.md)

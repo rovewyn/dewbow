@@ -355,8 +355,12 @@ dependencies = [
  "clap",
  "dewbow-daemon",
  "dewbow-protocol",
+ "dewbow-sdk",
+ "fs2",
  "reqwest",
+ "semver",
  "serde_json",
+ "sha2",
  "tokio",
  "windows-sys 0.61.2",
 ]

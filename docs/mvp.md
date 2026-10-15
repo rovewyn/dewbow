@@ -8,7 +8,9 @@ This version includes native discovery and bounded history, explicit adoption of
 
 Web retains its existing React/TypeScript UI and `v1` camelCase API/SSE contracts. All browser calls use operator authority. The production executable needs no Node.js and listens only on loopback. CLI launches a user background process, without installing a system service or boot startup.
 
-Network creation/joining, membership synchronization, cross-machine routing, relay, MCP/external agent management, self-update and product release management are deferred. Team channels, DingTalk and member workspace profiles are not supported.
+Standalone release installers and an explicit `dewbow upgrade` command support local installation and upgrades. Upgrade checks and downloads use GitHub Releases; automatic background updates and package-registry publication are deferred.
+
+Network creation/joining, membership synchronization, cross-machine routing, relay and MCP/external agent management are deferred. Team channels, DingTalk and member workspace profiles are not supported.
 
 The TypeScript Control Plane and Host Daemon have been removed. Their private local state is preserved and is not migrated. The retained SDK, UI and protocol packages continue to have independent uses.
 

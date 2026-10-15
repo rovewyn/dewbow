@@ -18,7 +18,7 @@ Write only the necessary unit tests described in `AGENTS.md`. Use synthetic temp
 
 Run `npm run version:check` and `npm run test:release` when changing manifests or release tooling. Product versions are synchronized from the root Cargo workspace with `npm run version:sync`; `npm run version:set -- <version>` prepares a new version without tagging or publishing. See [Versioning and releases](docs/releasing.md) for release PRs and the separately authorized publication workflow.
 
-Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. Remote enrollment, self-update, system services and boot startup are deferred.
+Use separate ignored state and work directories for real demos. The compiled Dewbow executable needs no Node.js. See [installation and upgrades](docs/installation.md) for release installers and the explicit upgrade command. Remote enrollment, automatic background updates, system services and boot startup are deferred.
 
 ## Enable commit checks
 
