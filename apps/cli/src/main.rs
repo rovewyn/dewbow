@@ -1,6 +1,7 @@
 mod background;
 mod replacement;
 mod transaction;
+mod updater;
 mod upgrade;
 use clap::{Parser, Subcommand};
 use dewbow_daemon::config::{self, Config};
@@ -36,25 +37,15 @@ enum Commands {
     },
     Web,
     /// Download, drain, validate and install a newer release with guarded rollback.
-    Upgrade {
-        /// Check for a release without changing the installation.
+    Upgrade(upgrade::Options),
+    #[command(hide = true)]
+    UpgradeInternal {
         #[arg(long)]
-        check: bool,
-        /// Select an exact release, including a release candidate.
+        job: PathBuf,
         #[arg(long)]
-        version: Option<String>,
-        /// Use an already downloaded release archive and its adjacent .sha256 file.
-        #[arg(long, requires = "version", conflicts_with_all = ["check", "recover"])]
-        archive: Option<PathBuf>,
-        /// Recover an interrupted, uncommitted upgrade from its retained snapshot.
-        #[arg(long, conflicts_with_all = ["check", "version", "archive"])]
-        recover: bool,
-        /// Maximum time to wait for existing and unresolved tasks; never interrupts them.
-        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(0..=86400))]
-        wait_seconds: u64,
-        /// Deadline for each startup or shutdown phase.
-        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=600))]
-        timeout_seconds: u64,
+        job_id: String,
+        #[arg(long)]
+        worker: Option<u32>,
     },
 }
 #[derive(Subcommand)]
@@ -160,6 +151,27 @@ fn open_browser(url: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn follow_installation(executable: &std::path::Path) -> anyhow::Result<()> {
+    let mut command = Command::new(executable);
+    command.args(std::env::args_os().skip(1));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Preserve the foreground PID and signal ownership after a binary switch.
+        Err(command.exec().into())
+    }
+    #[cfg(windows)]
+    {
+        if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
+            config::hidden(&mut command);
+        }
+        anyhow::ensure!(
+            command.status()?.success(),
+            "Command in the recovered installation failed"
+        );
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() {
     if let Err(cause) = execute().await {
@@ -169,27 +181,31 @@ async fn main() {
 }
 async fn execute() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if let Commands::Upgrade {
-        check,
-        version,
-        archive,
-        recover,
-        wait_seconds,
-        timeout_seconds,
+    if let Commands::UpgradeInternal {
+        job,
+        job_id,
+        worker,
     } = &cli.command
     {
-        return upgrade::run(
-            cli.state_dir.as_deref(),
-            *check,
-            version.as_deref(),
-            archive.as_deref(),
-            *recover,
-            Duration::from_secs(*wait_seconds),
-            Duration::from_secs(*timeout_seconds),
-        )
-        .await;
+        return updater::internal(job, job_id, *worker).await;
     }
     let state = std::path::absolute(cli.state_dir.unwrap_or(config::default_state()?))?;
+    if let Commands::Upgrade(options) = &cli.command {
+        return updater::submit(&std::env::current_exe()?, &state, options).await;
+    }
+    if matches!(
+        &cli.command,
+        Commands::Init { .. }
+            | Commands::Web
+            | Commands::Daemon {
+                command: Daemon::Start | Daemon::Run { background: false }
+            }
+    ) {
+        let installed = std::env::current_exe()?;
+        if updater::recover_before_start(&installed, &state).await? {
+            return follow_installation(&installed);
+        }
+    }
     if let Commands::Init {
         codex_executable,
         codex_home,
@@ -266,7 +282,9 @@ async fn execute() -> anyhow::Result<()> {
             ))?;
             println!("{url}");
         }
-        Commands::Init { .. } | Commands::Upgrade { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Upgrade(_) | Commands::UpgradeInternal { .. } => {
+            unreachable!()
+        }
     }
     Ok(())
 }

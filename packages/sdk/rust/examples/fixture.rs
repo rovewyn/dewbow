@@ -129,6 +129,21 @@ fn main() {
             fs::remove_file(home.join("upgrade-slow-models-once")).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(4));
         }
+        if method == "model/list" && home.join("upgrade-block-models-once").exists() {
+            fs::remove_file(home.join("upgrade-block-models-once")).unwrap();
+            let gate = home.join("upgrade-models-blocked");
+            fs::write(&gate, "synthetic").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while gate.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if gate.exists() {
+                emit(
+                    json!({"id":request,"error":{"code":-32000,"message":"synthetic fault gate was not released"}}),
+                );
+                continue;
+            }
+        }
         if method == "initialize" && home.join("upgrade-hang-initialize-once").exists() {
             fs::remove_file(home.join("upgrade-hang-initialize-once")).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(8));
@@ -287,6 +302,10 @@ fn main() {
             }
         };
         emit(json!({"id":request,"result":result}));
+    }
+    if home.join("upgrade-hang-exit-once").exists() {
+        fs::remove_file(home.join("upgrade-hang-exit-once")).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(8));
     }
     let _ = now();
 }

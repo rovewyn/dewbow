@@ -38,11 +38,18 @@ async fn control_timeout(
     Ok(result)
 }
 
-async fn drain(state: &Path, config: &Config, token: &str, wait: Duration) -> anyhow::Result<bool> {
+async fn drain(
+    state: &Path,
+    config: &Config,
+    token: &str,
+    wait: Duration,
+    job: Option<&Path>,
+) -> anyhow::Result<bool> {
     let instance = match crate::status(state, config).await {
         Ok(value) if value["status"] == "ready" => value,
         _ => {
             DaemonLock::acquire(state)?.recover_instance()?;
+            crate::updater::record_intent(job, token, false, Some(config)).await?;
             return Ok(false);
         }
     };
@@ -50,6 +57,7 @@ async fn drain(state: &Path, config: &Config, token: &str, wait: Duration) -> an
         instance["upgradeProtocol"] == "v1" && instance["version"] == env!("CARGO_PKG_VERSION"),
         "The running daemon does not support this upgrade protocol; stop it explicitly first"
     );
+    crate::updater::record_intent(job, token, true, Some(config)).await?;
     let waiting = async {
         let mut report = control(config, &instance, token, "beginUpgrade").await?;
         let deadline = Instant::now() + wait;
@@ -58,6 +66,7 @@ async fn drain(state: &Path, config: &Config, token: &str, wait: Duration) -> an
             sleep(Duration::from_millis(200)).await;
             report = control(config, &instance, token, "pollUpgrade").await?;
         }
+        crate::updater::phase(job, "stopping")?;
         control(config, &instance, token, "stopUpgrade").await?;
         Ok::<_, anyhow::Error>(())
     }.await;
@@ -86,7 +95,7 @@ async fn stopped(state: &Path, duration: Duration) -> anyhow::Result<DaemonLock>
     .context("Owned processes or listener did not exit; state and executable were not restored")?
 }
 
-fn copy(source: &Path, destination: &Path) -> anyhow::Result<()> {
+pub(crate) fn copy(source: &Path, destination: &Path) -> anyhow::Result<()> {
     dewbow_sdk::private::regular(source)?;
     dewbow_sdk::private::no_links(destination)?;
     // New files only: never follow or overwrite an unexpected destination.
@@ -326,6 +335,7 @@ fn restore(state: &Path, record: &Transaction) -> anyhow::Result<()> {
             dewbow_sdk::private::regular(&path)?;
         }
     }
+    maintenance::begin_rollback(state)?;
     let failed = state.join(format!("upgrade-failed-state-{}", dewbow_protocol::id()));
     config::secure_directory(&failed)?;
     // Retain the failed management files before touching them. Restoring can be retried.
@@ -380,21 +390,156 @@ pub async fn recover(state: &Path, executable: &Path, duration: Duration) -> any
         !state.join("upgrade/unsafe.json").exists(),
         "Startup may have accepted work; automatic rollback refused"
     );
-    if let Ok(instance) = crate::status(state, &config).await
-        && instance["status"] != "stopped"
-    {
-        ensure!(
-            instance["maintenance"] == true,
-            "Daemon is accepting work; rollback refused"
-        );
-        control(&config, &instance, &record.token, "abortUpgrade").await?;
-    }
-    let lock = stopped(state, duration).await?;
+    let lock = tokio::time::timeout(duration, async {
+        loop {
+            if let Ok(instance) = crate::status(state, &config).await
+                && instance["status"] != "stopped"
+            {
+                ensure!(
+                    instance["maintenance"] == true,
+                    "Daemon is accepting work; rollback refused"
+                );
+                let _ = control(&config, &instance, &record.token, "abortUpgrade").await;
+            }
+            if let Ok(lock) = stopped(state, Duration::from_millis(100)).await {
+                return Ok::<_, anyhow::Error>(lock);
+            }
+        }
+    })
+    .await
+    .context("Pending startup or native ownership did not exit; recovery refused")??;
     restore(state, &record)?;
     drop(lock);
     launch(state, &config, &record, &record.previous_version, duration).await?;
     println!("Restored and verified the previous executable and management snapshot.");
     Ok(())
+}
+
+/// Resume a durable job without repeating a switch or rolling back accepted work.
+pub(crate) async fn resume_interrupted(
+    executable: &Path,
+    state: &Path,
+    job: &Path,
+    intent: &crate::updater::Intent,
+    duration: Duration,
+) -> anyhow::Result<&'static str> {
+    if let Some(record) = maintenance::transaction(state)? {
+        if record.token == intent.token {
+            if !maintenance::committed(state)? {
+                recover(state, executable, duration).await?;
+                return Ok("recovered");
+            }
+            let rolled_back = maintenance::rollback_started(state)?;
+            if intent.was_running {
+                let config = config::load(state)?;
+                let expected = if rolled_back {
+                    &record.previous_version
+                } else {
+                    &record.version
+                };
+                match crate::status(state, &config).await {
+                    Ok(value) if value["status"] == "ready" => {
+                        ensure!(
+                            value["version"] == *expected && value["maintenance"] == false,
+                            "Committed service identity or maintenance differs; preserve its state"
+                        );
+                    }
+                    _ => {
+                        let lock = stopped(state, duration).await?;
+                        drop(lock);
+                        let mut child = Background::spawn_executable(executable, state)?;
+                        ready(&mut child, state, &config, expected, false, duration).await?;
+                    }
+                }
+            }
+            return Ok(if rolled_back {
+                "recovered"
+            } else {
+                "succeeded"
+            });
+        }
+        ensure!(
+            maintenance::committed(state)?,
+            "A different transaction owns this state; recovery refused"
+        );
+    }
+    if let Some(expected) = &intent.config_hash {
+        ensure!(
+            hash(&state.join("config.json"))? == *expected,
+            "Configuration changed during interrupted maintenance; recovery refused"
+        );
+        ensure!(
+            hash(executable)? == intent.old_hash,
+            "Installation changed without its state transaction; recovery refused"
+        );
+        let config = config::load(state)?;
+        if let Ok(instance) = crate::status(state, &config).await
+            && instance["status"] == "ready"
+        {
+            ensure!(
+                instance["version"] == intent.old_version,
+                "A different version is serving this state"
+            );
+            if instance["maintenance"] == true {
+                control(&config, &instance, &intent.token, "cancelUpgrade").await?;
+            }
+            return Ok("recovered");
+        }
+        let lock = stopped(state, duration).await?;
+        drop(lock);
+        if intent.was_running {
+            let mut child = Background::spawn_executable(executable, state)?;
+            ready(
+                &mut child,
+                state,
+                &config,
+                &intent.old_version,
+                false,
+                duration,
+            )
+            .await?;
+        }
+        return Ok("recovered");
+    }
+    let prepared: crate::upgrade::Prepared = crate::updater::read_json(&job.join("prepared.json"))?;
+    let current = hash(executable)?;
+    ensure!(
+        current == intent.old_hash || current == prepared.binary_hash,
+        "Uninitialized installation changed outside this job"
+    );
+    if job.join("binaryCommitted.json").exists() {
+        let marker: Value = crate::updater::read_json(&job.join("binaryCommitted.json"))?;
+        ensure!(
+            marker["contractVersion"] == "v1" && current == prepared.binary_hash,
+            "Invalid binary commit checkpoint"
+        );
+        return Ok("succeeded");
+    }
+    ensure!(
+        !state.join("config.json").exists() && !state.join("instance.json").exists(),
+        "State was initialized during an uncommitted upgrade; restoration refused"
+    );
+    let retained = job.join(if cfg!(windows) {
+        "runner.exe"
+    } else {
+        "runner"
+    });
+    ensure!(
+        hash(&retained)? == intent.old_hash,
+        "Retained previous executable changed"
+    );
+    if current != intent.old_hash {
+        let candidate =
+            executable.with_file_name(format!(".dewbow-restore-{}", dewbow_protocol::id()));
+        copy(&retained, &candidate)?;
+        replacement::replace(
+            executable,
+            &candidate,
+            &executable.with_file_name(format!("dewbow.failed-{}", dewbow_protocol::id())),
+        )?;
+    }
+    crate::upgrade::verify_binary(executable, &intent.old_version).await?;
+    Ok("recovered")
 }
 
 pub async fn apply(
@@ -404,6 +549,7 @@ pub async fn apply(
     version: &str,
     wait: Duration,
     duration: Duration,
+    job: Option<&Path>,
 ) -> anyhow::Result<()> {
     if maintenance::transaction(state)?.is_some() {
         ensure!(
@@ -416,6 +562,7 @@ pub async fn apply(
             !state.join("instance.json").exists(),
             "State has an instance without configuration; recovery is required"
         );
+        crate::updater::record_intent(job, &dewbow_protocol::id(), false, None).await?;
         let backup = executable.with_file_name(format!(
             "{}.previous-{}-{}",
             executable.file_name().unwrap().to_string_lossy(),
@@ -423,6 +570,12 @@ pub async fn apply(
             dewbow_protocol::id()
         ));
         replacement::replace(executable, candidate, &backup)?;
+        if let Some(job) = job {
+            crate::updater::write_new(
+                &job.join("binaryCommitted.json"),
+                &json!({"contractVersion":"v1"}),
+            )?;
+        }
         println!(
             "Installed {version}; no initialized state was available for daemon startup verification."
         );
@@ -431,8 +584,10 @@ pub async fn apply(
     let config = config::load(state)?;
     let token = dewbow_protocol::id();
     println!("Release verified. Waiting for existing tasks before stopping the selected daemon.");
-    let was_running = drain(state, &config, &token, wait).await?;
+    crate::updater::phase(job, "draining")?;
+    let was_running = drain(state, &config, &token, wait, job).await?;
     let lock = stopped(state, duration).await?;
+    crate::updater::phase(job, "snapshotting")?;
     let record = match prepare(state, executable, candidate, version, was_running, &token) {
         Ok(record) => record,
         Err(cause) => {
@@ -459,8 +614,10 @@ pub async fn apply(
             return Err(cause);
         }
     };
+    crate::updater::phase(job, "switching")?;
     let switched = replacement::commit(executable, candidate);
     drop(lock);
+    crate::updater::phase(job, "validating")?;
     let result = match switched {
         Ok(()) => launch(state, &config, &record, version, duration).await,
         Err(cause) => Err(cause),
@@ -483,22 +640,29 @@ pub async fn apply(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
     const DEADLINE: Duration = Duration::from_secs(15);
-    struct Environment {
-        root: PathBuf,
-        state: PathBuf,
-        executable: PathBuf,
-        candidate: PathBuf,
-        home: PathBuf,
-        config: Config,
+    static FIXTURE: Mutex<()> = Mutex::new(());
+    pub(crate) struct Environment {
+        pub root: PathBuf,
+        pub state: PathBuf,
+        pub executable: PathBuf,
+        pub candidate: PathBuf,
+        pub home: PathBuf,
+        pub config: Config,
+        _fixture: MutexGuard<'static, ()>,
     }
     impl Environment {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
+            // Each fixture copies executables and starts several native processes.
+            // Keep independent scenarios from starving each other's fault windows
+            // on small CI machines; no shared application state is protected here.
+            let fixture_guard = FIXTURE.lock().unwrap_or_else(|cause| cause.into_inner());
             let current = std::env::current_exe().unwrap();
             let debug = current.parent().unwrap().parent().unwrap();
             let name = if cfg!(windows) {
@@ -535,9 +699,10 @@ mod tests {
                 candidate,
                 home,
                 config,
+                _fixture: fixture_guard,
             }
         }
-        async fn start(&self) -> Value {
+        pub(crate) async fn start(&self) -> Value {
             let mut child = Background::spawn_executable(&self.executable, &self.state).unwrap();
             ready(
                 &mut child,
@@ -550,7 +715,7 @@ mod tests {
             .await
             .unwrap()
         }
-        async fn operator(&self) -> String {
+        pub(crate) async fn operator(&self) -> String {
             let ticket = crate::control(&self.config, "ticket").await.unwrap();
             crate::client(Duration::from_secs(3))
                 .unwrap()
@@ -568,7 +733,7 @@ mod tests {
                 .unwrap()
                 .into()
         }
-        async fn api(&self, cookie: &str, name: &str, input: Value) -> Value {
+        pub(crate) async fn api(&self, cookie: &str, name: &str, input: Value) -> Value {
             let value: Value = crate::client(Duration::from_secs(3))
                 .unwrap()
                 .post(format!("http://127.0.0.1:{}/api/{name}", self.config.port))
@@ -587,6 +752,38 @@ mod tests {
     }
     impl Drop for Environment {
         fn drop(&mut self) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "Synthetic failure state retained for inspection: {}",
+                    self.root.display()
+                );
+                let job = self.root.join(".dewbow-updater/active");
+                if fs::read(self.home.join("synthetic.fixture")).is_ok_and(|v| v == b"synthetic") {
+                    if let Ok(entries) = fs::read_dir(&job) {
+                        eprintln!(
+                            "Synthetic job files: {:?}",
+                            entries
+                                .filter_map(Result::ok)
+                                .map(|v| v.file_name())
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    for name in [
+                        "supervisor.json",
+                        "worker.json",
+                        "progress.json",
+                        "runner.log",
+                    ] {
+                        if let Ok(bytes) = fs::read(job.join(name)) {
+                            eprintln!(
+                                "Synthetic {name}: {}",
+                                String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(8192)..])
+                            );
+                        }
+                    }
+                }
+                return;
+            }
             let mut command = std::process::Command::new(&self.executable);
             config::hidden(&mut command);
             let _ = command
@@ -618,6 +815,7 @@ mod tests {
                 VERSION,
                 Duration::ZERO,
                 DEADLINE,
+                None,
             )
             .await
             .unwrap();
@@ -663,6 +861,7 @@ mod tests {
                 selected,
                 Duration::ZERO,
                 DEADLINE,
+                None,
             )
             .await
             .unwrap_err();
@@ -731,6 +930,7 @@ mod tests {
             VERSION,
             Duration::ZERO,
             DEADLINE,
+            None,
         )
         .await
         .unwrap_err();
@@ -758,7 +958,8 @@ mod tests {
                 &env.state,
                 VERSION,
                 Duration::ZERO,
-                Duration::from_secs(1)
+                Duration::from_secs(1),
+                None,
             )
             .await
             .is_err()
