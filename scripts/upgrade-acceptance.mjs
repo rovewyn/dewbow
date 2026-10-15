@@ -252,10 +252,11 @@ try {
     assert.equal(await exists(join(env.job, 'intent.json')), false);
     await env.preserved(baselineVersion);
   });
-  await scenario('download-connection-loss', async env => {
-    // Keep real HTTPS certificate verification. Tunnel release discovery to GitHub,
-    // then close only the archive connection before any maintenance can start.
-    const sockets = new Set(); let discoveries = 0, interrupted = 0;
+  await scenario('release-connection-loss', async env => {
+    // Interrupt the public command's actual release connection locally. Partial
+    // archive response bodies are injected into the real download function by
+    // the Rust suite; neither case depends on public API availability or quota.
+    const sockets = new Set(); let interrupted = 0;
     const proxy = createServer(socket => {
       sockets.add(socket); socket.once('close', () => sockets.delete(socket));
       socket.on('error', () => {});
@@ -266,32 +267,20 @@ try {
         const end = headers.indexOf('\r\n\r\n'); if (end < 0) return;
         socket.off('data', receive);
         const host = /^CONNECT ([^ ]+) HTTP\/1\.[01]/.exec(headers.toString())?.[1];
-        if (host === 'github.com:443') {
-          interrupted++; socket.end('HTTP/1.1 200 Connection Established\r\n\r\n'); return;
-        }
         if (host !== 'api.github.com:443') { socket.destroy(); return; }
-        discoveries++;
-        const upstream = connect(443, 'api.github.com'); sockets.add(upstream);
-        upstream.once('close', () => sockets.delete(upstream));
-        upstream.on('error', () => socket.destroy());
-        socket.once('close', () => upstream.destroy());
-        upstream.once('connect', () => {
-          socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          if (headers.length > end + 4) upstream.write(headers.subarray(end + 4));
-          socket.pipe(upstream); upstream.pipe(socket);
-        });
+        interrupted++;
+        socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
       };
       socket.on('data', receive);
     });
     await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
     try {
-      // 0.1.0 is queried only for authentic public release metadata. No old
-      // executable or incompatible state is downloaded, installed or adopted.
-      const result = await start(env.installed, ['--state-dir', env.state, 'upgrade', '--version', '0.1.0'], {
+      const result = await start(env.installed, ['--state-dir', env.state, 'upgrade', '--version', version], {
         env: { ...process.env, HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`, https_proxy: `http://127.0.0.1:${proxy.address().port}`,
           ALL_PROXY: '', all_proxy: '', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' },
       }).finished;
-      assert.equal(result.code, 1); assert.ok(discoveries > 0); assert.ok(interrupted > 0, 'Archive download must actually reach the fault');
+      assert.equal(result.code, 1);
+      assert.ok(interrupted > 0, `Release connection must actually reach the fault: ${result.stdout}\n${result.stderr}`);
       assert.equal((await env.status()).status, 'failed');
       assert.equal((await env.control('status')).instanceId, env.first.instanceId);
       assert.equal(await exists(join(env.job, 'intent.json')), false);
