@@ -8,7 +8,7 @@ The state directory is Dewbow's private local data directory for configuration, 
 
 Every CLI command accepts `--state-dir <directory>`. Use the same directory for `init`, `doctor`, `web`, daemon commands and upgrades; omitting the option selects the default directory again. Relative paths are resolved from the command's current working directory. For separate instances, use distinct state directories and available ports. Use an ignored directory for synthetic demos.
 
-Restarting with the same state directory preserves its host identity, managed conversation bindings, frozen configuration, request receipts and recovery records. Use the original directory to recover an existing instance.
+Restarting with the same state directory preserves its host identity, managed conversation bindings, frozen configuration, retained request receipts and recovery records. Receipt retention follows the 24-hour minimum retry window described below; restarting does not reset receipt age. Use the original directory to recover an existing instance.
 
 The directory can contain these files:
 
@@ -27,9 +27,17 @@ Conversation working files belong to the conversation's `workDir`. Native Codex 
 
 Initializing Dewbow in an empty state directory creates an independent host identity and set of management records. The stable `hostId` is stored in `config.json`; the request IDs, input fingerprints, target associations and delivery receipts are stored in `daemon.sqlite`. Merely creating a directory does not initialize an instance. A fresh initialization does not import these records from another directory, even on the same computer or with the same Codex home. The old directory's data remains where it was.
 
-For example, a client submits `req-123`, Dewbow sends it to Codex, and the connection drops before the client receives a response. After restarting with the original state directory, an identical retry can find the receipt and return its known result or explicit unknown-delivery state without submitting the command again. A newly initialized directory has no such receipt. After connecting the intended native conversation, it can treat that request ID as new and execute it again; deduplication does not span state directories.
+For example, a client submits `req-123`, Dewbow sends it to Codex, and the connection drops before the client receives a response. After restarting with the original state directory, an identical retry within the 24-hour window can find the receipt and return its known result or explicit unknown-delivery state without submitting the command again. Older receipts still required for uncertain delivery or active execution remain protected. A newly initialized directory has no such receipt. After connecting the intended native conversation, it can treat that request ID as new and execute it again; deduplication does not span state directories.
 
 Codex history can help establish what happened in the native conversation, but cannot reconstruct Dewbow's complete request identity and delivery associations. An absent receipt in a new directory does not prove a request never ran. Reuse the original state directory for restart recovery, and inspect uncertain outcomes before retrying from a replacement instance. Native Codex conversations and credentials remain in the selected Codex home.
+
+### Automatic receipt cleanup
+
+The daemon cleans eligible receipts after startup recovery and every 24 hours while it remains running. The timer belongs to the daemon; there is no OS scheduled task, separate cleanup process or configurable TTL. Shutdown stops the timer. Upgrade maintenance skips cleanup, and checkpointing waits for any cleanup already admitted. A skipped pass is retried at the next daily tick or restart.
+
+The minimum retry window is 24 hours from first acceptance, including time while the daemon is stopped. Only older delivered/error receipts with no active or unresolved turn or retained callback association are removed. Accepted/unknown receipts and required recovery records stay. In normal continuous operation this retains eligible receipts for about 24–48 hours, and unresolved records can remain longer. Removing rows frees reusable SQLite space without an automatic file-shrinking `VACUUM`.
+
+Once a receipt is removed, a retry with that request ID may execute as new work. Inspect the native conversation and reconcile old outcomes before intentionally resubmitting beyond the guaranteed window. Cleanup does not delete native Codex history, change host identity or remove managed sessions. See [receipt retention](storage.md#receipt-retention) for transaction and recovery rules.
 
 ## Start, inspect and stop
 
