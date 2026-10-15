@@ -1,0 +1,986 @@
+openapi: 3.1.0
+info:
+  title: Dewbow operator Web API
+  version: v1
+  description: |
+    The loopback operator surface implemented by the Rust daemon and bundled Web.
+    This version is the management contract, independent of the product version.
+    Private /internal/* CLI control operations and static assets are out of scope.
+    JSON management requests reject unknown top-level properties and have a
+    1048576-byte body limit. Required text must contain a non-whitespace character
+    and fit within 100000 UTF-8 bytes; JSON Schema string lengths count characters,
+    so these byte limits also need application validation.
+    Every management POST requires an operator cookie, the exact server Host,
+    and an Origin equal to the server URL. This is not a remote or agent API.
+    HTTP 200 acknowledges the result envelope, not native execution completion.
+    Inspect operation status, turn state and embedded history/discovery errors.
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit/
+servers:
+  - url: http://127.0.0.1:{port}
+    variables:
+      port:
+        default: '3000'
+        description: Port configured for the selected Dewbow state directory.
+security:
+  - operatorCookie: []
+tags:
+  - name: Authentication
+    description: CLI-ticket exchange and operator cookie lifecycle.
+  - name: Discovery
+    description: Read-only local host and native conversation discovery.
+  - name: Sessions
+    description: Managed bindings and explicit native connection.
+  - name: History
+    description: Bounded native history, activity and content reads.
+  - name: Execution
+    description: Deduplicated command delivery and pending callback responses.
+  - name: Updates
+    description: Volatile observations and native history over SSE.
+  - name: Health
+    description: Unauthenticated HTTP listener probe.
+paths:
+  /health:
+    get:
+      operationId: health
+      tags: [Health]
+      summary: Check that the HTTP listener answers
+      description: Does not verify daemon identity, native readiness or upgrade compatibility.
+      security: []
+      responses:
+        '200':
+          description: Listener is available; no result envelope.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, const: available}
+              example: {status: available}
+  /auth/login:
+    post:
+      operationId: login
+      tags: [Authentication]
+      summary: Exchange a CLI-issued ticket for an operator cookie
+      description: |
+        dewbow web obtains a one-use ticket from the private CLI control endpoint.
+        Web removes the fragment ticket before sending it here. Tickets expire
+        after 60 seconds. Cookies expire after 12 hours or daemon exit.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket]
+              properties:
+                ticket: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Authenticated; sets the HttpOnly SameSite=Strict operator cookie.
+          headers:
+            Set-Cookie:
+              schema: {type: string}
+              description: dewbowOperator cookie with Path=/ and Max-Age=43200.
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [authenticated]
+                    properties:
+                      authenticated: {type: boolean, const: true}
+        '400': {$ref: '#/components/responses/LoginBadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '413': {$ref: '#/components/responses/TransportError'}
+        '415': {$ref: '#/components/responses/TransportError'}
+        '422': {$ref: '#/components/responses/TransportError'}
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      summary: Revoke the current operator cookie
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      responses:
+        '200':
+          description: Revoked; expires the cookie with Max-Age=0.
+          headers:
+            Set-Cookie:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {type: object, additionalProperties: false}
+              example: {result: {}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/listHosts:
+    post:
+      operationId: listHosts
+      tags: [Discovery]
+      summary: List the configured local host
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody: {$ref: '#/components/requestBodies/Empty'}
+      responses:
+        '200':
+          description: Local host inventory.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [hosts]
+                    properties:
+                      hosts: {type: array, items: {$ref: '#/components/schemas/Host'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/listSessions:
+    post:
+      operationId: listSessions
+      tags: [Discovery]
+      summary: Discover native conversations and managed bindings without resuming them
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                hostId: {$ref: '#/components/schemas/Text'}
+      responses:
+        '200':
+          description: Inventory; inspect per-provider discovery errors even on HTTP 200.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [sessions, discovery]
+                    properties:
+                      sessions: {type: array, items: {$ref: '#/components/schemas/Session'}}
+                      discovery: {type: array, items: {$ref: '#/components/schemas/Discovery'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /api/getSession:
+    post:
+      operationId: getSession
+      tags: [Sessions]
+      summary: Read current observations, managed operations and pending interactions
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody: {$ref: '#/components/requestBodies/Session'}
+      responses:
+        '200':
+          description: Conversation details; does not resume execution.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/SessionDetails'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/createSession:
+    post:
+      operationId: createSession
+      tags: [Sessions]
+      summary: Create a native conversation with frozen management configuration
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [hostId, workDir, requestId]
+              properties:
+                hostId: {$ref: '#/components/schemas/Text'}
+                workDir:
+                  $ref: '#/components/schemas/Text'
+                  description: Existing absolute local directory, checked by the daemon.
+                requestId: {$ref: '#/components/schemas/RequestId'}
+                sessionOptions: {$ref: '#/components/schemas/SessionOptions'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/connectSession:
+    post:
+      operationId: connectSession
+      tags: [Sessions]
+      summary: Connect or explicitly adopt the same native conversation
+      description: Poll getSession for readiness; writer conflicts do not stop other runtimes.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, requestId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/readSessionHistory:
+    post:
+      operationId: readSessionHistory
+      tags: [History]
+      summary: Read bounded native items and volatile management notifications
+      description: |
+        Choose at most one of beforeCursor, afterCursor and updateCursor.
+        Native cursors bind the conversation, Codex home and direction. A native
+        read failure is reported in result.historyError without advancing its
+        watermark. Event cursor is independent and cannot replay across daemon
+        instances. Reads do not write Dewbow management storage.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                cursor: {$ref: '#/components/schemas/EventCursor'}
+                beforeCursor: {$ref: '#/components/schemas/NativeCursor'}
+                afterCursor: {$ref: '#/components/schemas/NativeCursor'}
+                updateCursor: {$ref: '#/components/schemas/NativeCursor'}
+                limit: {type: integer, minimum: 1, maximum: 500, default: 50}
+      responses:
+        '200':
+          description: Bounded history, independent cursors and explicit read errors.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/SessionHistory'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/getSessionActivity:
+    post:
+      operationId: getSessionActivity
+      tags: [History]
+      summary: Read an exact native activity and its private content references
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, itemId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                itemId: {$ref: '#/components/schemas/Text'}
+      responses:
+        '200':
+          description: Native activity metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/Activity'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/readSessionContent:
+    post:
+      operationId: readSessionContent
+      tags: [History]
+      summary: Read a bounded UTF-8 page from an opaque content reference
+      description: |
+        References bind the conversation and allowlisted native content selector.
+        They cannot select arbitrary paths. Cursors bind the content and byte
+        offset. Output retained by Codex may be truncated; inspect completeness.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, contentId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                contentId: {$ref: '#/components/schemas/Text'}
+                contentCursor: {$ref: '#/components/schemas/Text'}
+                limitBytes: {type: integer, minimum: 4, maximum: 262144, default: 65536}
+      responses:
+        '200':
+          description: Content page; bytes and cursors preserve UTF-8 boundaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/ContentPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/sendMessage:
+    post:
+      operationId: sendMessage
+      tags: [Execution]
+      summary: Start one managed turn
+      description: An active or unresolved turn blocks another send in the same conversation.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, message, requestId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                message: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+                mode: {type: string, enum: [default, plan], default: default}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/steerTurn:
+    post:
+      operationId: steerTurn
+      tags: [Execution]
+      summary: Deliver an instruction to the exact active turn
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, turnId, message, requestId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                turnId: {$ref: '#/components/schemas/Text'}
+                message: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/answerQuestions:
+    post:
+      operationId: answerQuestions
+      tags: [Execution]
+      summary: Answer the exact pending runtime question callback
+      description: |
+        Answer each advertised question exactly once, with at least one nonempty
+        answer. Without allowCustom, answer values must be advertised option labels.
+        Stale callbacks fail. Question and answer bodies remain runtime memory only.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, turnId, interactionId, requestId, answers]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                turnId: {$ref: '#/components/schemas/Text'}
+                interactionId: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+                answers:
+                  type: array
+                  items: {$ref: '#/components/schemas/QuestionAnswer'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/decideApproval:
+    post:
+      operationId: decideApproval
+      tags: [Execution]
+      summary: Allow or deny one pending runtime approval callback
+      description: Grants no persistent approval policy; stale callbacks fail and are never replayed on restart.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, turnId, interactionId, requestId, decision]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                turnId: {$ref: '#/components/schemas/Text'}
+                interactionId: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+                decision: {type: string, enum: [allow, deny]}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/interruptTurn:
+    post:
+      operationId: interruptTurn
+      tags: [Execution]
+      summary: Request interruption of the exact active turn
+      description: Delivery acceptance is separate from native interruption confirmation.
+      parameters:
+        - $ref: '#/components/parameters/Origin'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId, turnId, requestId]
+              properties:
+                sessionId: {$ref: '#/components/schemas/Text'}
+                turnId: {$ref: '#/components/schemas/Text'}
+                requestId: {$ref: '#/components/schemas/RequestId'}
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/subscribeSessionUpdates:
+    get:
+      operationId: subscribeSessionUpdates
+      tags: [Updates]
+      summary: Subscribe to current observations and bounded native history using SSE
+      description: |
+        Requires the operator cookie and exact Host. Origin, when supplied, must
+        match the server URL. Unknown query parameters are rejected. The first
+        snapshot starts the volatile event cursor at zero regardless of cursor;
+        updateCursor may continue native history. Subsequent update payloads use
+        independent event/native cursors. Check instanceId on reconnection and
+        discard a previous instance's volatile event cursor. No event IDs or
+        Last-Event-ID replay are implemented. Frames have event and JSON data
+        fields separated by a blank line; keepalive comments carry no payload.
+        After headers, errors use streamError frames instead of HTTP status.
+        Clients close on UNAUTHORIZED and reauthenticate through dewbow web.
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema: {type: string}
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/EventCursor'}
+        - name: updateCursor
+          in: query
+          schema: {type: string}
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If present, must equal the server URL.
+      responses:
+        '200':
+          description: |
+            snapshot and update data are SessionUpdates objects, without result
+            envelopes. streamError data is a ManagementError, without an error envelope.
+          content:
+            text/event-stream:
+              schema: {type: string}
+              examples:
+                expired:
+                  summary: An expired operator cookie terminates client consumption.
+                  value: |
+                    event: streamError
+                    data: {"code":"UNAUTHORIZED","message":"Web session expired.","retryable":false}
+
+          x-sse-events:
+            snapshot: {$ref: '#/components/schemas/SessionUpdates'}
+            update: {$ref: '#/components/schemas/SessionUpdates'}
+            streamError: {$ref: '#/components/schemas/ManagementError'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+components:
+  securitySchemes:
+    operatorCookie:
+      type: apiKey
+      in: cookie
+      name: dewbowOperator
+      description: In-memory operator session created by the CLI-ticket login exchange.
+  parameters:
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      description: Must equal http://127.0.0.1:<configured-port>, without a trailing slash.
+      schema: {type: string}
+      example: http://127.0.0.1:3000
+  requestBodies:
+    Empty:
+      required: true
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: false}
+          example: {}
+    Session:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [sessionId]
+            properties:
+              sessionId: {$ref: '#/components/schemas/Text'}
+  responses:
+    BadRequest:
+      description: |
+        Management failure, including INVALID_INPUT, REQUEST_CONFLICT,
+        DELIVERY_UNCERTAIN, RECOVERY_REQUIRED, UNAVAILABLE or EXECUTION_FAILED.
+        These currently map to HTTP 400; inspect code and retryable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    LoginBadRequest:
+      description: Invalid JSON syntax (plain text), or a management error such as cookie capacity exceeded (JSON).
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+        text/plain:
+          schema: {type: string}
+    Unauthorized:
+      description: Missing, invalid or expired credentials, or a rejected Host/Origin.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    Forbidden:
+      description: The operator action is forbidden.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    NotFound:
+      description: The requested conversation, turn, callback or native content is unavailable.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+    TransportError:
+      description: Framework rejection of the login JSON body, size or media type; no management envelope.
+      content:
+        text/plain:
+          schema: {type: string}
+    Operation:
+      description: |
+        Durable request receipt. Inspect status and error even on HTTP 200.
+        delivered means native command acceptance, not turn completion.
+        Retrying the same operation/input/requestId returns the original receipt.
+        Unknown delivery must be reconciled rather than resubmitted under a new ID.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [result]
+            properties:
+              result: {$ref: '#/components/schemas/Operation'}
+  schemas:
+    Text:
+      type: string
+      minLength: 1
+      maxLength: 100000
+      pattern: '\S'
+      description: Nonblank text, limited to 100000 UTF-8 bytes by application validation.
+    RequestId:
+      $ref: '#/components/schemas/Text'
+      description: |
+        Client-chosen identity, unique across operations in this state directory.
+        Identical retries return the same command/receipt; changed operation or
+        input produces REQUEST_CONFLICT. Survives restart with the same state.
+        A fresh state directory cannot recognize receipts from the original one.
+    EventCursor:
+      type: integer
+      minimum: 0
+      maximum: 18446744073709551615
+      description: Volatile notification position, valid only within the same daemon instance.
+    NativeCursor:
+      $ref: '#/components/schemas/Text'
+      maxLength: 1024
+      description: Opaque SDK cursor, limited to 1024 bytes and bound to its source and direction.
+    ManagementError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        retryable:
+          type: boolean
+          description: Does not authorize a new request ID or guarantee that the native action did not run.
+      example: {code: REQUEST_CONFLICT, message: Request identity conflicts with an earlier operation., retryable: false}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: {$ref: '#/components/schemas/ManagementError'}
+    Host:
+      type: object
+      required: [hostId, name, status, lastSeenAt]
+      properties:
+        hostId: {type: string}
+        name: {type: string}
+        status: {type: string, enum: [connected, disconnected, revoked]}
+        lastSeenAt: {type: [string, 'null']}
+    Discovery:
+      type: object
+      required: [hostId, error, sources]
+      properties:
+        hostId: {type: string}
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+        sources:
+          type: array
+          items:
+            type: object
+            required: [source, state, error]
+            properties:
+              source: {type: string}
+              state: {type: string}
+              error: {type: [string, 'null']}
+    SessionOptions:
+      type: object
+      additionalProperties: false
+      description: Overrides must be advertised by native Codex; arbitrary native configuration is rejected.
+      properties:
+        model: {type: string, minLength: 1, maxLength: 200, description: At most 200 UTF-8 bytes.}
+        reasoningEffort: {type: string, minLength: 1, maxLength: 200, description: At most 200 UTF-8 bytes.}
+        instructionsAppend: {type: string, maxLength: 100000, description: At most 100000 UTF-8 bytes; may be empty.}
+    ResolvedConfig:
+      type: object
+      required: [model, modelProvider, reasoningEffort, developerInstructions, approvalPolicy, approvalsReviewer, sandbox]
+      properties:
+        model: {type: string}
+        modelProvider: {type: string}
+        reasoningEffort: {type: [string, 'null']}
+        developerInstructions: {type: string}
+        approvalPolicy: {type: string, const: on-request}
+        approvalsReviewer: {type: string, const: user}
+        sandbox:
+          type: object
+          required: [type, writableRoots, networkAccess, excludeTmpdirEnvVar, excludeSlashTmp]
+          properties:
+            type: {type: string, const: workspaceWrite}
+            writableRoots: {type: array, items: {type: string}}
+            networkAccess: {type: boolean}
+            excludeTmpdirEnvVar: {type: boolean}
+            excludeSlashTmp: {type: boolean}
+    Session:
+      type: object
+      required: [sessionId, hostId, workDir, codexThreadId, sessionConfig, connectionState, createdAt, runtimeState, observedAt, lastKnownState, lastKnownAt, activeTurnId, latestCursor, managed, name, native]
+      properties:
+        sessionId: {type: string}
+        hostId: {type: string}
+        workDir: {type: [string, 'null']}
+        codexThreadId: {type: [string, 'null']}
+        sessionConfig:
+          description: Null when adopting a native conversation without a frozen creation snapshot.
+          anyOf:
+            - type: 'null'
+            - type: object
+              required: [resolved]
+              properties:
+                resolved: {$ref: '#/components/schemas/ResolvedConfig'}
+        connectionState: {type: string, enum: [disconnected, connecting, connected, error]}
+        connectionConfirmedAt: {type: string}
+        createdAt: {type: [string, 'null']}
+        runtimeState: {$ref: '#/components/schemas/SessionState'}
+        observedAt: {type: string}
+        lastKnownState: {$ref: '#/components/schemas/SessionState'}
+        lastKnownAt: {type: string}
+        activeTurnId: {type: [string, 'null']}
+        latestCursor: {$ref: '#/components/schemas/EventCursor'}
+        managed: {type: boolean}
+        name: {type: string}
+        native:
+          anyOf:
+            - $ref: '#/components/schemas/NativeSession'
+            - type: 'null'
+    NativeSession:
+      type: object
+      required: [id, codexHome, name, workDir, createdAt, updatedAt, archived, kind, parentId, forkedFromId, runtimeStatus, hasActiveWriter]
+      properties:
+        id: {type: string}
+        codexHome: {type: string}
+        name: {type: string}
+        workDir: {type: [string, 'null']}
+        createdAt: {type: [string, 'null']}
+        updatedAt: {type: [string, 'null']}
+        archived: {type: [boolean, 'null']}
+        kind: {type: string}
+        parentId: {type: [string, 'null']}
+        forkedFromId: {type: [string, 'null']}
+        runtimeStatus: {type: string}
+        hasActiveWriter: {type: [boolean, 'null']}
+    SessionState:
+      type: string
+      enum: [idle, running, awaiting_approval, awaiting_input, interrupted, error, unknown]
+    Turn:
+      type: object
+      required: [turnId, sessionId, requestId, mode, state, createdAt, observedAt, error]
+      properties:
+        turnId: {type: string}
+        sessionId: {type: string}
+        requestId: {type: string}
+        codexTurnId:
+          type: [string, 'null']
+          description: May be absent or null when a native acknowledgement was not retained.
+        mode: {type: string, enum: [default, plan]}
+        state: {type: string, enum: [accepted, running, awaiting_approval, awaiting_input, completed, interrupted, error, unknown]}
+        createdAt: {type: string}
+        observedAt: {type: string}
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+    Operation:
+      type: object
+      required: [requestId, commandId, operation, authority, sessionId, turnId, status, createdAt, error]
+      properties:
+        requestId: {type: string}
+        commandId: {type: string}
+        operation: {type: string, enum: [createSession, connectSession, sendMessage, steerTurn, answerQuestions, decideApproval, interruptTurn]}
+        authority: {type: string, const: operator}
+        sessionId: {type: string}
+        turnId: {type: [string, 'null']}
+        status: {type: string, enum: [accepted, delivered, error, unknown]}
+        createdAt: {type: string}
+        error:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+    QuestionAnswer:
+      type: object
+      required: [questionId, answers]
+      properties:
+        questionId: {$ref: '#/components/schemas/Text'}
+        answers:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            minLength: 1
+            maxLength: 100000
+            description: Nonempty value within 100000 UTF-8 bytes; whitespace is allowed.
+    Question:
+      type: object
+      required: [questionId, header, prompt, options, allowCustom, secret]
+      properties:
+        questionId: {type: string}
+        header: {type: string}
+        prompt: {type: string}
+        options:
+          type: [array, 'null']
+          items:
+            type: object
+            required: [label, description]
+            properties:
+              label: {type: string}
+              description: {type: string}
+        allowCustom: {type: boolean}
+        secret: {type: boolean}
+    Interaction:
+      type: object
+      required: [interactionId, sessionId, turnId, itemId, kind, authority, blocking, status, createdAt, observedAt, decision, requestId, content, sensitive]
+      properties:
+        interactionId: {type: string}
+        sessionId: {type: string}
+        turnId: {type: string}
+        itemId: {type: [string, 'null']}
+        kind: {type: string, enum: [approval, questions, unsupported]}
+        authority: {type: string, const: operator}
+        blocking: {type: boolean}
+        status: {type: string, enum: [pending, requested, delivered, resolved, invalidated]}
+        createdAt: {type: string}
+        observedAt: {type: string}
+        decision: {type: [string, 'null'], enum: [allow, deny, null]}
+        requestId: {type: [string, 'null']}
+        content: {$ref: '#/components/schemas/ContentRef'}
+        sensitive: {type: boolean}
+        details:
+          type: object
+          properties:
+            questions: {type: array, items: {$ref: '#/components/schemas/Question'}}
+            action: {type: object, additionalProperties: true}
+            answers: {type: array, items: {$ref: '#/components/schemas/QuestionAnswer'}}
+    SessionDetails:
+      type: object
+      required: [host, session, contextAuthority, turns, interactions, interactionsError, operations]
+      properties:
+        host: {$ref: '#/components/schemas/Host'}
+        session: {$ref: '#/components/schemas/Session'}
+        contextAuthority: {type: string, const: operator}
+        turns: {type: array, items: {$ref: '#/components/schemas/Turn'}}
+        interactions: {type: array, items: {$ref: '#/components/schemas/Interaction'}}
+        interactionsError:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+        operations: {type: array, items: {$ref: '#/components/schemas/Operation'}}
+    ContentRef:
+      type: object
+      required: [contentId, kind, label, byteLength, availability, completeness, authority]
+      properties:
+        contentId: {type: [string, 'null']}
+        kind: {type: string, enum: [output, diff]}
+        label: {type: string}
+        byteLength: {type: [integer, 'null'], minimum: 0}
+        availability: {$ref: '#/components/schemas/Availability'}
+        completeness: {$ref: '#/components/schemas/Completeness'}
+        authority: {type: string, const: operator}
+    ContentPage:
+      type: object
+      required: [contentId, text, byteOffset, byteLength, nextCursor, completeness, availability]
+      properties:
+        contentId: {type: string}
+        text: {type: string}
+        byteOffset: {type: integer, minimum: 0}
+        byteLength: {type: integer, minimum: 0}
+        nextCursor: {type: [string, 'null']}
+        completeness: {$ref: '#/components/schemas/Completeness'}
+        availability: {$ref: '#/components/schemas/Availability'}
+    Availability:
+      type: string
+      enum: [available, partial, unavailable]
+    Completeness:
+      type: string
+      enum: [complete, partial, unknown]
+    Message:
+      type: object
+      required: [id, turnId, role, text, phase, createdAt, turnStatus, itemComplete]
+      properties:
+        id: {type: string}
+        turnId: {type: string}
+        role: {type: string, enum: [user, assistant]}
+        text: {type: string}
+        phase: {type: [string, 'null']}
+        createdAt: {type: string}
+        turnStatus: {type: [string, 'null']}
+        itemComplete: {type: boolean}
+        ordinal: {type: [integer, 'null']}
+        updatedOrdinal: {type: [integer, 'null']}
+        clientId: {type: [string, 'null']}
+    Activity:
+      type: object
+      required: [id, turnId, ordinal, updatedOrdinal, createdAt, type, title, status, itemComplete, contents]
+      properties:
+        id: {type: string}
+        turnId: {type: string}
+        ordinal: {type: [integer, 'null']}
+        updatedOrdinal: {type: [integer, 'null']}
+        createdAt: {type: string}
+        type: {type: string}
+        title: {type: string}
+        status: {type: [string, 'null']}
+        itemComplete: {type: boolean}
+        command: {type: [string, 'null']}
+        paths: {type: array, items: {type: string}}
+        contents: {type: array, items: {$ref: '#/components/schemas/ContentRef'}}
+    Event:
+      type: object
+      required: [eventId, cursor, sessionId, turnId, timestamp, type, payload]
+      properties:
+        eventId: {type: string}
+        cursor: {$ref: '#/components/schemas/EventCursor'}
+        sessionId: {type: string}
+        turnId: {type: [string, 'null']}
+        timestamp: {type: string}
+        type: {type: string}
+        payload: {type: object, additionalProperties: true}
+    SessionHistory:
+      type: object
+      required: [events, nextCursor, hasMore, messages, activities, beforeCursor, afterCursor, updateCursor, hasMoreUpdates, liveMessages, historyError, eventsError]
+      properties:
+        events: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        nextCursor: {$ref: '#/components/schemas/EventCursor'}
+        hasMore: {type: boolean}
+        messages: {type: array, items: {$ref: '#/components/schemas/Message'}}
+        activities: {type: array, items: {$ref: '#/components/schemas/Activity'}}
+        beforeCursor: {type: [string, 'null']}
+        afterCursor: {type: [string, 'null']}
+        updateCursor: {type: [string, 'null']}
+        hasMoreUpdates: {type: boolean}
+        liveMessages: {type: array, items: {$ref: '#/components/schemas/Message'}}
+        historyError:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+        eventsError:
+          anyOf:
+            - $ref: '#/components/schemas/ManagementError'
+            - type: 'null'
+    SessionUpdates:
+      type: object
+      required: [contractVersion, instanceId, details, history]
+      properties:
+        contractVersion: {type: string, const: v1}
+        instanceId:
+          type: string
+          description: Ephemeral daemon instance identity; differs from persistent hostId.
+        details: {$ref: '#/components/schemas/SessionDetails'}
+        history: {$ref: '#/components/schemas/SessionHistory'}

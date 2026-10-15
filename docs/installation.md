@@ -51,6 +51,8 @@ curl -fsSL https://raw.githubusercontent.com/rovewyn/dewbow/main/scripts/install
 
 ## Upgrade an installed executable
 
+The commands below describe the current implementation. Check the source and target [release notes](release-notes/README.md) for command availability, supported state formats and release-specific upgrade or rollback requirements. Follow [management storage and compatibility](storage.md) when an upgrade changes persisted state.
+
 The `upgrade` command works without initialized Dewbow state. Check the latest stable release without changing any files:
 
 ```sh

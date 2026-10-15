@@ -1,6 +1,6 @@
 {
   "name": "@dewbow/workspace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local Codex session management with the Dewbow CLI and daemon",
   "type": "module",

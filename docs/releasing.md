@@ -1,10 +1,14 @@
 # Versioning and releases
 
-Dewbow ships one product: the `dewbow` executable, its daemon and its embedded Web. Rust crates and retained npm workspaces share that product version. All npm packages remain private; this workflow does not publish to npm or crates.io. Codex is installed separately. Product releases do not change the Dewbow management contract version, which remains `v1` during early development.
+Dewbow ships one product: the `dewbow` executable, its daemon and its embedded Web. Rust crates and retained npm workspaces share that product version. All npm packages remain private; this workflow does not publish to npm or crates.io. Codex is installed separately. Product versions, public contracts and management storage formats are reviewed separately; see [version identifiers](storage.md#version-identifiers). Keep release-specific changes, upgrade exceptions and rollback requirements in [release notes](release-notes/README.md).
 
 ## Version policy
 
 The authoritative version is `[workspace.package].version` in the root `Cargo.toml`. Every Rust member inherits it with `version.workspace = true`. The root npm package, all explicit npm workspaces, their internal dependency pins and both root lockfiles must agree with it.
+
+On a development branch this field names the release being developed. To find it, run `npm run version:check`: its output prints the version and checks the synchronized files. Read `docs/release-notes/<that-version>.md` for its unreleased changes and transition requirements. For example, a manifest version of `0.2.0` selects `docs/release-notes/0.2.0.md`. The latest published tag identifies the previous release, not necessarily the current development target.
+
+At the start of each development cycle, agree on the next version, run `npm run version:set -- <version>`, create its notes with `Status: unreleased`, and add it to the [release-note index](release-notes/README.md). Update those notes as changes land. Keep the target in the existing manifests rather than a separate next-version file. A version bump does not publish a release; verify publication against tags and GitHub Releases before changing the note's status.
 
 Use unprefixed SemVer without build metadata in both manifests and Git tags. A tag must exactly match the product version, such as `0.1.0` or `0.2.0-rc.1`. During `0.x` development:
 
@@ -36,8 +40,8 @@ CI checks consistency on all platforms. Keep generated files, local measurements
 ## Prepare a release PR
 
 1. Start from current `main` using the contributor workflow. Keep ordinary feature work in short-lived PRs.
-2. Select the next product version and run `version:set`. The existing `0.1.0` manifest version does not by itself establish that a release has been published.
-3. Create `docs/release-notes/<version>.md` in English, with the actual changes and requirements for that release. Include the information below; remove template placeholders before review.
+2. Confirm the development target and its unreleased notes. If the agreed release version changes, run `version:set` and rename/update its notes and index together. Check published tags and releases; a manifest version does not by itself establish that a release has been published.
+3. Review state and configuration compatibility against supported published tags and the target release's explicitly approved transition exceptions. Follow [storage compatibility](storage.md), implement required migrations for supported sources, and validate synthetic released-format fixtures before claiming upgrade support. Create or complete `docs/release-notes/<version>.md` in English, with the actual changes and requirements for that release. Include the information below; remove template placeholders before review.
 4. Run version checks, release-tool tests and the validation commands in [Workspace development](workspace.md). Build Web before Cargo. Inspect both lockfile diffs, then follow staged review and Gitleaks requirements in `CONTRIBUTING.md`.
 5. Open a focused PR such as `chore(release): prepare 0.2.0-rc.1`. Review the version, notes and supported targets. Merge it with squash after required checks pass.
 
@@ -54,7 +58,7 @@ Release-note outline:
 
 - State the required independent Codex CLI version and supported platforms.
 - List breaking CLI, API, configuration or local-state changes.
-- State explicitly whether a Dewbow-owned state reset is required.
+- Identify supported upgrade sources, migration behavior and recovery on interruption. Any exceptional state reset must be explicitly reviewed and describe lost management identity, deduplication and recovery state.
 - State whether rollback to the preceding release can use the same state.
 
 ## Known limitations
@@ -79,7 +83,7 @@ The distribution targets for future releases are:
 | macOS 15 Apple Silicon (`macos-15`) | `aarch64-apple-darwin` | `.tar.gz` |
 | macOS 15 Intel (`macos-15-intel`) | `x86_64-apple-darwin` | `.tar.gz` |
 
-The macOS archives are separate native builds, not universal binaries. Select `aarch64-apple-darwin` for Apple Silicon or `x86_64-apple-darwin` for Intel. Both architectures run the full PR checks and the Release workflow builds, tests and verifies each package on its matching native runner. The already published `0.1.0` release has only the Apple Silicon macOS archive; Intel distribution starts with the next release.
+The macOS archives are separate native builds, not universal binaries. Select `aarch64-apple-darwin` for Apple Silicon or `x86_64-apple-darwin` for Intel. Both architectures run the full PR checks and the Release workflow builds, tests and verifies each package on its matching native runner. Check the selected release's notes and assets for its actual architecture coverage.
 
 These targets are explicit; CI operating-system coverage does not imply other architectures or older OS versions are supported. Linux uses GNU libc, not a musl static build. [Standalone installers and the explicit upgrade command](installation.md) consume these checked release archives. Binary signing, notarization, automatic background updates and package-registry publication are deferred.
 
@@ -114,7 +118,7 @@ The publication command requires an existing remote tag and fails if the release
 
 The installation scripts live under `scripts/` and are served from `main`; merge them before advertising their raw GitHub URLs. Installer integration checks run with `npm test` after the Rust build on Linux, Windows and both macOS architectures. They exercise execution through shell standard input and PowerShell's `Invoke-Expression` without saving a downloaded installer. Transport is simulated while archive verification, executable checks, installation, collision handling and cleanup use the real platform tools. Prepare and publish product releases separately, including their upgrade requirements and rollback guidance; never replace released binaries or move released tags to add commands.
 
-Stop the selected Dewbow daemon and its owned native runtime before replacing its executable or changing Dewbow-owned state. Preserve native Codex conversations, credentials and unrelated files. State resets are release-specific, require documented instructions, and must be validated with fresh synthetic databases; early development does not require migration code.
+Stop the selected Dewbow daemon and its owned native runtime before replacing its executable or changing Dewbow-owned state. Preserve native Codex conversations, credentials and unrelated files. Supported released state must have a preserving upgrade path, with versioned migrations when its format changes. Validate synthetic fixtures matching the published source formats, including interruption, deduplication and failure recovery. Fresh-state tests alone do not establish upgrade compatibility. State resets are exceptional, require explicit authorization and documented consequences, and cannot substitute for ordinary released-state upgrades.
 
 Keep the previous executable and a suitable backup of Dewbow-owned state when an upgrade needs one. Do not assume an older executable can read state written by a newer release. Follow that release's rollback guidance, preserving native Codex data throughout. Separate synthetic checks, completed CI, real native verification and publicly published acceptance claims.
 
