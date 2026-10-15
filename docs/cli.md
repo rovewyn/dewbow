@@ -36,9 +36,9 @@ dewbow doctor
 dewbow web
 ```
 
-`init` creates private configuration and a stable host ID under `~/.dewbow`. `web` starts the background daemon if necessary, opens the browser with a one-use login link, and prints the ordinary loopback URL. No model turn is started automatically. Direct unauthenticated visits show instructions to use the CLI.
+`init` creates private configuration and a stable host ID in Dewbow's state directory: its private local data directory for configuration, management storage, runtime ownership files and daemon diagnostics. It defaults to `~/.dewbow` (`%USERPROFILE%\.dewbow` on Windows or `$HOME/.dewbow` on POSIX). See [state directory operations](operations.md#state-directory) for file purposes and selection rules. `web` starts the background daemon if necessary, opens the browser with a one-use login link, and prints the ordinary loopback URL. No model turn is started automatically. Direct unauthenticated visits show instructions to use the CLI.
 
-For an isolated checkout demo, use an ignored state directory and another available port:
+For a checkout demo with separate Dewbow state, use an ignored state directory and another available port:
 
 ```sh
 dewbow --state-dir state/demo init --codex-executable <standalone-codex-executable> --port 3240
@@ -48,7 +48,7 @@ dewbow --state-dir state/demo daemon status
 dewbow --state-dir state/demo daemon stop
 ```
 
-All commands accept `--state-dir`. Initialization also accepts `--codex-home`; otherwise the normal `CODEX_HOME` or `~/.codex` is used. Existing configuration is preserved. Conflicting initialization options fail instead of overwriting it; edit private configuration while stopped, or choose another state directory.
+All commands accept `--state-dir <directory>`; use the same directory for initialization and subsequent commands. Relative paths such as `state/demo` are resolved from the current working directory. Initialization also accepts `--codex-home` for native Codex conversations and credentials; otherwise the normal `CODEX_HOME` or `~/.codex` is used. Changing `--state-dir` alone does not change Codex home. Conversation working files use their own `workDir`. Existing configuration is preserved. Conflicting initialization options fail instead of overwriting it; edit private configuration while stopped, or choose another state directory.
 
 ## Lifecycle
 

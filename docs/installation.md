@@ -67,7 +67,7 @@ dewbow doctor
 dewbow web
 ```
 
-For a custom state directory:
+The [state directory](operations.md#state-directory) is Dewbow's private local data directory for configuration, management storage, runtime ownership files and daemon diagnostics; it defaults to `~/.dewbow`. It is selected independently of the executable's installation directory. If initialization used a custom directory, select that same directory when stopping the daemon and upgrading:
 
 ```sh
 dewbow --state-dir <state-directory> daemon stop

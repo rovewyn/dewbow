@@ -30,7 +30,7 @@ Question answers are `[{ questionId, answers: string[] }]`. Responses must match
 
 Discovery includes archived and child conversations, native parent/fork metadata and explicit per-provider results. Missing observations remain unknown. Reading list/history does not resume a native thread or start a model turn. Adoption is explicit and continues the same native ID; writer conflicts do not stop another runtime.
 
-A mutation is journaled before native execution. Request IDs are scoped to this daemon. Identical operation/input retries return the original result; changed input under the same ID returns REQUEST_CONFLICT. User messages and answer bodies are not copied into management records; durable fingerprints establish identity. Deduplication does not guarantee exactly-once execution across an uncertain crash.
+A mutation is journaled before native execution. Request IDs are scoped to the selected [state directory](operations.md#state-directory) and survive daemon restarts that reuse it. Identical operation/input retries return the original result; changed input under the same ID returns REQUEST_CONFLICT. User messages and answer bodies are not copied into management records; durable fingerprints establish identity. Deduplication does not guarantee exactly-once execution across an uncertain crash.
 
 Operation status is accepted, delivered, error or unknown. Delivered means native command acceptance, not completed execution. Turn state is accepted, running, awaiting_approval, awaiting_input, completed, interrupted, error or unknown. One session permits one active or unresolved turn. Different sessions may execute independently.
 
