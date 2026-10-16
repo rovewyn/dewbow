@@ -5,6 +5,7 @@ pub mod network;
 mod network_business;
 mod network_control;
 mod observation;
+mod remote;
 mod server;
 mod service;
 mod shutdown;

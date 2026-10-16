@@ -1,4 +1,4 @@
-//! Volatile, bounded result/update framing shared by later business adapters.
+//! Volatile, bounded result/update framing shared by native read adapters.
 use super::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dewbow_protocol::network::{Nonce, peer::*};
@@ -73,6 +73,14 @@ impl Transfer {
             event_type: event_type.into(),
             next: 0,
         })
+    }
+    pub(super) fn from_bytes(bytes: Vec<u8>, event_type: &str) -> Self {
+        Self {
+            bytes,
+            id: uuid::Uuid::new_v4().to_string(),
+            event_type: event_type.into(),
+            next: 0,
+        }
     }
 }
 impl Iterator for Transfer {

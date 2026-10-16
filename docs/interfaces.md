@@ -6,7 +6,7 @@ The Rust daemon exposes loopback Web operations using the shared `v1` camelCase 
 
 The daemon serves both embedded Web assets and the operator API on `http://127.0.0.1:<configured-port>` (default port `3000`). Management resources use the `/api/v1` prefix. Reads use GET with path identities and optional query parameters; mutations use POST with JSON object bodies. Path identities must not be repeated in a body or query, even with the same value. Unknown fields and repeated query parameters are rejected, and the JSON body limit is 1 MiB. Integer query values use unsigned decimal digits. The HTTP adapter reconstructs the existing domain-operation input before validation, request fingerprinting and execution. The browser never reads databases directly.
 
-There are two authority boundaries. The browser uses an operator cookie for the documented Web API. The CLI uses a private control credential for `/internal/<operation>`, including lifecycle, ticket issuance and upgrade handshakes. Those private control routes and static assets are outside the OpenAPI contract. No MCP endpoint, remote native-session management or external agent bearer access is provided.
+There are two authority boundaries. The browser uses an operator cookie for the documented Web API. The CLI uses a private control credential for `/internal/<operation>`, including lifecycle, ticket issuance and upgrade handshakes. Those private control routes and static assets are outside the OpenAPI contract. Remote reads, subscriptions and typed mutations route directly to the selected Network member. No MCP endpoint or external agent bearer access is provided.
 
 `dewbow web` requests a 60-second one-use ticket through a separate protected local control endpoint. Web removes the URL fragment ticket before `POST /auth/login`, then uses an HttpOnly SameSite=Strict cookie. `POST /auth/logout` revokes it. Tickets and cookies expire in memory and are invalidated when the daemon exits. Never expose the private control credential in browser storage or URLs.
 
@@ -87,6 +87,42 @@ Restart reconciles recorded native IDs and completed turns. Unconfirmed delivery
 
 ## History, content and updates
 
+### Network reads
+
+Operator-authenticated GET routes under `/api/v1/networks/{networkId}/hosts/{hostId}`
+read exactly one selected member over direct authenticated Peer TLS. The prefix
+itself returns `{ result: { hosts: [...] } }` containing that target's local host.
+Append `/sessions`, `/sessions/{sessionId}`, or the session's `/history`,
+`/activities/{itemId}`, `/contents/{contentId}` and `/updates` resource suffixes.
+Ordinary reads retain the corresponding local result shape and query options,
+except that `hostId` is path-owned. Unknown/repeated query fields and repeated
+path identities are rejected. Existing local routes are unchanged. There is no
+implicit all-host inventory, recursive discovery, execution relay or failover target.
+
+The entry authenticates its operator; the target checks both exact TLS member
+generations and matching current membership history before native access. Compatible
+differences reconcile for up to ten seconds. Network context conflicts return 409,
+working-capacity exhaustion returns 429, and unavailable/not-ready targets return
+503. These are additive resource errors; existing local validation remains intact.
+Every response is `no-store`. Browser cookies/control credentials never reach peers.
+
+Peer reads use bounded JSON or NDJSON framing. The entry publishes only a complete,
+validated result using the ordinary JSON operator envelope. Native history cursors
+remain opaque, target-scoped and independent of volatile event positions. Transport
+success does not establish native output completeness. Reads never adopt/resume a
+conversation, start a turn, create a business receipt or persist conversation content.
+Membership reconciliation may retain accepted management records as usual.
+
+Remote `/updates` has no query parameters and rejects `Last-Event-ID`. Each connection
+starts a fresh subscription and current snapshot. SSE `snapshot`/`update` carry
+`RemoteSessionUpdates` with `subscriptionId`, monotonic `eventId`, `networkId`,
+`hostId`, exact `membershipId`, target `runtimeId`, `historyId` and existing
+`SessionUpdates` in `payload`. The embedded instance identifies the target, never
+the entry. `streamError` carries a management error without a wrapper. History
+changes close streams with `SYNC_REQUIRED`; exclusion/exit denies further reads.
+Synchronize and subscribe again rather than replaying transport events. Cancellation,
+logout, maintenance and shutdown release delivery resources without stopping native work.
+
 Initial native history returns the latest 50 visible items in source order; limit is 1–500. Reasoning is excluded. Before/after cursors page saved items, while updateCursor tracks new or changed items. Commit a cursor only after merging its page, and drain hasMoreUpdates. An older-page read does not replace the update watermark. Event cursor is a separate nonnegative integer.
 
 Native item IDs and update ordinals establish ordering and merge identity. Terminal metadata establishes completion; a final-answer label alone does not. Volatile liveMessages bridge native persistence delays. Read failures remain explicit and do not advance the corresponding cursor.
@@ -105,10 +141,10 @@ For an optional local syntax/reference check without adding workspace dependenci
 npm exec --yes --package=@redocly/cli@2.63.0 --call="redocly lint docs/openapi.yaml --extends=minimal"
 ```
 
-The validator does not follow the custom `x-sse-events` payload references when finding unused components, so it may warn that `SessionUpdates` is unused. It is the schema for both snapshot and update data. Review those extension references and compare representative JSON and SSE payloads with the schemas; syntax validation alone does not establish implementation conformance.
+The validator does not follow the custom `x-sse-events` payload references when finding unused components, so it may warn that `RemoteSessionUpdates` is unused. The extension defines it as the remote snapshot/update schema; its payload uses `SessionUpdates`. Review those extension references and compare representative JSON and SSE payloads with the schemas; syntax validation alone does not establish implementation conformance.
 
 ## Private Network CLI control
 
-The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. No Network browser route is added. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
+The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. Membership control has no browser routes; target-scoped read resources are documented above. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
 
 See [CLI membership](cli.md#network-membership) for arguments and output. `getNetwork` adds retained join progress, Peer settings and listener status. Members expose exact admission identities and separate short-lived reachability observations. Dissemination reports known-peer current-history acknowledgements and retained per-recipient departure tasks, without a global completion claim. Maintenance rejects mutations while preserving diagnostic reads. These operations do not read or execute remote native sessions.

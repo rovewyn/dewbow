@@ -72,6 +72,7 @@ pub async fn doctor(config: &Config) -> anyhow::Result<Value> {
     Ok(result)
 }
 pub struct Service {
+    pub(crate) weak: std::sync::Weak<Self>,
     pub(crate) state: PathBuf,
     pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
     pub config: Config,
@@ -154,7 +155,8 @@ impl Service {
             return Err(cause.into());
         }
         let (changed, _) = broadcast::channel(32);
-        let service = Arc::new(Self {
+        let service = Arc::new_cyclic(|weak| Self {
+            weak: weak.clone(),
             state: state.to_path_buf(),
             maintenance,
             config,
@@ -189,7 +191,7 @@ impl Service {
         match crate::network::peer::PeerRuntime::start_in_service(
             service.store.network.clone(),
             service.maintenance.clone(),
-            Arc::downgrade(&service),
+            service.weak.clone(),
         )
         .await
         {
@@ -434,6 +436,22 @@ impl Service {
             }
             _ => self.operation(name, input).await,
         }
+    }
+    pub(crate) async fn updates(
+        &self,
+        session: &str,
+        cursor: u64,
+        native_cursor: Option<&str>,
+    ) -> anyhow::Result<Value> {
+        let mut input = json!({"cursor":cursor});
+        if let Some(cursor) = native_cursor {
+            input["updateCursor"] = json!(cursor);
+        }
+        let details = self.details(session).await?;
+        let history = self.history(session, &input).await?;
+        Ok(
+            json!({"contractVersion":"v1","instanceId":self.instance,"details":details,"history":history}),
+        )
     }
     pub(crate) fn state_lock(&self, key: &str) -> Arc<AsyncMutex<()>> {
         self.locks

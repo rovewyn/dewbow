@@ -28,7 +28,7 @@
     "release:check": "node scripts/package-release.mjs --check",
     "build": "npm run build --workspaces",
     "typecheck": "npm run build --workspace @dewbow/protocol && npm run build --workspace @dewbow/sdk && npm run build --workspace @dewbow/ui && npm run typecheck --workspaces",
-    "test": "npm run build --workspace @dewbow/protocol && npm run build --workspace @dewbow/ui && npm test --workspaces --if-present && node --test scripts/tests/*.test.mjs",
+    "test": "npm run build --workspace @dewbow/protocol && npm run build --workspace @dewbow/ui && npm test --workspaces --if-present && node --test --test-concurrency=1 scripts/tests/*.test.mjs",
     "demo": "npm run demo --workspace @dewbow/sdk",
     "demo:history": "npm run demo:history --workspace @dewbow/sdk --",
     "build:rust": "npm run build && cargo build --workspace --bins --examples",

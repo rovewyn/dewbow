@@ -4,6 +4,7 @@ use super::{
     session::{Session, Shared},
     tls, unavailable,
 };
+use axum::body::Body;
 use axum::http::{Method, Request, Response, Uri};
 use dewbow_protocol::network::{peer::*, *};
 use http_body_util::{BodyExt, Full, Limited};
@@ -100,13 +101,13 @@ impl PeerRuntime {
     pub(crate) async fn start_in_service(
         repo: Repository,
         maintenance: Arc<crate::maintenance::Maintenance>,
-        business: std::sync::Weak<crate::service::Service>,
+        service: std::sync::Weak<crate::service::Service>,
     ) -> anyhow::Result<Option<Self>> {
         Self::start_inner(
             repo,
             super::PeerCapacity::default(),
             Some(maintenance),
-            business,
+            service,
         )
         .await
     }
@@ -114,7 +115,7 @@ impl PeerRuntime {
         repo: Repository,
         capacity: super::PeerCapacity,
         maintenance: Option<Arc<crate::maintenance::Maintenance>>,
-        business: std::sync::Weak<crate::service::Service>,
+        service: std::sync::Weak<crate::service::Service>,
     ) -> anyhow::Result<Option<Self>> {
         let Some(address) = repo.peer_settings()?.listen_endpoint else {
             return Ok(None);
@@ -125,7 +126,7 @@ impl PeerRuntime {
         let identities = Arc::new(tls::server(repo.clone())?);
         let mut shared = Shared::with_capacity(capacity)?;
         shared.maintenance = maintenance;
-        shared.business = business;
+        shared.service = service;
         let shared = Arc::new(shared);
         *shared.conflicts.lock().unwrap() = repo.peer_conflicts()?;
         let retained_repo = repo.clone();
@@ -169,6 +170,9 @@ impl PeerRuntime {
     }
     pub fn local_addr(&self) -> SocketAddr {
         self.address
+    }
+    pub(super) fn business_shared(&self) -> Arc<Shared> {
+        self.shared.clone()
     }
     pub(crate) fn connector(&self) -> PeerConnector {
         PeerConnector {
@@ -284,7 +288,7 @@ async fn handle(
     session: Arc<Mutex<Session>>,
     shared: Arc<Shared>,
     request: Request<Incoming>,
-) -> std::result::Result<Response<Full<Bytes>>, Infallible> {
+) -> std::result::Result<Response<Body>, Infallible> {
     let result = async {
         if request.method() != Method::POST
             || request.uri().query().is_some()
@@ -310,8 +314,14 @@ async fn handle(
         .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?
         .to_bytes();
         let input: Value = decode(&bytes)?;
+        if matches!(
+            operation.as_str(),
+            "readOperation" | "subscribeSessionUpdates"
+        ) {
+            return super::business::handle(session, shared, &operation, input).await;
+        }
         let work = shared.begin_work()?;
-        if matches!(operation.as_str(), "executeOperation" | "getRequestReceipt") {
+        let value = if matches!(operation.as_str(), "executeOperation" | "getRequestReceipt") {
             let memory = shared
                 .memory
                 .clone()
@@ -324,31 +334,42 @@ async fn handle(
                 .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?;
             let identity = session.lock().unwrap().business_identity()?;
             let service = shared
-                .business
+                .service
                 .upgrade()
                 .ok_or_else(|| PeerError::new("NOT_READY"))?;
             // Dropping this HTTP future must not cancel target-owned admitted work.
-            return tokio::spawn(async move {
+            tokio::spawn(async move {
                 let _work = work;
                 let _memory = memory;
                 let _worker = worker;
                 service.peer_business(&operation, input, identity).await
             })
             .await
-            .map_err(unavailable)?;
+            .map_err(unavailable)??
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let _work = work;
+                session.lock().unwrap().dispatch(&operation, input)
+            })
+            .await
+            .map_err(unavailable)??
+        };
+        {
+            let bytes = super::framing::bounded_json(&json!({"result":value}), MAX_FRAME_BYTES)?;
+            Ok(Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .header("cache-control", "no-store")
+                .body(Body::from(bytes))
+                .unwrap())
         }
-        tokio::task::spawn_blocking(move || {
-            let _work = work;
-            session.lock().unwrap().dispatch(&operation, input)
-        })
-        .await
-        .map_err(unavailable)?
     }
     .await;
-    let (status, body) = match result {
-        Ok(value) => (200, json!({"result":value})),
-        Err(error) => (error.status(), json!({"error":error})),
+    let error = match result {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
     };
+    let (status, body) = (error.status(), json!({"error":error}));
     let mut bytes = serde_json::to_vec(&body).unwrap_or_default();
     let status = if bytes.len() > MAX_FRAME_BYTES {
         bytes = serde_json::to_vec(&json!({"error":PeerError::new("RESOURCE_LIMIT")})).unwrap();
@@ -360,7 +381,7 @@ async fn handle(
         .status(status)
         .header("content-type", "application/json")
         .header("cache-control", "no-store")
-        .body(Full::new(Bytes::from(bytes)))
+        .body(Body::from(bytes))
         .unwrap())
 }
 
@@ -441,15 +462,16 @@ impl PeerConnector {
 }
 
 pub struct PeerClient {
-    repo: Repository,
+    pub(super) business_context: Option<super::business::Authorization>,
+    pub(super) repo: Repository,
     binding: (uuid::Uuid, NetworkId, MembershipId),
     pub(super) shared: Arc<Shared>,
     pub(super) remote_key: PublicKey,
     proof_channel: bool,
     lifecycle_channel: bool,
-    sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+    pub(super) sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
     task: JoinHandle<()>,
-    authority: String,
+    pub(super) authority: String,
     pub(super) hello: HelloResult,
     _permit: Option<OwnedSemaphorePermit>,
 }
@@ -728,6 +750,7 @@ impl PeerClient {
             tokio::select! {_=stopped.changed()=>{},_=connection=>{}}
         });
         Ok(Self {
+            business_context: None,
             repo: repo.clone(),
             binding,
             lifecycle_channel,

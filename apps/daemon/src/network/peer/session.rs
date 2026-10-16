@@ -15,6 +15,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) struct Shared {
+    pub service: std::sync::Weak<crate::service::Service>,
     pub stopped: AtomicBool,
     pub stopping: tokio::sync::watch::Sender<bool>,
     work: AtomicUsize,
@@ -26,7 +27,6 @@ pub(super) struct Shared {
     pub memory: Arc<Semaphore>,
     pub proof_budget: Duration,
     pub maintenance: Option<Arc<crate::maintenance::Maintenance>>,
-    pub business: std::sync::Weak<crate::service::Service>,
     pub business_workers: Arc<Semaphore>,
     rates: Mutex<BTreeMap<PublicKey, (Instant, usize)>>,
     leases: Mutex<BTreeMap<(NetworkId, MembershipId, Nonce), Instant>>,
@@ -34,6 +34,7 @@ pub(super) struct Shared {
 impl Default for Shared {
     fn default() -> Self {
         Self {
+            service: std::sync::Weak::new(),
             stopping: tokio::sync::watch::channel(false).0,
             stopped: AtomicBool::new(false),
             work: AtomicUsize::new(0),
@@ -45,7 +46,6 @@ impl Default for Shared {
             memory: Arc::new(Semaphore::new(64 * 1024 * 1024)),
             proof_budget: Duration::from_secs(300),
             maintenance: None,
-            business: std::sync::Weak::new(),
             business_workers: Arc::new(Semaphore::new(32)),
             rates: Mutex::new(BTreeMap::new()),
             leases: Mutex::new(BTreeMap::new()),
@@ -237,6 +237,7 @@ struct Proof {
 }
 
 pub(super) struct Session {
+    pub business_context: Option<super::business::Authorization>,
     pub repo: Repository,
     pub shared: Arc<Shared>,
     pub peer_key: PublicKey,
@@ -271,6 +272,7 @@ impl Session {
         local_key: PublicKey,
     ) -> Self {
         Self {
+            business_context: None,
             repo,
             shared,
             peer_key,
@@ -343,7 +345,7 @@ impl Session {
         }
         Ok(selected)
     }
-    fn authorize(&self) -> Result<LocalSelection> {
+    pub(super) fn authorize(&self) -> Result<LocalSelection> {
         if self.provisional {
             return Err(PeerError::new("FORBIDDEN"));
         }

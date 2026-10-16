@@ -43,7 +43,7 @@ impl Service {
                 *peer = PeerRuntime::start_in_service(
                     repo.clone(),
                     self.maintenance.clone(),
-                    std::sync::Arc::downgrade(self),
+                    self.weak.clone(),
                 )
                 .await?;
             }

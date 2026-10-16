@@ -1,6 +1,6 @@
 # Dewbow daemon
 
-The Rust daemon combines the local management service and Codex runtime owner. It is compiled into the `dewbow` executable. The current version manages one local host through Web; remote enrollment, routing, MCP and external agent access are deferred.
+The Rust daemon combines the local management service and Codex runtime owner. It is compiled into the `dewbow` executable. Each daemon owns one local host and native runtime. Network enrollment uses the CLI; operator API reads, subscriptions and typed mutations connect directly to the selected member. Network Web integration, MCP and external agent access are deferred.
 
 ## Ownership and interfaces
 

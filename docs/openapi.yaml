@@ -15,7 +15,9 @@ info:
     so these byte limits also need application validation.
     Every management POST requires an operator cookie, the exact server Host,
     and an Origin equal to the server URL. GET requires the same cookie and Host;
-    a supplied Origin must match. This is not a remote or agent API.
+    a supplied Origin must match. Network resource reads delegate directly to the
+    selected authenticated peer. Browser credentials stay on this loopback listener.
+    Network context conflicts return 409, resource limits 429 and not-ready targets 503.
     Reads return HTTP 200. Delivered session/turn creation returns 201; accepted
     delivery returns 202; other receipts, including error/unknown, return 200.
     Mutation Location headers identify the retained operation receipt. None of
@@ -667,6 +669,274 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}:
+    get:
+      operationId: readRemoteHost
+      tags: [Discovery]
+      summary: List the configured local host
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+      responses:
+        '200':
+          description: Local host inventory.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [hosts]
+                    properties:
+                      hosts: {type: array, items: {$ref: '#/components/schemas/Host'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions:
+    get:
+      operationId: listRemoteSessions
+      tags: [Discovery]
+      summary: Discover native conversations and managed bindings without resuming them
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If supplied, must equal the server URL.
+      responses:
+        '200':
+          description: Inventory; inspect per-provider discovery errors even on HTTP 200.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result:
+                    type: object
+                    required: [sessions, discovery]
+                    properties:
+                      sessions: {type: array, items: {$ref: '#/components/schemas/Session'}}
+                      discovery: {type: array, items: {$ref: '#/components/schemas/Discovery'}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}:
+    get:
+      operationId: getRemoteSession
+      tags: [Sessions]
+      summary: Read current observations, managed operations and pending interactions
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - $ref: '#/components/parameters/SessionId'
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If supplied, must equal the server URL.
+      responses:
+        '200':
+          description: Conversation details; does not resume execution.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/SessionDetails'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/history:
+    get:
+      operationId: readRemoteSessionHistory
+      tags: [History]
+      summary: Read bounded native items and volatile management notifications
+      description: |
+        Choose at most one of beforeCursor, afterCursor and updateCursor.
+        Native cursors bind the conversation, Codex home and direction. A native
+        read failure is reported in result.historyError without advancing its
+        watermark. Event cursor is independent and cannot replay across daemon
+        instances. Reads do not write Dewbow management storage.
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - $ref: '#/components/parameters/SessionId'
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/EventCursor'}
+        - name: beforeCursor
+          in: query
+          schema: {$ref: '#/components/schemas/NativeCursor'}
+        - name: afterCursor
+          in: query
+          schema: {$ref: '#/components/schemas/NativeCursor'}
+        - name: updateCursor
+          in: query
+          schema: {$ref: '#/components/schemas/NativeCursor'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 500, default: 50}
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If supplied, must equal the server URL.
+      responses:
+        '200':
+          description: Bounded history, independent cursors and explicit read errors.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/SessionHistory'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/activities/{itemId}:
+    get:
+      operationId: getRemoteSessionActivity
+      tags: [History]
+      summary: Read an exact native activity and its private content references
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ItemId'
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If supplied, must equal the server URL.
+      responses:
+        '200':
+          description: Native activity metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/Activity'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/contents/{contentId}:
+    get:
+      operationId: readRemoteSessionContent
+      tags: [History]
+      summary: Read a bounded UTF-8 page from an opaque content reference
+      description: |
+        References bind the conversation and allowlisted native content selector.
+        They cannot select arbitrary paths. Cursors bind the content and byte
+        offset. Output retained by Codex may be truncated; inspect completeness.
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ContentId'
+        - name: contentCursor
+          in: query
+          schema: {$ref: '#/components/schemas/Text'}
+        - name: limitBytes
+          in: query
+          schema: {type: integer, minimum: 4, maximum: 262144, default: 65536}
+        - name: Origin
+          in: header
+          required: false
+          schema: {type: string}
+          description: If supplied, must equal the server URL.
+      responses:
+        '200':
+          description: Content page; bytes and cursors preserve UTF-8 boundaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/ContentPage'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/updates:
+    get:
+      operationId: subscribeRemoteSessionUpdates
+      tags: [Updates]
+      summary: Subscribe to current observations and bounded native history using SSE
+      description: |
+        Direct authenticated target subscription. Every connection starts a new
+        subscription and snapshot. Query parameters and Last-Event-ID are rejected.
+        Complete RemoteSessionUpdates events preserve target instance identity.
+        History changes close delivery; reconcile and subscribe again.
+      parameters:
+        - $ref: '#/components/parameters/NetworkId'
+        - $ref: '#/components/parameters/HostId'
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: |
+            snapshot and update data are RemoteSessionUpdates objects, without result
+            envelopes. streamError data is a ManagementError, without an error envelope.
+          content:
+            text/event-stream:
+              schema: {type: string}
+              examples:
+                expired:
+                  summary: An expired operator cookie terminates client consumption.
+                  value: |
+                    event: streamError
+                    data: {"code":"UNAUTHORIZED","message":"Web session expired.","retryable":false}
+
+          x-sse-events:
+            snapshot: {$ref: '#/components/schemas/RemoteSessionUpdates'}
+            update: {$ref: '#/components/schemas/RemoteSessionUpdates'}
+            streamError: {$ref: '#/components/schemas/ManagementError'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
   /api/v1/hosts/{hostId}/request-receipts/{requestId}:
     get:
       operationId: getRequestReceipt
@@ -704,6 +974,16 @@ components:
       name: dewbowOperator
       description: In-memory operator session created by the CLI-ticket login exchange.
   parameters:
+    NetworkId:
+      name: networkId
+      in: path
+      required: true
+      schema: {type: string, minLength: 43, maxLength: 43}
+    HostId:
+      name: hostId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     Origin:
       name: Origin
       in: header
@@ -819,6 +1099,19 @@ components:
             properties:
               result: {$ref: '#/components/schemas/Operation'}
   schemas:
+    RemoteSessionUpdates:
+      type: object
+      additionalProperties: false
+      required: [subscriptionId, eventId, networkId, hostId, membershipId, runtimeId, historyId, payload]
+      properties:
+        subscriptionId: {type: string, format: uuid}
+        eventId: {type: integer, minimum: 1, maximum: 9007199254740991}
+        networkId: {type: string}
+        hostId: {type: string, format: uuid}
+        membershipId: {type: string}
+        runtimeId: {type: string, format: uuid}
+        historyId: {type: string}
+        payload: {$ref: '#/components/schemas/SessionUpdates'}
     RequestReceiptResult:
       type: object
       additionalProperties: false
