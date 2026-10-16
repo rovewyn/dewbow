@@ -627,13 +627,20 @@ pub(crate) async fn connect_target(
                         continue;
                     }
                 };
-                match client.synchronize(repo, deadline).await {
-                    Ok(()) => {}
-                    Err(error) if error.code == "SYNC_REQUIRED" => {
-                        last = error;
-                        continue;
+                // Equal, fully verified snapshots need no manifest transfer. The
+                // business admission below still checks current authority on both
+                // ends; a change after hello requires reconciliation on retry.
+                if client.hello.access != Access::Business
+                    || client.hello.history.as_ref() != Some(selected.history().snapshot())
+                {
+                    match client.synchronize(repo, deadline).await {
+                        Ok(()) => {}
+                        Err(error) if error.code == "SYNC_REQUIRED" => {
+                            last = error;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
                     }
-                    Err(error) => return Err(error),
                 }
                 let selected = repo
                     .current_selection()

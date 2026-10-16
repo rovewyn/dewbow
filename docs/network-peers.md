@@ -79,7 +79,9 @@ frames discard incomplete values and never advance the reader's native cursor.
 
 The entry connects directly to an explicitly selected Network/host, reconciles
 compatible history within ten seconds and enforces current authority throughout
-delivery. Subscriptions bind the target's native runtime and close on history changes,
+delivery. An authenticated hello with an identical verified snapshot avoids a
+redundant manifest exchange; it does not replace current business authorization.
+Subscriptions bind the target's native runtime and close on history changes,
 removal, maintenance or shutdown. Execution and receipt-query handlers remain deferred.
 
 `node --test scripts/tests/network-reads.test.mjs` exercises three real local daemon
