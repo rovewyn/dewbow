@@ -57,7 +57,9 @@ impl KeyFiles {
             "Invalid local key ID"
         );
         dewbow_sdk::private::no_links(&self.directory)?;
-        Ok(self.directory.join(format!("{id}.pk8")))
+        let path = self.directory.join(format!("{id}.pk8"));
+        dewbow_sdk::private::no_links(&path)?;
+        Ok(path)
     }
 
     /// A returned file is not usable until its association commits in SQLite.
@@ -139,6 +141,7 @@ impl KeyFiles {
     pub fn delete(&self, id: &str, expected: PublicKey) -> anyhow::Result<()> {
         let path = self.path(id)?;
         let tomb = self.directory.join(format!(".{id}.deleted"));
+        dewbow_sdk::private::no_links(&tomb)?;
         if path.exists() {
             self.load_path(&path, expected)?;
             dewbow_sdk::private::publish_new(&path, &tomb)?;

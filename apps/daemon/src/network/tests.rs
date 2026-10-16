@@ -548,6 +548,18 @@ fn interrupted_hard_link_deletion_resumes_only_for_the_same_file() {
     fs::copy(&path, &tomb).unwrap();
     assert!(files.delete(&id, public).is_err());
     assert!(path.exists() && tomb.exists());
+    fs::remove_file(&tomb).unwrap();
+    let saved = path.with_extension("saved");
+    fs::rename(&path, &saved).unwrap();
+    std::os::unix::fs::symlink(path.with_extension("missing"), &path).unwrap();
+    assert!(
+        files.delete(&id, public).is_err(),
+        "A dangling link must not be treated as a deleted key"
+    );
+    assert!(saved.exists());
+    fs::remove_file(&path).unwrap();
+    fs::rename(&saved, &path).unwrap();
+    files.delete(&id, public).unwrap();
     remove(node);
 }
 

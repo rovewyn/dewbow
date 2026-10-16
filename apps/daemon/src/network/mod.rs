@@ -74,6 +74,7 @@ pub fn snapshot_keys(
         })? {
             let (id, public, status) = row?;
             let path = state.join("network-keys").join(format!("{id}.pk8"));
+            dewbow_sdk::private::no_links(&path)?;
             if status == "deletePending" && !path.exists() {
                 continue;
             }
