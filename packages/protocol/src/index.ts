@@ -102,6 +102,18 @@ export interface SessionHistory extends EventHistory, Omit<NativeHistory, "obser
 }
 export interface HistoryPosition { cursor?: number | undefined; updateCursor?: string | undefined }
 export interface SessionUpdates { contractVersion: "v1"; instanceId: string; details: SessionDetails; history: SessionHistory }
+export interface NetworkTarget { networkId: string; hostId: string }
+export interface BusinessContext {
+  protocolVersion: 1; networkId: string; callerMembershipId: string; targetMembershipId: string;
+  historyId: string; sourceHostId: string; targetHostId: string;
+}
+export type NetworkReadName = "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
+export interface ReadOperation extends BusinessContext { operation: NetworkReadName; input: Record<string, unknown> }
+export interface SubscribeSessionUpdates extends BusinessContext { sessionId: string }
+export interface RemoteSessionUpdates {
+  subscriptionId: string; eventId: number; networkId: string; hostId: string; membershipId: string;
+  runtimeId: string; historyId: string; payload: SessionUpdates;
+}
 export interface Turn {
   turnId: string; sessionId: string; requestId: string; codexTurnId: string | null;
   state: TurnState; createdAt: string; observedAt: string; error: ManagementErrorData | null;

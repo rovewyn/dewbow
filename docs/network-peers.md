@@ -2,7 +2,7 @@
 
 The daemon implements direct authenticated peer connections and membership reconciliation on a separate HTTPS listener. The [membership engine](network-membership-engine.md) remains the only authority validator; [Network storage](storage.md#network-storage-foundation) remains the durable source of accepted management records. There is no coordinator, privileged founder, replicated conversation store or execution relay.
 
-This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Web Network integration, remote native reads and remote execution remain deferred.
+This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Network reads and subscriptions use direct Peer adapters. Browser membership UI and remote execution remain deferred.
 
 ## Configuration and lifecycle
 
@@ -24,7 +24,7 @@ One `hello` binds each connection to one Network, identity and purpose. Unknown 
 
 When a retained pin is unavailable or no longer names the responder's current generation, the client explicitly reconnects in proof-only mode. It fetches complete signed responder admission ancestry without invitation secrets or business data, checks the original Network and host binding and validates compatible adoption. It then establishes a fresh member connection pinned to the proven generation key. Another host at the same endpoint cannot replace the original target. The certificate selected before a server handshake remains that connection's exact HTTP identity even if local membership changes during the handshake.
 
-Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation operations use pinned join channels with explicit issuer-local confirmation. Public `joinRecovery` returns only retained signed admission ancestry or an inconclusive result, never new authority. Departure operations use exact old-generation keys and verified recipient contexts, including inactive-recipient acknowledgements and locally constructed rebases. Business operations require ordinary member authority and currently return `NOT_READY`.
+Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation operations use pinned join channels with explicit issuer-local confirmation. Public `joinRecovery` returns only retained signed admission ancestry or an inconclusive result, never new authority. Departure operations use exact old-generation keys and verified recipient contexts, including inactive-recipient acknowledgements and locally constructed rebases. Native reads and subscriptions require ordinary member authority and a matching current history. Execution and receipt-query handlers remain deferred and return `NOT_READY`.
 
 ## Reconciliation and addresses
 
@@ -42,7 +42,7 @@ Snapshot and manifest tokens expire after 60 seconds without successful activity
 
 Peer control messages are bounded JSON POST operations under `/network/v1`. Rust request and result types live in the protocol crate. Duplicate JSON properties, unsupported forms and oversized inputs fail before dispatch. The [protocol](network-protocol.md#addresses-retries-and-resource-bounds) defines interoperable frame, page, nesting and record bounds.
 
-The reusable framing module supplies bounded JSON serialization, NDJSON/SSE encoding and incremental receivers. A start/chunk/end transfer preserves one complete typed JSON value, including native items larger than a control frame. Receivers check transfer identity, contiguous indexes, base64url encoding, byte budget, length, digest and complete JSON before publishing. EOF, cancellation or `streamError` discards the incomplete logical value. No frame is spooled to disk. Actual native read, execution and subscription handlers remain deferred.
+The reusable framing module supplies bounded JSON serialization, NDJSON/SSE encoding and incremental receivers. A start/chunk/end transfer preserves one complete typed JSON value, including native items larger than a control frame. Receivers check transfer identity, contiguous indexes, base64url encoding, byte budget, length, digest and complete JSON before publishing. EOF, cancellation or `streamError` discards the incomplete logical value. No frame is spooled to disk. Native read and subscription handlers share these bounded frames. Execution handlers remain deferred.
 
 Focused regression checks run with:
 
@@ -51,6 +51,34 @@ cargo test --locked -p dewbow-daemon --lib network::peer
 ```
 
 These tests use synthetic management state and real loopback TLS/HTTP connections. They cover founder independence, admission proof bootstrap, current-authority checks, key substitution, missing client certificates, automatic reconciliation/restart, conflict quarantine, failed commits, duplicate retries, immutable snapshots with renewable expiry, discarded-child recovery, framing and socket release. They do not constitute acceptance on separate physical machines or remote native execution.
+
+## Native read adapters
+
+`readOperation` implements exactly the six protocol read operations. A weak service
+reference supplies native discovery/history/content reads without forwarding local
+HTTP credentials or retaining a second content store. Business context is checked
+under the same database serialization boundary as membership adoption, then the lock
+is released before native work. The context and authority are checked again before
+result publication and throughout streamed delivery.
+
+Results through 1 MiB use ordinary JSON. Larger results transfer the same envelope
+through bounded NDJSON frames. `subscribeSessionUpdates` transfers complete snapshot
+and update envelopes over framed SSE. The operator entry validates and reassembles
+each logical value in memory before publishing it. Transfers retain only bounded
+volatile buffers, share Peer working reservations and use HTTP backpressure. Capacity
+pressure can reject a transfer below the 64 MiB logical ceiling. Disconnect or invalid
+frames discard incomplete values and never advance the reader's native cursor.
+
+The entry connects directly to an explicitly selected Network/host, reconciles
+compatible history within ten seconds and enforces current authority throughout
+delivery. Subscriptions bind the target's native runtime and close on history changes,
+removal, maintenance or shutdown. Execution and receipt-query handlers remain deferred.
+
+`node --test scripts/tests/network-reads.test.mjs` exercises three real local daemon
+processes with synthetic native storage: independent entries, unmanaged sessions,
+large results, history/output/diff pagination, subscription reconnects, founder exit,
+target restart and removal. These checks are distinct from physical-machine acceptance
+in issue #44 and do not establish remote execution support.
 
 ## Lifecycle scheduling and acceptance
 

@@ -4,6 +4,7 @@ pub mod maintenance;
 pub mod network;
 mod network_control;
 mod observation;
+mod remote;
 mod server;
 mod service;
 mod shutdown;

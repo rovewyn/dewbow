@@ -36,8 +36,12 @@ impl Service {
                     previous.shutdown().await;
                 }
                 repo.configure_peer(&settings)?;
-                *peer =
-                    PeerRuntime::start_in_service(repo.clone(), self.maintenance.clone()).await?;
+                *peer = PeerRuntime::start_in_service(
+                    repo.clone(),
+                    self.maintenance.clone(),
+                    self.weak.clone(),
+                )
+                .await?;
             }
         }
         let mut result = if name == "getNetworkJoin" {

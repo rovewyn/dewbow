@@ -10,7 +10,7 @@ Web retains its existing React/TypeScript UI and `v1` camelCase API/SSE contract
 
 Standalone release installers and an explicit `dewbow upgrade` command support local installation and upgrades. Upgrade checks and downloads use GitHub Releases; automatic background updates and package-registry publication are deferred.
 
-Network creation, confirmed joining, membership synchronization and removal/self-exit are available through the CLI over reachable LAN/VPN connections. Cross-machine native-session routing, relay and MCP/external agent management remain deferred. Team channels, DingTalk and member workspace profiles are not supported.
+Network creation, confirmed joining, membership synchronization and removal/self-exit are available through the CLI over reachable LAN/VPN connections. Direct cross-machine native-session reads and subscriptions are available through the operator API. Remote execution, relay and MCP/external agent management remain deferred. Team channels, DingTalk and member workspace profiles are not supported.
 
 The TypeScript Control Plane and Host Daemon have been removed. Their private local state is preserved and is not migrated. The retained SDK, UI and protocol packages continue to have independent uses.
 

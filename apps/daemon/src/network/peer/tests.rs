@@ -180,6 +180,97 @@ fn common() -> (Node, Node, Node) {
     b.catch_up(&a);
     (a, b, c)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn business_reads_bind_current_history_and_both_tls_generations() {
+    let (a, b, c) = common();
+    let server = c.listen().await;
+    let mut client = PeerClient::connect(b.repo(), &endpoint(&server), c.member(), true)
+        .await
+        .unwrap();
+    let context = BusinessContext {
+        protocol_version: 1,
+        network_id: c.selected().history().network_id(),
+        caller_membership_id: b.member(),
+        target_membership_id: c.member(),
+        history_id: c.selected().history().snapshot().history_id,
+        source_host_id: b.selected().history().member(b.member()).unwrap().host_id,
+        target_host_id: c.selected().history().member(c.member()).unwrap().host_id,
+    };
+    let request = ReadOperation {
+        context: context.clone(),
+        operation: ReadName::ListHosts,
+        input: json!({}),
+    };
+    // Standalone transport has no native service, but authorization is still enforced first.
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &request)
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_READY"
+    );
+    let mut forged = request.clone();
+    forged.context.caller_membership_id = a.member();
+    forged.context.source_host_id = a.selected().history().member(a.member()).unwrap().host_id;
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &forged)
+            .await
+            .unwrap_err()
+            .code,
+        "FORBIDDEN"
+    );
+    forged = request.clone();
+    forged.context.target_host_id = forged.context.source_host_id;
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &forged)
+            .await
+            .unwrap_err()
+            .code,
+        "FORBIDDEN"
+    );
+    let mut unknown = serde_json::to_value(&request).unwrap();
+    unknown["operation"] = json!("sendMessage");
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &unknown)
+            .await
+            .unwrap_err()
+            .code,
+        "INVALID_INPUT"
+    );
+    unknown = serde_json::to_value(&request).unwrap();
+    unknown["extra"] = json!(true);
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &unknown)
+            .await
+            .unwrap_err()
+            .code,
+        "INVALID_INPUT"
+    );
+    c.change(Change::Remove(a.member()));
+    assert_eq!(
+        client
+            .request::<Value>("readOperation", &request)
+            .await
+            .unwrap_err()
+            .code,
+        "SYNC_REQUIRED"
+    );
+    c.change(Change::Remove(b.member()));
+    assert!(
+        client
+            .request::<Value>("readOperation", &request)
+            .await
+            .is_err()
+    );
+    drop(client);
+    server.shutdown().await;
+}
 fn endpoint(runtime: &PeerRuntime) -> String {
     format!("https://{}", runtime.local_addr())
 }

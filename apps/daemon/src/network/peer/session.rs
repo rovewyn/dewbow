@@ -15,6 +15,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 pub(super) struct Shared {
+    pub service: std::sync::Weak<crate::service::Service>,
     pub stopped: AtomicBool,
     pub stopping: tokio::sync::watch::Sender<bool>,
     work: AtomicUsize,
@@ -32,6 +33,7 @@ pub(super) struct Shared {
 impl Default for Shared {
     fn default() -> Self {
         Self {
+            service: std::sync::Weak::new(),
             stopping: tokio::sync::watch::channel(false).0,
             stopped: AtomicBool::new(false),
             work: AtomicUsize::new(0),
@@ -326,7 +328,7 @@ impl Session {
         }
         Ok(selected)
     }
-    fn authorize(&self) -> Result<LocalSelection> {
+    pub(super) fn authorize(&self) -> Result<LocalSelection> {
         if self.provisional {
             return Err(PeerError::new("FORBIDDEN"));
         }

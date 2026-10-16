@@ -124,6 +124,72 @@ pub enum Access {
     Business,
 }
 
+/// Authenticated routing context, checked against both TLS identities and live history.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessContext {
+    pub protocol_version: u64,
+    pub network_id: NetworkId,
+    pub caller_membership_id: MembershipId,
+    pub target_membership_id: MembershipId,
+    pub history_id: HistoryId,
+    pub source_host_id: HostId,
+    pub target_host_id: HostId,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadName {
+    ListHosts,
+    ListSessions,
+    GetSession,
+    ReadSessionHistory,
+    GetSessionActivity,
+    ReadSessionContent,
+}
+impl ReadName {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ListHosts => "listHosts",
+            Self::ListSessions => "listSessions",
+            Self::GetSession => "getSession",
+            Self::ReadSessionHistory => "readSessionHistory",
+            Self::GetSessionActivity => "getSessionActivity",
+            Self::ReadSessionContent => "readSessionContent",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadOperation {
+    #[serde(flatten)]
+    pub context: BusinessContext,
+    pub operation: ReadName,
+    pub input: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscribeSessionUpdates {
+    #[serde(flatten)]
+    pub context: BusinessContext,
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteSessionUpdates {
+    pub subscription_id: String,
+    pub event_id: u64,
+    pub network_id: NetworkId,
+    pub host_id: HostId,
+    pub membership_id: MembershipId,
+    pub runtime_id: String,
+    pub history_id: HistoryId,
+    pub payload: Value,
+}
+
 macro_rules! input {
     ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
         #[derive(Clone, Debug, Serialize, Deserialize)]

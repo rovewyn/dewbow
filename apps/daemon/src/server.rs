@@ -37,6 +37,29 @@ const READ_ROUTES: &[(&str, &str)] = &[
     ),
     ("/api/v1/operations/{commandId}", "getOperation"),
 ];
+const REMOTE_READ_ROUTES: &[(&str, &str)] = &[
+    ("/api/v1/networks/{networkId}/hosts/{hostId}", "listHosts"),
+    (
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions",
+        "listSessions",
+    ),
+    (
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}",
+        "getSession",
+    ),
+    (
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/history",
+        "readSessionHistory",
+    ),
+    (
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/activities/{itemId}",
+        "getSessionActivity",
+    ),
+    (
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/contents/{contentId}",
+        "readSessionContent",
+    ),
+];
 const MUTATION_ROUTES: &[(&str, &str)] = &[
     ("/api/v1/sessions", "createSession"),
     ("/api/v1/sessions/{sessionId}/connections", "connectSession"),
@@ -80,13 +103,13 @@ fn error_response(cause: anyhow::Error, resource: bool) -> Response {
         "FORBIDDEN" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
         "REQUEST_CONFLICT" | "SESSION_BUSY" | "SESSION_IN_USE" | "STALE_TURN"
-        | "STALE_INTERACTION" | "RECOVERY_REQUIRED"
+        | "STALE_INTERACTION" | "RECOVERY_REQUIRED" | "SYNC_REQUIRED" | "HISTORY_CONFLICT"
             if resource =>
         {
             StatusCode::CONFLICT
         }
-        "UNAVAILABLE" if resource => StatusCode::SERVICE_UNAVAILABLE,
-        "LIMIT_EXCEEDED" if resource => StatusCode::TOO_MANY_REQUESTS,
+        "UNAVAILABLE" | "NOT_READY" if resource => StatusCode::SERVICE_UNAVAILABLE,
+        "LIMIT_EXCEEDED" | "RESOURCE_LIMIT" if resource => StatusCode::TOO_MANY_REQUESTS,
         "DELIVERY_UNCERTAIN" | "EXECUTION_FAILED" if resource => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
@@ -207,9 +230,18 @@ async fn read_resource(
             input.insert(key, value);
         }
         let input = resource_input(params, Value::Object(input))?;
-        service
-            .api(route_operation(path.as_str(), READ_ROUTES), input)
+        if path.as_str().starts_with("/api/v1/networks/") {
+            crate::remote::read(
+                &service,
+                route_operation(path.as_str(), REMOTE_READ_ROUTES),
+                input,
+            )
             .await
+        } else {
+            service
+                .api(route_operation(path.as_str(), READ_ROUTES), input)
+                .await
+        }
     }
     .await;
     match result {
@@ -484,18 +516,13 @@ async fn subscribe(
                     ),
                 ));
             }
-            let mut query = json!({"cursor":if first {0} else {cursor}});
-            if let Some(cursor) = &native_cursor {
-                query["updateCursor"] = json!(cursor);
-            }
-            let result = async {
-                let details = service.details(&sid).await?;
-                let history = service.history(&sid, &query).await?;
-                Ok::<_, anyhow::Error>(
-                    json!({"contractVersion":"v1","instanceId":service.instance,"details":details,"history":history}),
+            let result = service
+                .updates(
+                    &sid,
+                    if first { 0 } else { cursor },
+                    native_cursor.as_deref(),
                 )
-            }
-            .await;
+                .await;
             let (event, cursor, native_cursor) = match result {
                 Ok(value) => {
                     let cursor = value["history"]["nextCursor"].as_u64().unwrap_or(cursor);
@@ -567,6 +594,73 @@ async fn assets(State(service): State<Arc<Service>>, headers: HeaderMap, uri: Ur
     };
     Response::builder().header(header::CONTENT_TYPE,mime).header(header::CACHE_CONTROL,if name=="index.html"{"no-store"}else{"public, max-age=31536000, immutable"}).header("X-Content-Type-Options","nosniff").header("Referrer-Policy","no-referrer").header("Content-Security-Policy","default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'").body(Body::from(*bytes)).unwrap()
 }
+
+async fn subscribe_remote(
+    State(service): State<Arc<Service>>,
+    RoutePath(params): RoutePath<HashMap<String, String>>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if !operator(&service, &headers) {
+        return resource_failure(error("UNAUTHORIZED", "Authentication required.").into());
+    }
+    if query.is_some() || headers.contains_key("last-event-id") {
+        return resource_failure(
+            error(
+                "INVALID_INPUT",
+                "Remote subscriptions start with a fresh snapshot.",
+            )
+            .into(),
+        );
+    }
+    let input = json!(params);
+    let remote = match crate::remote::subscribe(&service, input).await {
+        Ok(remote) => remote,
+        Err(cause) => return resource_failure(cause),
+    };
+    let stream = futures::stream::unfold(
+        (service, headers, remote, false),
+        |(service, headers, mut remote, failed)| async move {
+            if failed {
+                return None;
+            }
+            let result = loop {
+                if !operator(&service, &headers) {
+                    break Err(error("UNAUTHORIZED", "Web session expired."));
+                }
+                if service.stopped.load(Ordering::Acquire) {
+                    return None;
+                }
+                match tokio::time::timeout(Duration::from_secs(1), remote.next()).await {
+                    Err(_) => continue,
+                    Ok(result) => {
+                        break result.map_err(|cause| dewbow_protocol::ManagementError {
+                            code: cause.code,
+                            message: cause.message,
+                            retryable: cause.retryable,
+                        });
+                    }
+                }
+            };
+            let failed = result.is_err();
+            let event = match result {
+                Ok((kind, value)) => Event::default().event(kind).data(value.to_string()),
+                Err(cause) => Event::default()
+                    .event("streamError")
+                    .data(json!(cause).to_string()),
+            };
+            Some((
+                Ok::<_, Infallible>(event),
+                (service, headers, remote, failed),
+            ))
+        },
+    );
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Sse::new(stream).keep_alive(KeepAlive::default()),
+    )
+        .into_response()
+}
 pub async fn run(state: &Path) -> anyhow::Result<()> {
     config::secure_directory(state)?;
     let config = config::load(state)?;
@@ -594,7 +688,14 @@ pub async fn run(state: &Path) -> anyhow::Result<()> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/api/v1/sessions/{sessionId}/updates", get(subscribe));
+    router = router.route(
+        "/api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/updates",
+        get(subscribe_remote),
+    );
     for &(path, _) in READ_ROUTES {
+        router = router.route(path, get(read_resource));
+    }
+    for &(path, _) in REMOTE_READ_ROUTES {
         router = router.route(path, get(read_resource));
     }
     for &(path, _) in MUTATION_ROUTES {

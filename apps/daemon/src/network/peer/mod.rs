@@ -1,11 +1,13 @@
-//! Direct authenticated peer transport. No native business operations are registered.
+//! Direct authenticated peer transport and read-only native access.
 mod bootstrap;
+mod business;
 pub mod framing;
 mod lifecycle;
 mod reconcile;
 mod session;
 mod tls;
 mod transport;
+pub(crate) use business::{RemoteStream, connect_target};
 use dewbow_protocol::network::peer::PeerError;
 pub use session::PeerCapacity;
 pub use transport::{PeerClient, PeerRuntime};
