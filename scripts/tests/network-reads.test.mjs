@@ -107,11 +107,20 @@ function records(node) {
   const db = new DatabaseSync(join(node.state, 'daemon.sqlite'), { readOnly: true });
   const value = db.prepare('SELECT * FROM records ORDER BY kind,id').all(); db.close(); return value;
 }
-async function request(node, cookie, path, status = 200) {
-  const response = await fetch(`${node.origin}${path}`, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(20000) });
-  const body = await response.json(); assert.equal(response.status, status, JSON.stringify(body));
-  assert.equal(response.headers.get('cache-control'), 'no-store');
-  return body.result ?? body.error;
+async function request(node, cookie, path, status = 200, waitReady = false) {
+  const deadline = Date.now() + 45000;
+  for (;;) {
+    const response = await fetch(`${node.origin}${path}`, { headers: { Cookie: cookie }, signal: AbortSignal.timeout(20000) });
+    const body = await response.json();
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    if (waitReady && response.status === 503 && ['NOT_READY', 'UNAVAILABLE'].includes(body.error?.code)) {
+      assert.equal(body.error.retryable, true);
+      assert.ok(Date.now() < deadline, 'remote readiness stayed unavailable');
+      await delay(200); continue;
+    }
+    assert.equal(response.status, status, JSON.stringify(body));
+    return body.result ?? body.error;
+  }
 }
 async function stream(node, cookie, path) {
   const controller = new AbortController();
@@ -242,9 +251,9 @@ test('direct Network reads preserve native data, independent targets, subscripti
     assert.equal(contextChanged.kind, 'streamError'); assert.equal(contextChanged.value.code, 'SYNC_REQUIRED');
     await stop(a);
     await start(b);
-    assert.equal((await request(c, cc, path(b))).session.name, 'Synthetic B', 'an offline target catches up without the founder');
+    assert.equal((await request(c, cc, path(b), 200, true)).session.name, 'Synthetic B', 'an offline target catches up without the founder');
     await stop(c); await start(c); cc = await operator(c);
-    assert.equal((await request(c, cc, path(b))).session.name, 'Synthetic B', 'entry restart reconstructs direct reads');
+    assert.equal((await request(c, cc, path(b), 200, true)).session.name, 'Synthetic B', 'entry restart reconstructs direct reads');
     const restarted = await stream(c, cc, `${path(b)}/updates`); streams.push(restarted);
     const afterRestart = await restarted.next();
     assert.equal(afterRestart.kind, 'snapshot'); assert.notEqual(afterRestart.value.runtimeId, first.value.runtimeId);
