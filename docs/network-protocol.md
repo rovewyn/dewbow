@@ -344,7 +344,9 @@ Atomically commit accepted records with their frontier/intent results, admission
 
 This model extends the current management allowlist and needs an explicit ordered format/configuration migration under [storage compatibility](storage.md) before implementation writes it. Select the next format after auditing supported published tags, preserving local IDs, frozen settings, receipts/fingerprints and active/uncertain native associations, with a recoverable backup and interruption tests. Do not reset existing state, reinterpret released local request IDs or use a second live database. This specification allocates no storage/product version and changes no released contract by itself.
 
-Library selection, SQL layout/indexes, exact CLI flags and UI presentation belong to the implementation PRs; they must implement these semantics rather than reopen the protocol decisions. Compaction, in-place rotation, owner-key recovery, automatic LAN discovery, execution relaying, protocol upgrade governance and automatic fork merging are outside v1. Unknown versions/operations fail closed without selecting a branch or erasing state.
+The [Network storage, keys and crash recovery design](network-storage-design.md) refines this boundary with proposed tables, local key encoding, file/database ordering and recovery outcomes for issue #37. It remains documentation only and allocates no storage version.
+
+Library selection, final executable DDL/indexes, exact CLI flags and UI presentation belong to the implementation PRs; they must implement these semantics rather than reopen the protocol decisions. Compaction, in-place rotation, owner-key recovery, automatic LAN discovery, execution relaying, protocol upgrade governance and automatic fork merging are outside v1. Unknown versions/operations fail closed without selecting a branch or erasing state.
 
 ## Conformance scenarios
 

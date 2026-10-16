@@ -40,4 +40,7 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 ## Design proposals
 
 - [Decentralized Network design](network-design.md) defines membership, automatic merges, forks and offline return behavior.
-- [Network protocol v1](network-protocol.md) specifies signed records, validation, peer exchange, departure delivery and request admission. These documents remain the design baseline; the standalone membership engine is implemented, while Network lifecycle and peer integration remain deferred.
+- [Network protocol v1](network-protocol.md) specifies signed records, validation, peer exchange, departure delivery and request admission.
+- [Network storage, keys and crash recovery](network-storage-design.md) proposes local tables, protected keys, transaction boundaries and interrupted-state recovery for issue #37.
+
+These documents remain the design baseline; the standalone membership engine is implemented, while Network lifecycle, storage and peer integration remain deferred.
