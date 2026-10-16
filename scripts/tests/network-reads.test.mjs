@@ -252,8 +252,10 @@ test('direct Network reads preserve native data, independent targets, subscripti
     network(b, 'remove', network(c, 'status').membershipId);
     const terminal = await terminalEvent(restarted);
     assert.ok(terminal === null || terminal.kind === 'streamError');
-    await until(() => control(c, 'getNetwork'), value => value.localStatus === 'removed', 'reader removed');
+    // A denied reconnect fetches exclusion proof. Do not race the background
+    // 30-second reconciliation interval (which also has protocol jitter).
     assert.equal((await request(c, cc, path(b), 403)).code, 'FORBIDDEN');
+    await until(() => control(c, 'getNetwork'), value => value.localStatus === 'removed', 'reader removed');
     assert.equal((await request(b, await operator(b), `/api/v1/sessions/${sessionId}`)).session.name, 'Synthetic B', 'local reads survive Network removal');
   } finally {
     streams.forEach(s => s.close());
