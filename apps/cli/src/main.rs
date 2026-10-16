@@ -1,4 +1,5 @@
 mod background;
+mod network;
 mod replacement;
 mod transaction;
 mod updater;
@@ -31,6 +32,8 @@ enum Commands {
         port: Option<u16>,
     },
     Doctor,
+    /// Manage decentralized Network membership through the selected local daemon.
+    Network(network::Options),
     Daemon {
         #[command(subcommand)]
         command: Daemon,
@@ -86,8 +89,11 @@ async fn control_timeout(
     let value: Value = response.json().await?;
     anyhow::ensure!(
         success && value.get("result").is_some(),
-        "Local control {name} failed: {}",
-        value["error"]["code"].as_str().unwrap_or("UNAVAILABLE")
+        "Local control {name} failed: {}. {}",
+        value["error"]["code"].as_str().unwrap_or("UNAVAILABLE"),
+        value["error"]["message"]
+            .as_str()
+            .unwrap_or("No result was confirmed")
     );
     Ok(value["result"].clone())
 }
@@ -218,6 +224,7 @@ async fn execute() -> anyhow::Result<()> {
     }
     let config = config::load(&state)?;
     match cli.command {
+        Commands::Network(options) => network::run(&config, options).await?,
         Commands::Doctor => {
             println!("{}", dewbow_daemon::doctor(&config).await?);
         }

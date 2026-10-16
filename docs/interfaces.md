@@ -98,3 +98,9 @@ npm exec --yes --package=@redocly/cli@2.63.0 --call="redocly lint docs/openapi.y
 ```
 
 The validator does not follow the custom `x-sse-events` payload references when finding unused components, so it may warn that `SessionUpdates` is unused. It is the schema for both snapshot and update data. Review those extension references and compare representative JSON and SSE payloads with the schemas; syntax validation alone does not establish implementation conformance.
+
+## Private Network CLI control
+
+The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. No Network browser route is added. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
+
+See [CLI membership](cli.md#network-membership) for arguments and output. `getNetwork` adds retained join progress, Peer settings and listener status. Members expose exact admission identities and separate short-lived reachability observations. Dissemination reports known-peer current-history acknowledgements and retained per-recipient departure tasks, without a global completion claim. Maintenance rejects mutations while preserving diagnostic reads. These operations do not read or execute remote native sessions.

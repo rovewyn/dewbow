@@ -284,6 +284,51 @@ async fn internal(
         return failure(error("UNAUTHORIZED", "Local control authentication failed.").into());
     }
     let result = match name.as_str() {
+        "createNetwork"
+        | "createInvitation"
+        | "joinNetwork"
+        | "getNetworkJoin"
+        | "listNetworkJoins"
+        | "confirmNetworkJoin"
+        | "getNetwork"
+        | "listNetworkMembers"
+        | "removeNetworkMember"
+        | "leaveNetwork"
+        | "setNetworkPeerAddress" => {
+            match service
+                .network_control(&name, &input.map(|v| v.0).unwrap_or(Value::Null))
+                .await
+            {
+                Ok(result) => result,
+                Err(cause) => {
+                    let text = cause.to_string();
+                    let code = [
+                        "INVALID_INPUT",
+                        "REQUEST_CONFLICT",
+                        "SYNC_REQUIRED",
+                        "FORBIDDEN",
+                        "UNAVAILABLE",
+                    ]
+                    .into_iter()
+                    .find(|c| text.starts_with(c))
+                    .unwrap_or("UNAVAILABLE");
+                    let message = match code {
+                        "INVALID_INPUT" => {
+                            "Invalid Network input or stale confirmation; check endpoints, attempt and public key."
+                        }
+                        "REQUEST_CONFLICT" => "Request ID was already used with different input.",
+                        "FORBIDDEN" => "The selected membership cannot perform this operation.",
+                        "SYNC_REQUIRED" => {
+                            "Membership context changed; inspect status and retry the original request."
+                        }
+                        _ => {
+                            "Network operation unavailable; inspect membership status and Peer listener settings."
+                        }
+                    };
+                    return failure(error(code, message).into());
+                }
+            }
+        }
         "status" => {
             json!({"instanceId":service.instance,"pid":std::process::id(),"runtimePid":service.runtime.pid,"version":env!("CARGO_PKG_VERSION"),"upgradeProtocol":"v1","maintenance":service.maintenance.active(),"status":if service.stopped.load(Ordering::Relaxed){"stopping"}else{"ready"},"url":format!("http://127.0.0.1:{}",service.config.port)})
         }

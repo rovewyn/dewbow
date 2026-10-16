@@ -259,3 +259,33 @@ impl From<super::Error> for PeerError {
         })
     }
 }
+
+/// Restricted enrollment and departure surfaces; these values convey no authority.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InvitationRequest {
+    pub invitation: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RedeemInvitation {
+    pub invitation: String,
+    pub join_proof: JoinProof,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetJoinResult {
+    pub join_proof: JoinProof,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeliverDeparture {
+    pub departure_record_id: RecordId,
+    pub record: Value,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetDepartureStatus {
+    pub departure_record_id: RecordId,
+    pub membership_id: MembershipId,
+}

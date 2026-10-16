@@ -81,7 +81,7 @@ pub struct Service {
     pub changed: broadcast::Sender<()>,
     pub shutting_down: tokio::sync::Notify,
     pub stopped: std::sync::atomic::AtomicBool,
-    peer: tokio::sync::Mutex<Option<crate::network::peer::PeerRuntime>>,
+    pub(crate) peer: tokio::sync::Mutex<Option<crate::network::peer::PeerRuntime>>,
     pub tickets: Mutex<HashMap<String, Instant>>,
     pub cookies: Mutex<HashMap<String, Instant>>,
     inventory: AsyncMutex<Option<(Instant, Value)>>,
