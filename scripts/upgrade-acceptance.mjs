@@ -7,6 +7,7 @@ import { dirname, join, resolve, toNamespacedPath } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { packageRelease } from './package-release.mjs';
 import { synchronizeVersions } from './sync-version.mjs';
+import { apiRequest } from '../apps/web/src/apiRoutes.ts';
 
 // This is a compatible current-format fixture, never a published source release.
 // Keep an immutable predecessor implementation across candidate changes. Update
@@ -155,9 +156,12 @@ try {
       const login = await fetch(`${origin}/auth/login`, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
       assert.equal(login.status, 200);
       const cookie = login.headers.get('set-cookie').split(';')[0];
+      // Only the immutable synthetic predecessor uses the removed RPC transport.
+      const legacy = (await control('status')).version === baselineVersion;
       return async (name, input) => {
-        const response = await fetch(`${origin}/api/${name}`, { method: 'POST', signal: AbortSignal.timeout(10000),
-          headers: { Connection: 'close', Origin: origin, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+        const route = legacy ? { path: `/api/${name}`, method: 'POST', input } : apiRequest(name, input);
+        const response = await fetch(`${origin}${route.path}`, { method: route.method, signal: AbortSignal.timeout(10000),
+          headers: { Connection: 'close', Origin: origin, Cookie: cookie, ...(route.input ? { 'Content-Type': 'application/json' } : {}) }, ...(route.input ? { body: JSON.stringify(route.input) } : {}) });
         const data = await response.json();
         if (data.error) throw new Error(data.error.message);
         return data.result;

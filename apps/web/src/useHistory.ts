@@ -3,6 +3,7 @@ import type { SessionDetails, SessionUpdates } from "@dewbow/protocol";
 import { emptyHistory, mergeHistory } from "@dewbow/ui/chat/model";
 import { subscribeUpdates } from "@dewbow/ui/chat/updates";
 import { api, ApiError } from "./api";
+import { sessionUpdatesPath } from "./apiRoutes";
 import type { History } from "./api";
 
 export function useHistory(sessionId: string) {
@@ -15,7 +16,7 @@ export function useHistory(sessionId: string) {
     const abort = new AbortController(); controller.current = abort; saved.current = emptyHistory(); setHistory(saved.current);
     setDetails(null); setLoading(true); setError(null); setAuthExpired(false); setLoadingOlder(false); olderRead.current = false;
     if (!sessionId) return () => abort.abort();
-    const dispose = subscribeUpdates<SessionUpdates>(`/api/subscribeSessionUpdates?${new URLSearchParams({ sessionId })}`, () => ({ cursor: saved.current.eventCursor, updateCursor: saved.current.updateCursor }), value => {
+    const dispose = subscribeUpdates<SessionUpdates>(sessionUpdatesPath(sessionId), () => ({ cursor: saved.current.eventCursor, updateCursor: saved.current.updateCursor }), value => {
       if (abort.signal.aborted || value.details.session.sessionId !== sessionId) return;
       if (instance.current !== value.instanceId) {
         saved.current = { ...saved.current, events: [], eventCursor: 0, live: Object.create(null) };

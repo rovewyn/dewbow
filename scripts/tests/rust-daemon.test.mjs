@@ -6,6 +6,7 @@ import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { apiRequest, sessionUpdatesPath } from '../../apps/web/src/apiRoutes.ts';
 
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const binary = resolve(`target/debug/dewbow${suffix}`);
@@ -33,7 +34,7 @@ async function operator(env) {
   const response = await fetch(`${env.origin}/auth/login`, { method: 'POST', headers: { Connection: 'close', Origin: env.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
   assert.equal(response.status, 200);
   const cookie = response.headers.get('set-cookie').split(';')[0];
-  const request = async (operation, input = {}) => { const response = await fetch(`${env.origin}/api/${operation}`, { method: 'POST', headers: { Connection: 'close', Origin: env.origin, Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(input) }); const data = await response.json(); if (data.error) throw Object.assign(new Error(data.error.message), data.error); return data.result; };
+  const request = async (operation, input = {}) => { const route = apiRequest(operation, input); const response = await fetch(`${env.origin}${route.path}`, { method: route.method, headers: { Connection: 'close', Origin: env.origin, Cookie: cookie, ...(route.input ? { 'Content-Type': 'application/json' } : {}) }, ...(route.input ? { body: JSON.stringify(route.input) } : {}) }); const data = await response.json(); if (data.error) throw Object.assign(new Error(data.error.message), data.error); return data.result; };
   return { request, cookie, ticket, control };
 }
 
@@ -104,6 +105,7 @@ test('receipt cleanup survives restart and permits new execution outside the ret
     const created = await op.request('createSession', { hostId: env.config.hostId, workDir: env.work, requestId: 'retention-create' });
     const input = { sessionId: created.sessionId, message: 'Synthetic retained message', requestId: 'retention-send' };
     const first = await op.request('sendMessage', input);
+    assert.deepEqual(await op.request('getOperation', { commandId: first.commandId }), first);
     await until(() => op.request('getSession', { sessionId: created.sessionId }), d => !d.session.activeTurnId, 'first retention turn completion');
     assert.equal((await op.request('sendMessage', input)).commandId, first.commandId);
     invoke(env.state, 'daemon', 'stop'); started = false;
@@ -113,6 +115,10 @@ test('receipt cleanup survives restart and permits new execution outside the ret
       const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
       receipt.createdAt = old;
       db.prepare("UPDATE records SET data=? WHERE kind='operation' AND id=?").run(JSON.stringify(receipt), input.requestId);
+      // A receipt written by the former HTTP transport retains its original fingerprint.
+      const previous = { ...receipt, requestId: 'pre-resource-receipt', commandId: 'pre-resource-command', operation: 'connectSession', turnId: null, status: 'delivered', createdAt: new Date().toISOString() };
+      previous.fingerprint = createHash('sha256').update(`["connectSession",{"requestId":"pre-resource-receipt","sessionId":${JSON.stringify(created.sessionId)}}]`).digest('hex');
+      db.prepare("INSERT INTO records VALUES('operation',?,?)").run(previous.requestId, JSON.stringify(previous));
       for (const [requestId, status, createdAt] of [
         ['retention-accepted', 'accepted', old],
         ['retention-unknown', 'unknown', old],
@@ -125,6 +131,8 @@ test('receipt cleanup survives restart and permits new execution outside the ret
     invoke(env.state, 'daemon', 'start'); started = true; op = await operator(env);
     let detail = await op.request('getSession', { sessionId: created.sessionId });
     assert.ok(!detail.operations.some(r => r.requestId === input.requestId), 'Expired settled receipt is removed at startup');
+    await assert.rejects(op.request('getOperation', { commandId: first.commandId }), { code: 'NOT_FOUND' });
+    assert.equal((await op.request('connectSession', { sessionId: created.sessionId, requestId: 'pre-resource-receipt' })).commandId, 'pre-resource-command', 'Resource routes reuse existing domain fingerprints without execution');
     for (const requestId of ['retention-accepted', 'retention-unknown']) {
       assert.equal(detail.operations.find(r => r.requestId === requestId)?.status, 'unknown', 'Uncertain delivery remains durable beyond the window');
     }
@@ -179,13 +187,39 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     await fs.unlink(join(env.home,`${nativeParent}.writer`));
     const reused = await fetch(`${env.origin}/auth/login`, { method: 'POST', headers: { Origin: env.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: op.ticket }) }); assert.equal(reused.status, 401);
     assert.equal((await fetch(`${env.origin}/internal/status`, { method: 'POST', headers: { Authorization: 'Bearer wrong' } })).status, 401);
-    assert.equal((await fetch(`${env.origin}/api/listHosts`, { method: 'POST', headers: { Origin: 'http://foreign.invalid', Cookie: op.cookie, 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+    assert.equal((await fetch(`${env.origin}/api/v1/hosts`, { headers: { Origin: 'http://foreign.invalid', Cookie: op.cookie } })).status, 401);
+    assert.equal((await fetch(`${env.origin}/api/v1/hosts`)).status, 401);
+    assert.equal((await fetch(`${env.origin}/api/listHosts`, { method: 'POST' })).status, 404, 'Legacy RPC routes are removed');
+    assert.equal((await fetch(`${env.origin}/api/subscribeSessionUpdates?sessionId=${nativeChild}`)).status, 404);
+    assert.equal((await fetch(`${env.origin}/api/v1/listHosts`, { method: 'POST' })).status, 404, 'The version prefix does not expose RPC aliases');
+    for (const query of ['limit=1&limit=2', 'limit=1.5', 'limit=-1', 'limit=501', 'cursor=18446744073709551616', 'sessionId=other', 'unexpected=value']) {
+      assert.equal((await fetch(`${env.origin}/api/v1/sessions/${nativeChild}/history?${query}`, { headers: { Cookie: op.cookie } })).status, 400, query);
+    }
     assert.equal((await fetch(`${env.origin}/`)).status, 200);
-    assert.equal((await fetch(`${env.origin}/api/subscribeSessionUpdates?sessionId=${nativeChild}&cursor=invalid`,{headers:{Cookie:op.cookie}})).status,400);
+    assert.equal((await fetch(`${env.origin}${sessionUpdatesPath(nativeChild)}?cursor=invalid`,{headers:{Cookie:op.cookie}})).status,400);
     const input = { hostId: env.config.hostId, workDir: env.work, requestId: 'create-a' };
     console.log('Rust test: create session');
-    const created = await op.request('createSession', input); assert.equal(created.status, 'delivered', JSON.stringify(created.error));
+    const creation = await fetch(`${env.origin}/api/v1/sessions`, { method: 'POST', headers: { Origin: env.origin, Cookie: op.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    assert.equal(creation.status, 201);
+    assert.equal(creation.headers.get('cache-control'), 'no-store');
+    const { result: created } = await creation.json(); assert.equal(created.status, 'delivered', JSON.stringify(created.error));
+    assert.equal(creation.headers.get('location'), `/api/v1/operations/${created.commandId}`);
+    const receiptRead = await fetch(new URL(creation.headers.get('location'), env.origin), { headers: { Cookie: op.cookie } });
+    assert.equal(receiptRead.status, 200); assert.deepEqual((await receiptRead.json()).result, created);
+    assert.ok(!Object.hasOwn(created, 'fingerprint') && !Object.hasOwn(created, 'input'));
     const sid = created.sessionId; assert.equal((await op.request('createSession', input)).sessionId, sid);
+    const maintenance = { instanceId: first.instanceId, token: crypto.randomUUID() };
+    await op.control('beginUpgrade', maintenance);
+    try {
+      const unavailable = await fetch(`${env.origin}/api/v1/sessions`, { method: 'POST', headers: { Origin: env.origin, Cookie: op.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, requestId: 'maintenance-resource-request' }) });
+      assert.equal(unavailable.status, 503); assert.equal((await unavailable.json()).error.code, 'UNAVAILABLE');
+    } finally { await op.control('cancelUpgrade', maintenance); }
+    const conflict = await fetch(`${env.origin}/api/v1/sessions`, { method: 'POST', headers: { Origin: env.origin, Cookie: op.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, workDir: env.home }) });
+    assert.equal(conflict.status, 409); assert.equal((await conflict.json()).error.code, 'REQUEST_CONFLICT');
+    for (const body of [{ requestId: 'route-identity', message: 'Synthetic', sessionId: 'other' }, { requestId: 'unknown-field', message: 'Synthetic', extra: true }]) {
+      assert.equal((await fetch(`${env.origin}/api/v1/sessions/${sid}/turns`, { method: 'POST', headers: { Origin: env.origin, Cookie: op.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).status, 400);
+    }
+    assert.equal((await fetch(`${env.origin}/api/v1/sessions/${sid}/turns`, { method: 'POST', headers: { Cookie: op.cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ requestId: 'missing-origin', message: 'Synthetic' }) })).status, 401);
     await assert.rejects(op.request('createSession', { ...input, workDir: env.home }), { code: 'REQUEST_CONFLICT' });
     const send = message => op.request('sendMessage', { sessionId: sid, message, requestId: crypto.randomUUID() });
     const details = () => op.request('getSession', { sessionId: sid });
@@ -224,7 +258,8 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     assert.equal((await op.request('readSessionContent',{sessionId:sid,contentId:diff.contents[0].contentId})).text,'@@ -0,0 +1 @@\n+DIFF_CANARY\n');
     await op.request('getSessionActivity',{sessionId:sid,itemId:activity.id});
     await op.request('readSessionContent',{sessionId:sid,contentId:activity.contents[0].contentId});
-    assert.equal(version(),beforeRead,'History, activity and content reads must not write management storage');
+    await op.request('getOperation', { commandId: completedSend.commandId });
+    assert.equal(version(),beforeRead,'History, activity, content and receipt reads must not write management storage');
     observer.close();
     const latest = await op.request('readSessionHistory',{sessionId:sid,limit:2});
     assert.ok(latest.beforeCursor);
@@ -248,7 +283,7 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     }
     assert.equal((await op.request('decideApproval', { sessionId: sid, turnId: active, interactionId: approval.interactionId, requestId: 'stale-approval', decision: 'allow' })).error.code, 'STALE_INTERACTION');
     assert.equal((await op.request('steerTurn', { sessionId: sid, turnId: active, message: 'Steer', requestId: 'steer-a' })).status, 'delivered');
-    const streamAbort = new AbortController(); const stream = await fetch(`${env.origin}/api/subscribeSessionUpdates?sessionId=${sid}`, { headers: { Cookie: op.cookie }, signal: streamAbort.signal });
+    const streamAbort = new AbortController(); const stream = await fetch(`${env.origin}${sessionUpdatesPath(sid)}`, { headers: { Cookie: op.cookie }, signal: streamAbort.signal });
     assert.equal(stream.status, 200); const chunk = await stream.body.getReader().read(); assert.match(new TextDecoder().decode(chunk.value), /event: snapshot/); streamAbort.abort();
     assert.equal((await op.request('interruptTurn', { sessionId: sid, turnId: active, requestId: 'interrupt-a' })).status, 'delivered');
     await until(details, d => !d.session.activeTurnId && d.turns.at(-1).state === 'interrupted', 'native interruption');
@@ -308,6 +343,7 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     assert.equal(unresolved.session.runtimeState, 'unknown'); assert.ok(unresolved.session.activeTurnId);
     const uncertainRetry = await final.request('sendMessage',{sessionId:sid,message:'WAIT',requestId:'uncertain-turn'});
     assert.equal(uncertainRetry.status,'unknown','An unconfirmed receipt cannot be replayed as a new send');
+    assert.deepEqual(await final.request('getOperation', { commandId: uncertainRetry.commandId }), uncertainRetry);
     assert.equal(uncertainRetry.commandId,unresolved.operations.find(o=>o.requestId==='uncertain-turn').commandId);
     assert.equal((await final.request('sendMessage',{sessionId:sid,message:'new send',requestId:'blocked-after-restart'})).error.code,'SESSION_BUSY');
     assert.equal((await final.request('getSession',{sessionId:other.sessionId})).interactions.length,0);

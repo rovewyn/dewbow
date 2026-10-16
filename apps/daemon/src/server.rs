@@ -2,7 +2,7 @@ use crate::{config, service::Service};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Path as RoutePath, Query, State},
+    extract::{DefaultBodyLimit, MatchedPath, Path as RoutePath, Query, RawQuery, State},
     http::{HeaderMap, StatusCode, Uri, header},
     response::{
         IntoResponse, Response,
@@ -13,6 +13,7 @@ use axum::{
 use dewbow_protocol::{error, id};
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     convert::Infallible,
     fs,
     path::Path,
@@ -21,7 +22,50 @@ use std::{
 };
 include!(concat!(env!("OUT_DIR"), "/web.rs"));
 
+const READ_ROUTES: &[(&str, &str)] = &[
+    ("/api/v1/hosts", "listHosts"),
+    ("/api/v1/sessions", "listSessions"),
+    ("/api/v1/sessions/{sessionId}", "getSession"),
+    ("/api/v1/sessions/{sessionId}/history", "readSessionHistory"),
+    (
+        "/api/v1/sessions/{sessionId}/activities/{itemId}",
+        "getSessionActivity",
+    ),
+    (
+        "/api/v1/sessions/{sessionId}/contents/{contentId}",
+        "readSessionContent",
+    ),
+    ("/api/v1/operations/{commandId}", "getOperation"),
+];
+const MUTATION_ROUTES: &[(&str, &str)] = &[
+    ("/api/v1/sessions", "createSession"),
+    ("/api/v1/sessions/{sessionId}/connections", "connectSession"),
+    ("/api/v1/sessions/{sessionId}/turns", "sendMessage"),
+    (
+        "/api/v1/sessions/{sessionId}/turns/{turnId}/instructions",
+        "steerTurn",
+    ),
+    (
+        "/api/v1/sessions/{sessionId}/turns/{turnId}/interruptions",
+        "interruptTurn",
+    ),
+    (
+        "/api/v1/sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/answers",
+        "answerQuestions",
+    ),
+    (
+        "/api/v1/sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/decisions",
+        "decideApproval",
+    ),
+];
+
 pub fn failure(cause: anyhow::Error) -> Response {
+    error_response(cause, false)
+}
+fn resource_failure(cause: anyhow::Error) -> Response {
+    error_response(cause, true)
+}
+fn error_response(cause: anyhow::Error, resource: bool) -> Response {
     let detail = cause
         .downcast_ref::<dewbow_protocol::ManagementError>()
         .cloned()
@@ -35,9 +79,23 @@ pub fn failure(cause: anyhow::Error) -> Response {
         "UNAUTHORIZED" => StatusCode::UNAUTHORIZED,
         "FORBIDDEN" => StatusCode::FORBIDDEN,
         "NOT_FOUND" => StatusCode::NOT_FOUND,
+        "REQUEST_CONFLICT" | "SESSION_BUSY" | "SESSION_IN_USE" | "STALE_TURN"
+        | "STALE_INTERACTION" | "RECOVERY_REQUIRED"
+            if resource =>
+        {
+            StatusCode::CONFLICT
+        }
+        "UNAVAILABLE" if resource => StatusCode::SERVICE_UNAVAILABLE,
+        "LIMIT_EXCEEDED" if resource => StatusCode::TOO_MANY_REQUESTS,
+        "DELIVERY_UNCERTAIN" | "EXECUTION_FAILED" if resource => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
-    (status, Json(json!({"error":detail}))).into_response()
+    (
+        status,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"error":detail})),
+    )
+        .into_response()
 }
 fn host(service: &Service, headers: &HeaderMap) -> bool {
     headers.get(header::HOST).and_then(|h| h.to_str().ok())
@@ -83,21 +141,137 @@ fn operator(service: &Service, headers: &HeaderMap) -> bool {
     cookies.retain(|_, expires| *expires > Instant::now());
     token.is_some_and(|token| cookies.contains_key(token))
 }
-async fn api(
+fn route_operation(path: &str, routes: &[(&str, &'static str)]) -> &'static str {
+    routes
+        .iter()
+        .find(|(route, _)| *route == path)
+        .expect("registered resource route")
+        .1
+}
+
+fn resource_input(params: HashMap<String, String>, mut input: Value) -> anyhow::Result<Value> {
+    let object = input
+        .as_object_mut()
+        .ok_or_else(|| error("INVALID_INPUT", "Input must be an object."))?;
+    // Reconstruct the original domain input before validation and fingerprinting.
+    // A body/query field must never replace an identity owned by the route.
+    for (key, value) in params {
+        anyhow::ensure!(
+            !object.contains_key(&key),
+            error(
+                "INVALID_INPUT",
+                "Path identity must not be repeated in input."
+            )
+        );
+        object.insert(key, json!(value));
+    }
+    Ok(input)
+}
+
+async fn read_resource(
     State(service): State<Arc<Service>>,
-    RoutePath(name): RoutePath<String>,
+    path: MatchedPath,
+    RoutePath(params): RoutePath<HashMap<String, String>>,
     headers: HeaderMap,
+    query: Result<Query<Vec<(String, String)>>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    if !operator(&service, &headers) {
+        return resource_failure(error("UNAUTHORIZED", "Open this Web with dewbow web.").into());
+    }
+    let result = async {
+        let Query(query) = query.map_err(|_| error("INVALID_INPUT", "Invalid query string."))?;
+        let mut input = serde_json::Map::new();
+        for (key, value) in query {
+            anyhow::ensure!(
+                !input.contains_key(&key),
+                error("INVALID_INPUT", "Duplicate query field.")
+            );
+            let value = if ["cursor", "limit", "limitBytes"].contains(&key.as_str()) {
+                anyhow::ensure!(
+                    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
+                    error("INVALID_INPUT", "Invalid integer query field.")
+                );
+                let number = value
+                    .parse::<u64>()
+                    .map_err(|_| error("INVALID_INPUT", "Integer query field is out of range."))?;
+                let valid = match key.as_str() {
+                    "limit" => (1..=500).contains(&number),
+                    "limitBytes" => (4..=262144).contains(&number),
+                    _ => true,
+                };
+                anyhow::ensure!(valid, error("INVALID_INPUT", "Page limit is out of range."));
+                json!(number)
+            } else {
+                json!(value)
+            };
+            input.insert(key, value);
+        }
+        let input = resource_input(params, Value::Object(input))?;
+        service
+            .api(route_operation(path.as_str(), READ_ROUTES), input)
+            .await
+    }
+    .await;
+    match result {
+        Ok(result) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({"result":result})),
+        )
+            .into_response(),
+        Err(cause) => resource_failure(cause),
+    }
+}
+
+async fn mutate_resource(
+    State(service): State<Arc<Service>>,
+    path: MatchedPath,
+    RoutePath(params): RoutePath<HashMap<String, String>>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
     input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     if !operator(&service, &headers) || !origin(&service, &headers) {
-        return failure(error("UNAUTHORIZED", "Open this Web with dewbow web.").into());
+        return resource_failure(error("UNAUTHORIZED", "Open this Web with dewbow web.").into());
     }
     let Ok(Json(input)) = input else {
-        return failure(error("INVALID_INPUT", "Invalid JSON request or size limit.").into());
+        return resource_failure(
+            error("INVALID_INPUT", "Invalid JSON request or size limit.").into(),
+        );
     };
-    match service.api(&name, input).await {
-        Ok(result) => Json(json!({"result":result})).into_response(),
-        Err(cause) => failure(cause),
+    if query.is_some() {
+        return resource_failure(
+            error("INVALID_INPUT", "Mutation query fields are not supported.").into(),
+        );
+    }
+    let input = match resource_input(params, input) {
+        Ok(input) => input,
+        Err(cause) => return resource_failure(cause),
+    };
+    let name = route_operation(path.as_str(), MUTATION_ROUTES);
+    match service.api(name, input).await {
+        Ok(result) => {
+            let status = match result["status"].as_str() {
+                Some("accepted") => StatusCode::ACCEPTED,
+                Some("delivered") if matches!(name, "createSession" | "sendMessage") => {
+                    StatusCode::CREATED
+                }
+                _ => StatusCode::OK,
+            };
+            let location = format!(
+                "/api/v1/operations/{}",
+                result["commandId"].as_str().unwrap()
+            );
+            (
+                status,
+                [
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::LOCATION, location.as_str()),
+                ],
+                Json(json!({"result":result})),
+            )
+                .into_response()
+        }
+        Err(cause) => resource_failure(cause),
     }
 }
 async fn internal(
@@ -205,28 +379,37 @@ async fn logout(State(service): State<Arc<Service>>, headers: HeaderMap) -> Resp
 }
 async fn subscribe(
     State(service): State<Arc<Service>>,
+    RoutePath(sid): RoutePath<String>,
     headers: HeaderMap,
-    Query(mut input): Query<std::collections::HashMap<String, String>>,
+    query: Result<Query<Vec<(String, String)>>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     if !operator(&service, &headers) {
-        return failure(error("UNAUTHORIZED", "Authentication required.").into());
+        return resource_failure(error("UNAUTHORIZED", "Authentication required.").into());
     }
-    let Some(sid) = input.remove("sessionId") else {
-        return failure(error("INVALID_INPUT", "sessionId required.").into());
+    let Ok(Query(query)) = query else {
+        return resource_failure(error("INVALID_INPUT", "Invalid query string.").into());
     };
+    let mut input = HashMap::new();
+    for (key, value) in query {
+        if input.insert(key, value).is_some() {
+            return resource_failure(error("INVALID_INPUT", "Duplicate query field.").into());
+        }
+    }
     if let Err(cause) = service.summary(&sid).await {
-        return failure(cause);
+        return resource_failure(cause);
     }
     let native_cursor = input.remove("updateCursor");
     let cursor = match input.remove("cursor") {
         Some(value) => match value.parse::<u64>() {
             Ok(cursor) => cursor,
-            Err(_) => return failure(error("INVALID_INPUT", "Invalid event cursor.").into()),
+            Err(_) => {
+                return resource_failure(error("INVALID_INPUT", "Invalid event cursor.").into());
+            }
         },
         None => 0,
     };
     if !input.is_empty() {
-        return failure(error("INVALID_INPUT", "Unknown subscription field.").into());
+        return resource_failure(error("INVALID_INPUT", "Unknown subscription field.").into());
     }
     let receiver = service.changed.subscribe();
     let stream = futures::stream::unfold(
@@ -309,8 +492,10 @@ async fn subscribe(
             ))
         },
     );
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Sse::new(stream).keep_alive(KeepAlive::default()),
+    )
         .into_response()
 }
 async fn assets(State(service): State<Arc<Service>>, headers: HeaderMap, uri: Uri) -> Response {
@@ -355,7 +540,7 @@ pub async fn run(state: &Path) -> anyhow::Result<()> {
         &state.join("instance.json"),
         &json!({"instanceId":service.instance,"pid":std::process::id(),"port":service.config.port}),
     )?;
-    let router = Router::new()
+    let mut router = Router::new()
         .route(
             "/health",
             get(|| async { Json(json!({"status":"available"})) }),
@@ -363,8 +548,14 @@ pub async fn run(state: &Path) -> anyhow::Result<()> {
         .route("/internal/{name}", post(internal))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/api/subscribeSessionUpdates", get(subscribe))
-        .route("/api/{name}", post(api))
+        .route("/api/v1/sessions/{sessionId}/updates", get(subscribe));
+    for &(path, _) in READ_ROUTES {
+        router = router.route(path, get(read_resource));
+    }
+    for &(path, _) in MUTATION_ROUTES {
+        router = router.route(path, post(mutate_resource));
+    }
+    let router = router
         .fallback(assets)
         .layer(DefaultBodyLimit::max(1_048_576))
         .with_state(service.clone());
