@@ -454,6 +454,23 @@ fn scoped_receipts_and_original_targets_survive_restart_and_local_cleanup() {
         .unwrap();
     a.store.network.begin_dispatch(&scope).unwrap();
     a.restart();
+    let replacement_scope = ReceiptScope {
+        network_id: NetworkId::from_bytes([42; 32]),
+        ..scope.clone()
+    };
+    assert!(
+        a.store
+            .network
+            .bind_outbound(
+                &replacement_scope,
+                b.store.network.host.unwrap(),
+                "sendMessage",
+                [8; 32]
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("REQUEST_CONFLICT")
+    );
     assert!(
         a.store
             .network

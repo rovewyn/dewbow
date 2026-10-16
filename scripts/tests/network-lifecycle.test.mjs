@@ -209,6 +209,8 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     for (const secret of ['Synthetic steering', '"answers"', '"nativeRequestId"', '"nativeMethod"']) assert.ok(!encoded.includes(secret), 'no callback or message bodies in receipts');
     assert.ok(journal(b, 'PRAGMA user_version')[0].user_version === 2);
     assert.deepEqual((await ob.request('getSession', { sessionId: sid })).session.sessionConfig, configuration);
+    network(a, 'leave'); network(a, 'create', 'Synthetic independent Network', ...settings(a));
+    await assert.rejects(oa.request('createSession', creation), { code: 'REQUEST_CONFLICT' }, 'a new Network cannot bypass the original outbound binding');
   } finally {
     for (const node of nodes.reverse()) {
       try { await stop(node); } catch (cause) { console.error(node.diagnostics); throw cause; }
