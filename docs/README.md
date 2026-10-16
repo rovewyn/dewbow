@@ -35,7 +35,8 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Operator Web](web.md)
 - [Chat UI](chat-ui.md)
 - [Session update subscriptions](session-updates.md)
-- [Network membership engine](network-membership-engine.md) describes the independent Rust validator, candidate transitions and caller commit contract. Enrollment and peer connections remain deferred.
+- [Network membership engine](network-membership-engine.md) describes the independent Rust validator, candidate transitions and caller commit contract.
+- [Network peer transport](network-peers.md) describes authenticated connections, membership reconciliation, configuration and the remaining lifecycle integrations.
 
 ## Design proposals
 

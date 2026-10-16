@@ -22,5 +22,14 @@ tokio.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 serde_jcs.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+rcgen.workspace = true
 dewbow-protocol.workspace = true
 dewbow-sdk.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

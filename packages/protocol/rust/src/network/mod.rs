@@ -2,6 +2,7 @@
 mod codec;
 mod history;
 mod local;
+pub mod peer;
 mod types;
 
 pub use codec::{decode_join_proof, decode_record};

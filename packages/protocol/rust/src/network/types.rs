@@ -296,8 +296,8 @@ impl SignedRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistorySnapshot {
     pub history_id: HistoryId,
     pub frontier: Vec<RecordId>,

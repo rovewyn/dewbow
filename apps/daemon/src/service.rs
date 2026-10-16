@@ -73,7 +73,7 @@ pub async fn doctor(config: &Config) -> anyhow::Result<Value> {
 }
 pub struct Service {
     pub(crate) state: PathBuf,
-    pub(crate) maintenance: crate::maintenance::Maintenance,
+    pub(crate) maintenance: Arc<crate::maintenance::Maintenance>,
     pub config: Config,
     pub runtime: Arc<Runtime>,
     pub store: Store,
@@ -81,6 +81,7 @@ pub struct Service {
     pub changed: broadcast::Sender<()>,
     pub shutting_down: tokio::sync::Notify,
     pub stopped: std::sync::atomic::AtomicBool,
+    peer: tokio::sync::Mutex<Option<crate::network::peer::PeerRuntime>>,
     pub tickets: Mutex<HashMap<String, Instant>>,
     pub cookies: Mutex<HashMap<String, Instant>>,
     inventory: AsyncMutex<Option<(Instant, Value)>>,
@@ -105,7 +106,7 @@ pub fn public(mut value: Value) -> Value {
 }
 impl Service {
     pub async fn open(config: Config, state: &Path) -> anyhow::Result<Arc<Self>> {
-        let maintenance = crate::maintenance::Maintenance::open(state)?;
+        let maintenance = Arc::new(crate::maintenance::Maintenance::open(state)?);
         let store = Store::open(state)?;
         if let Some(owner) = store.get("meta", "owner")?
             && let Some(pid) = owner["pid"].as_u64()
@@ -158,6 +159,7 @@ impl Service {
             changed,
             shutting_down: tokio::sync::Notify::new(),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            peer: tokio::sync::Mutex::new(None),
             tickets: Mutex::new(HashMap::new()),
             cookies: Mutex::new(HashMap::new()),
             inventory: AsyncMutex::new(None),
@@ -179,6 +181,18 @@ impl Service {
         });
         service.recover().await?;
         service.prune_operations().await?;
+        match crate::network::peer::PeerRuntime::start_in_service(
+            service.store.network.clone(),
+            service.maintenance.clone(),
+        )
+        .await
+        {
+            Ok(peer) => *service.peer.lock().await = peer,
+            Err(cause) => {
+                service.shutdown().await?;
+                return Err(cause);
+            }
+        }
         let weak = Arc::downgrade(&service);
         let mut changes = service.changed.subscribe();
         tokio::spawn(async move {
@@ -915,6 +929,9 @@ impl Service {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = self.changed.send(());
+        if let Some(peer) = self.peer.lock().await.take() {
+            peer.shutdown().await;
+        }
         self.runtime.stop().await?;
         self.store.put("meta", "owner", &Value::Null)?;
         Ok(())

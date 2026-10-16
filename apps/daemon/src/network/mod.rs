@@ -1,12 +1,16 @@
-//! Private Network management storage. No peer or operator operation is exposed here.
+//! Network management storage and authenticated peer integration.
+//! Public operator lifecycle and native business handlers remain deferred.
 mod keys;
 pub(crate) mod migration;
 mod operations;
+pub mod peer;
+mod peer_store;
 mod repository;
 pub(crate) mod schema;
 mod types;
 mod validation;
 pub use operations::{InvitationResult, IssuerJoinResult, PreparedDepartureResult};
+pub use peer_store::{Contact, PeerSettings};
 pub use repository::Repository;
 pub use types::*;
 #[cfg(test)]

@@ -162,7 +162,18 @@ Connect/reconnect starts reconciliation immediately. While still active after ad
 
 Each direction calls `openHistory` with `{ frontier }` (null for current history, or a retained frontier contained in the source's selected history), receiving `{ historyId, frontier, recordCount, snapshotToken }`. The token is random, connection-bound and purpose-bound, with a 60-second renewable idle timeout. Successful page/record/ack activity renews idle expiry; there is no fixed 60-second total duration. This permits large manifests to finish. IDs/records remain tied to one immutable snapshot despite newer adoption. Expiry or restart gives `SNAPSHOT_EXPIRED`; restart from summaries, retaining valid records already adopted. Limit concurrent tokens rather than making old history invalid.
 
+The two directions use separate authenticated HTTP connections. On each connection the client reads the server's manifest and submits its own fixed manifest through `submitHistoryManifest`. This lets the server identify the caller's known IDs without reverse HTTP requests on the same connection. The reverse pull needs a reachable contact candidate, not an online founder.
+
 `listHistoryIds` input is `{ snapshotToken, afterRecordId, limit }`, using null initially. Result is `{ historyId, recordIds, nextAfterRecordId }`, with IDs in decoded-byte order and null next at completion. Both peers exchange complete paged manifests. Check uniqueness, order, total count and reconstructed history commitment; never splice pages from different snapshots. A manifest remains a claim until matching complete signed records validate. Claims cannot delete local history or grant authority.
+
+`submitHistoryManifest` has two tagged forms:
+
+| Input | Result |
+| --- | --- |
+| `{ mode: "open", history }` | `{ manifestToken, nextAfterRecordId: null, complete: false }` |
+| `{ mode: "write", manifestToken, afterRecordId, recordIds, done }` | `{ manifestToken, nextAfterRecordId, complete }` |
+
+Open reserves one bounded upload for that connection and purpose, replacing its previous upload. Each write contains at most 256 IDs in strictly increasing decoded-byte order; its afterRecordId equals the last accepted ID or null initially. An identical last-page retry returns the same progress. Changed retries, overlapping/out-of-order pages, mixed snapshots and excess counts fail. A final page sets done and must match the declared count, reconstructed historyId and frontier membership before complete becomes true. nextAfterRecordId is the last accepted ID, including on completion. A completed upload remains immutable until a new open. Its random token has the same renewable 60-second idle expiry and disconnect lifetime as snapshots; capacity limits apply before reservation. Only a completed manifest may be referenced by readHistoryRecords.peerHistoryId. The claim never selects history, grants authority or acknowledges adoption.
 
 ### Record transfer and acknowledgement
 
@@ -265,15 +276,15 @@ The receiver validates continuity, size/hash and complete JSON before publishing
 
 The first logical event is a current snapshot. Reconnect always creates a new subscriptionId and snapshot; v1 does not resume from Last-Event-ID or retain a durable stream log. Existing native history cursors remain independent. Closing the HTTP stream cancels subscription delivery, not execution. Heartbeat comments may be sent every 15 seconds. `streamError` carries `{ code, message, retryable }` without a successful end frame. Removal closes the stream; any local accepted-history change invalidates its context and closes it with SYNC_REQUIRED, after which reconcile and resubscribe. The entry also closes streams when its own context changes. Pending callbacks remain tied to the exact target runtime and current caller authority. No response chunks, native content or completed native turn history enter Network storage.
 
-## Proposed operation surfaces and errors
+## Peer operation surfaces and errors
 
-These are future contracts, not routes supported by the current daemon. Peer operations are JSON `POST /network/v1/<operation>` on the separate TLS listener, returning `{ result }` or `{ error: { code, message, retryable } }`, except for the explicitly framed large results and SSE subscriptions. No request logs include secrets or raw business content. Hello establishes protocolVersion/networkId for the connection; subsequent control inputs inherit that context and are rejected across Network/session boundaries. Business envelopes repeat it for admission checks. Every request still checks current route permissions, not a cached access label.
+The daemon implements member/proof hello, bounded proof exchange, history reconciliation and signed address hints on its optional separate TLS listener. Public lifecycle operations, invitation redemption, departure delivery and native business handlers remain separate integrations; their Peer operations currently return NOT_READY after applicable authority checks. See [Peer transport](network-peers.md) for the implementation and configuration boundary. Peer operations are JSON `POST /network/v1/<operation>`, returning `{ result }` or `{ error: { code, message, retryable } }`, except for the future explicitly framed large results and SSE subscriptions. No request logs include secrets or raw business content. Hello establishes protocolVersion/networkId for the connection; subsequent control inputs inherit that context and are rejected across Network/session boundaries. Business envelopes repeat it for admission checks. Every request still checks current route permissions, not a cached access label.
 
 | Peer operations | Purpose |
 | --- | --- |
 | `hello`, `submitMembershipProof` | Key/member binding and bounded purpose-scoped proof exchange |
 | `getInvitationProof`, `redeemInvitation`, `getJoinResult` | Issuance ancestry, issuer-local confirmation and exact-attempt recovery |
-| `notifyHistory`, `openHistory`, `listHistoryIds`, `readHistoryRecords`, `acknowledgeHistory` | Snapshot comparison, ancestor-first records and durable adoption acknowledgement |
+| `notifyHistory`, `openHistory`, `listHistoryIds`, `submitHistoryManifest`, `readHistoryRecords`, `acknowledgeHistory` | Snapshot comparison, bidirectional manifest exchange, ancestor-first records and durable adoption acknowledgement |
 | `exchangeAddressHints` | Signed hint exchange between current verified members |
 | `deliverDeparture`, `getDepartureStatus` | Original/rebased exact-generation exit and acknowledgement |
 | `executeOperation`, `getRequestReceipt`, `readOperation`, `subscribeSessionUpdates` | Direct typed target operations and native updates under current authority |
@@ -344,7 +355,7 @@ Atomically commit accepted records with their frontier/intent results, admission
 
 This model extends the current management allowlist and needs an explicit ordered format/configuration migration under [storage compatibility](storage.md) before implementation writes it. Select the next format after auditing supported published tags, preserving local IDs, frozen settings, receipts/fingerprints and active/uncertain native associations, with a recoverable backup and interruption tests. Do not reset existing state, reinterpret released local request IDs or use a second live database. This specification allocates no storage/product version and changes no released contract by itself.
 
-The [Network storage, keys and crash recovery design](network-storage-design.md) refines this boundary with proposed tables, local key encoding, file/database ordering and recovery outcomes for issue #37. It remains documentation only and allocates no storage version.
+The [Network storage, keys and crash recovery design](network-storage-design.md) refines this boundary with local tables, key encoding, file/database ordering and recovery outcomes. The implemented [storage foundation](storage.md#network-storage-foundation) uses schema 2. [Peer transport](network-peers.md) reuses that format without adding another database or durable content stream.
 
 Library selection, final executable DDL/indexes, exact CLI flags and UI presentation belong to the implementation PRs; they must implement these semantics rather than reopen the protocol decisions. Compaction, in-place rotation, owner-key recovery, automatic LAN discovery, execution relaying, protocol upgrade governance and automatic fork merging are outside v1. Unknown versions/operations fail closed without selecting a branch or erasing state.
 
@@ -394,4 +405,4 @@ These are required synthetic implementation scenarios, not results of an impleme
 | Unsupported version, quota exhaustion, disk-full or malformed stored state | Preserve accepted state; fail explicitly without reset, fork coercion or false success |
 | Upgrade from each supported tagged source and interruption during migration | Preserve identities, receipt scopes and native recovery; never replay a callback or native request |
 
-Validation of this documentation consists of consistency review, link/format checks and synthetic reasoning. Runtime acceptance, interoperability vectors for the chosen libraries, migration tests and multi-node execution remain mandatory work in the implementation issues.
+The membership engine, storage and Peer transport guides describe their implemented synthetic checks and remaining integration boundaries. Separate-machine acceptance, public enrollment and multi-node native execution remain work for their implementing issues; this protocol document alone does not establish those outcomes.
