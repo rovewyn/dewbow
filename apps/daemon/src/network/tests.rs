@@ -52,6 +52,9 @@ fn proposal(history: &VerifiedHistory, record: &SignedRecord) -> Proposal {
     }
 }
 fn join(a: &Node, b: &Node) -> (AttemptId, PublicInvitation) {
+    admit(a, b, true)
+}
+fn admit(a: &Node, b: &Node, finish: bool) -> (AttemptId, PublicInvitation) {
     let issued = a
         .store
         .network
@@ -95,10 +98,12 @@ fn join(a: &Node, b: &Node) -> (AttemptId, PublicInvitation) {
             record.id(),
         )
         .unwrap();
-    b.store
-        .network
-        .finish_join(attempt, proposed.result().clone(), record.id())
-        .unwrap();
+    if finish {
+        b.store
+            .network
+            .finish_join(attempt, proposed.result().clone(), record.id())
+            .unwrap();
+    }
     (attempt, issued.invitation)
 }
 fn remove(node: Node) {
@@ -706,7 +711,7 @@ fn issuer_results_survive_lost_replies_exit_and_explicit_denial() {
     let mut a = Node::new();
     let mut b = Node::new();
     a.create();
-    let (attempt, _) = join(&a, &b);
+    let (attempt, _) = admit(&a, &b, false);
     let proof: String = b
         .store
         .network
@@ -745,13 +750,13 @@ fn issuer_results_survive_lost_replies_exit_and_explicit_denial() {
     else {
         panic!("Lost admission result");
     };
-    let refs = b
-        .store
-        .network
-        .request_result(&b.intent("joinNetwork", 3))
-        .unwrap()
-        .unwrap();
-    assert_eq!(refs["recordId"], json!(original.id()));
+    assert!(b.store.network.current_selection().unwrap().is_none());
+    assert!(
+        !b.store
+            .network
+            .expire_join(attempt, chrono::Utc::now() + chrono::Duration::days(1))
+            .unwrap()
+    );
     let mut changed = a.intent("confirmNetworkJoin", 4);
     changed.fingerprint = [9; 32];
     assert!(
@@ -769,6 +774,14 @@ fn issuer_results_survive_lost_replies_exit_and_explicit_denial() {
         .network
         .finish_join(attempt, selected.history().clone(), original.id())
         .unwrap();
+    assert_eq!(
+        b.store
+            .network
+            .request_result(&b.intent("joinNetwork", 3))
+            .unwrap()
+            .unwrap()["recordId"],
+        json!(original.id())
+    );
     remove(a);
     remove(b);
 
