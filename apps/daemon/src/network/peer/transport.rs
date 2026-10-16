@@ -353,6 +353,7 @@ async fn handle(
 }
 
 pub struct PeerClient {
+    pub(super) business_context: Option<super::business::Authorization>,
     pub(super) repo: Repository,
     binding: (uuid::Uuid, NetworkId, MembershipId),
     pub(super) shared: Arc<Shared>,
@@ -640,6 +641,7 @@ impl PeerClient {
             tokio::select! {_=stopped.changed()=>{},_=connection=>{}}
         });
         Ok(Self {
+            business_context: None,
             repo: repo.clone(),
             binding,
             lifecycle_channel,

@@ -125,7 +125,7 @@ pub enum Access {
 }
 
 /// Authenticated routing context, checked against both TLS identities and live history.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessContext {
     pub protocol_version: u64,

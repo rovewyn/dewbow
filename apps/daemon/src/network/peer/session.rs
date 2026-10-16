@@ -235,6 +235,7 @@ struct Proof {
 }
 
 pub(super) struct Session {
+    pub business_context: Option<super::business::Authorization>,
     pub repo: Repository,
     pub shared: Arc<Shared>,
     pub peer_key: PublicKey,
@@ -256,6 +257,7 @@ impl Session {
         local_key: PublicKey,
     ) -> Self {
         Self {
+            business_context: None,
             repo,
             shared,
             peer_key,

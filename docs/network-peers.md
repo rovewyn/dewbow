@@ -61,6 +61,14 @@ under the same database serialization boundary as membership adoption, then the 
 is released before native work. The context and authority are checked again before
 result publication and throughout streamed delivery.
 
+Each TLS connection retains at most one fully verified business context. Delivery
+checks the live selection, history commitment, local generation, key and active
+status under the membership commit lock, together with current maintenance and
+conflict quarantine. An unchanged immutable history can reuse its verified key/member
+bindings without rechecking every ancestor signature for every 64 KiB chunk. Any
+context change invalidates that reuse and performs full authorization again. This
+volatile verification state grants no authority across a change or reconnect.
+
 Results through 1 MiB use ordinary JSON. Larger results transfer the same envelope
 through bounded NDJSON frames. `subscribeSessionUpdates` transfers complete snapshot
 and update envelopes over framed SSE. The operator entry validates and reassembles

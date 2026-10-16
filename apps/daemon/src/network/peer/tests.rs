@@ -204,11 +204,7 @@ async fn business_reads_bind_current_history_and_both_tls_generations() {
     };
     // Standalone transport has no native service, but authorization is still enforced first.
     assert_eq!(
-        client
-            .request::<Value>("readOperation", &request)
-            .await
-            .unwrap_err()
-            .code,
+        client.read_operation(&request).await.unwrap_err().code,
         "NOT_READY"
     );
     let mut forged = request.clone();
@@ -252,13 +248,26 @@ async fn business_reads_bind_current_history_and_both_tls_generations() {
             .code,
         "INVALID_INPUT"
     );
+    // Quarantine is independent of the selected history and must override a
+    // previously verified context on this same connection.
+    let shared = client.shared.clone();
+    shared
+        .conflicts
+        .lock()
+        .unwrap()
+        .insert((context.network_id, c.member()));
+    assert_eq!(
+        client.read_operation(&request).await.unwrap_err().code,
+        "HISTORY_CONFLICT"
+    );
+    shared
+        .conflicts
+        .lock()
+        .unwrap()
+        .remove(&(context.network_id, c.member()));
     c.change(Change::Remove(a.member()));
     assert_eq!(
-        client
-            .request::<Value>("readOperation", &request)
-            .await
-            .unwrap_err()
-            .code,
+        client.read_operation(&request).await.unwrap_err().code,
         "SYNC_REQUIRED"
     );
     c.change(Change::Remove(b.member()));

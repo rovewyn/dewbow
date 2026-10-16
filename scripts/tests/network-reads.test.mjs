@@ -66,15 +66,15 @@ async function admit(issuer, joiner) {
   const invitation = network(issuer, 'invite').invitation;
   const joined = JSON.parse(invoke(joiner, ['network', '--json', 'join', '--invitation-stdin', ...settings(joiner)], `${invitation}\n`));
   assert.equal(joined.status, 'prepared');
-  const pending = await until(() => network(issuer, 'pending'), value => value.joins.length === 1, 'pending join');
+  const pending = await until(() => control(issuer, 'listNetworkJoins'), value => value.joins.length === 1, 'pending join');
   const request = pending.joins[0];
   assert.equal(request.hostId, joiner.config.hostId);
   assert.equal(request.publicKey, joined.publicKey);
   assert.equal(request.publicKeyFingerprint, joined.publicKeyFingerprint);
   assert.throws(() => network(issuer, 'confirm', request.joinAttemptId, '--public-key', Buffer.alloc(32, 7).toString('base64url')), /INVALID_INPUT/);
   network(issuer, 'confirm', request.joinAttemptId, '--public-key', request.publicKey);
-  await until(() => network(joiner, 'status'), value => value.localStatus === 'active', 'joiner ready');
-  const member = network(joiner, 'status').membershipId;
+  const ready = await until(() => control(joiner, 'getNetwork'), value => value.localStatus === 'active', 'joiner ready');
+  const member = ready.membershipId;
   network(issuer, 'set-peer-address', member, joiner.endpoint);
   return invitation;
 }
@@ -157,7 +157,8 @@ test('direct Network reads preserve native data, independent targets, subscripti
     seed(b, 'Synthetic B'); seed(c, 'Synthetic C');
     network(a, 'create', 'Synthetic reads', ...settings(a));
     await admit(a, b); await admit(a, c);
-    await until(() => network(b, 'members'), value => value.members.length === 3, 'all members');
+    await until(() => control(b, 'listNetworkMembers'), value => value.members.length === 3, 'all members');
+    console.log('Network read acceptance: members ready');
     network(c, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
     network(b, 'set-peer-address', network(c, 'status').membershipId, c.endpoint);
     const net = network(a, 'status').networkId;
@@ -197,6 +198,7 @@ test('direct Network reads preserve native data, independent targets, subscripti
     }
     assert.equal((await request(a, ca, `${path(b)}/updates?cursor=0`, 400)).code, 'INVALID_INPUT');
     assert.equal((await request(a, ca, `/api/v1/networks/${Buffer.alloc(32, 8).toString('base64url')}/hosts/${b.config.hostId}`, 403)).code, 'FORBIDDEN');
+    console.log('Network read acceptance: inventory, history and content verified');
     const live = await stream(c, cc, `${path(b)}/updates`); streams.push(live);
     const first = await live.next(); assert.equal(first.kind, 'snapshot');
     assert.equal(first.value.hostId, b.config.hostId);
@@ -230,10 +232,11 @@ test('direct Network reads preserve native data, independent targets, subscripti
     assert.equal(maintenance.kind, 'streamError'); assert.equal(maintenance.value.code, 'UNAVAILABLE');
     await control(b, 'cancelUpgrade', ownership);
     nodes.forEach((node, i) => assert.deepEqual(records(node), before[i], 'reads do not write management records or adopt native sessions'));
+    console.log('Network read acceptance: updates, reconnect, logout and maintenance verified');
     const membershipStream = await stream(c, cc, `${path(b)}/updates`); streams.push(membershipStream);
     await membershipStream.next();
     network(a, 'leave');
-    await until(() => network(c, 'members'), value => value.members.length === 2, 'founder leaves');
+    await until(() => control(c, 'listNetworkMembers'), value => value.members.length === 2, 'founder leaves');
     const contextChanged = await terminalEvent(membershipStream);
     assert.equal(contextChanged.kind, 'streamError'); assert.equal(contextChanged.value.code, 'SYNC_REQUIRED');
     await stop(a);
@@ -244,10 +247,11 @@ test('direct Network reads preserve native data, independent targets, subscripti
     const restarted = await stream(c, cc, `${path(b)}/updates`); streams.push(restarted);
     const afterRestart = await restarted.next();
     assert.equal(afterRestart.kind, 'snapshot'); assert.notEqual(afterRestart.value.runtimeId, first.value.runtimeId);
+    console.log('Network read acceptance: founder exit and entry/target restarts verified');
     network(b, 'remove', network(c, 'status').membershipId);
     const terminal = await terminalEvent(restarted);
     assert.ok(terminal === null || terminal.kind === 'streamError');
-    await until(() => network(c, 'status'), value => value.localStatus === 'removed', 'reader removed');
+    await until(() => control(c, 'getNetwork'), value => value.localStatus === 'removed', 'reader removed');
     assert.equal((await request(c, cc, path(b), 403)).code, 'FORBIDDEN');
     assert.equal((await request(b, await operator(b), `/api/v1/sessions/${sessionId}`)).session.name, 'Synthetic B', 'local reads survive Network removal');
   } finally {

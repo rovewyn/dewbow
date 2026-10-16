@@ -35,6 +35,29 @@ fn native_error(error: anyhow::Error) -> PeerError {
     }
 }
 
+/// One fully verified context per TLS connection. Every delivery still checks
+/// the live selection under the membership commit lock. Records/keys are immutable
+/// within this history; replacing a selection, history, key or status invalidates it.
+pub(super) struct Authorization {
+    context: BusinessContext,
+    selection: uuid::Uuid,
+    local_member: MembershipId,
+    local_key: PublicKey,
+}
+impl Authorization {
+    fn is_current(&self, repo: &Repository, context: &BusinessContext) -> Result<bool> {
+        if self.context != *context {
+            return Ok(false);
+        }
+        let db = repo.db.lock().unwrap();
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM network_settings s JOIN network_selections n ON n.selection_id=s.current_selection_id JOIN network_keys k USING(key_id) WHERE n.selection_id=?1 AND n.network_id=?2 AND n.local_membership_id=?3 AND n.history_id=?4 AND n.status='active' AND k.public_key=?5 AND k.storage_status='present')",
+            rusqlite::params![self.selection.to_string(), context.network_id.as_bytes().as_slice(), self.local_member.as_bytes().as_slice(), context.history_id.as_bytes().as_slice(), self.local_key.as_bytes().as_slice()],
+            |row| row.get(0),
+        ).map_err(unavailable)
+    }
+}
+
 // This lock is the same serialization boundary used by every membership commit.
 // It is released before reading native state or waiting on the network.
 fn check(
@@ -42,7 +65,8 @@ fn check(
     context: &BusinessContext,
     caller: PublicKey,
     target: PublicKey,
-) -> Result<()> {
+    local_member: MembershipId,
+) -> Result<Authorization> {
     let db = repo.db.lock().unwrap();
     let selected = current(&db, repo.limits)
         .map_err(unavailable)?
@@ -52,6 +76,7 @@ fn check(
         return Err(PeerError::new("PROTOCOL_UNSUPPORTED"));
     }
     if selected.status() != SelectionStatus::Active
+        || selected.local_member() != local_member
         || history.network_id() != context.network_id
         || !history.is_active(context.caller_membership_id)
         || !history.is_active(context.target_membership_id)
@@ -67,16 +92,46 @@ fn check(
     if history.snapshot().history_id != context.history_id {
         return Err(PeerError::new("SYNC_REQUIRED"));
     }
-    Ok(())
+    Ok(Authorization {
+        context: context.clone(),
+        selection: selected.selection_id(),
+        local_member,
+        local_key: if local_member == context.caller_membership_id {
+            caller
+        } else {
+            target
+        },
+    })
 }
 impl Session {
-    fn business(&self, context: &BusinessContext) -> Result<()> {
-        let _admission = self.shared.admission()?;
+    fn business(&mut self, context: &BusinessContext) -> Result<()> {
+        let shared = self.shared.clone();
+        let _admission = shared.admission()?;
+        if shared
+            .conflicts
+            .lock()
+            .unwrap()
+            .contains(&(context.network_id, context.caller_membership_id))
+        {
+            return Err(PeerError::new("HISTORY_CONFLICT"));
+        }
+        if let Some(verified) = &self.business_context
+            && verified.is_current(&self.repo, context)?
+        {
+            return Ok(());
+        }
         let selected = self.authorize()?;
         if context.target_membership_id != selected.local_member() {
             return Err(PeerError::new("FORBIDDEN"));
         }
-        check(&self.repo, context, self.peer_key, self.local_key)
+        self.business_context = Some(check(
+            &self.repo,
+            context,
+            self.peer_key,
+            self.local_key,
+            selected.local_member(),
+        )?);
+        Ok(())
     }
 }
 fn authorized(session: &Mutex<Session>, context: &BusinessContext) -> Result<()> {
@@ -263,8 +318,22 @@ pub(super) async fn handle(
 }
 
 impl PeerClient {
-    fn check_context(&self, context: &BusinessContext) -> Result<()> {
-        let _admission = self.shared.admission()?;
+    fn check_context(&mut self, context: &BusinessContext) -> Result<()> {
+        let shared = self.shared.clone();
+        let _admission = shared.admission()?;
+        if shared
+            .conflicts
+            .lock()
+            .unwrap()
+            .contains(&(context.network_id, context.target_membership_id))
+        {
+            return Err(PeerError::new("HISTORY_CONFLICT"));
+        }
+        if let Some(verified) = &self.business_context
+            && verified.is_current(&self.repo, context)?
+        {
+            return Ok(());
+        }
         let selected = self
             .repo
             .current_selection()
@@ -286,7 +355,14 @@ impl PeerClient {
             .member(selected.local_member())
             .ok_or_else(|| PeerError::new("FORBIDDEN"))?
             .public_key;
-        check(&self.repo, context, caller, self.remote_key)
+        self.business_context = Some(check(
+            &self.repo,
+            context,
+            caller,
+            self.remote_key,
+            selected.local_member(),
+        )?);
+        Ok(())
     }
     async fn business_request(
         &mut self,
