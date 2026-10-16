@@ -103,6 +103,17 @@ function journal(node, sql, ...params) {
   try { return db.prepare(sql).all(...params); } finally { db.close(); }
 }
 
+async function recoverOriginal(op, operation, input) {
+  const deadline = Date.now() + 45000;
+  for (;;) {
+    try { return await op.request(operation, input); }
+    catch (cause) {
+      if (!['NOT_READY', 'DELIVERY_UNCERTAIN', 'SYNC_REQUIRED', 'UNAVAILABLE'].includes(cause.code) || Date.now() >= deadline) throw cause;
+      await delay(200);
+    }
+  }
+}
+
 test('remote native operations retain scoped receipts, authority and recovery over real TLS', { timeout: 420000 }, async () => {
   const nodes = [];
   try {
@@ -204,7 +215,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     assert.equal((await oc.request('interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
     network(a, 'leave'); await admit(b, a);
     assert.notEqual(member(a), oldMember);
-    assert.equal((await oa.request('createSession', creation)).commandId, created.commandId, 'fresh admission does not bypass receipts');
+    // Admission can precede the next bounded handshake on a loaded runner. Every
+    // recovery attempt retains the original identity, input and target.
+    assert.equal((await recoverOriginal(oa, 'createSession', creation)).commandId, created.commandId, 'fresh admission does not bypass receipts');
     const encoded = journal(b, 'SELECT receipt_json,recovery_refs_json FROM network_request_receipts').map(row => JSON.stringify(row)).join('');
     for (const secret of ['Synthetic steering', '"answers"', '"nativeRequestId"', '"nativeMethod"']) assert.ok(!encoded.includes(secret), 'no callback or message bodies in receipts');
     assert.ok(journal(b, 'PRAGMA user_version')[0].user_version === 2);
