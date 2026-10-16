@@ -113,6 +113,108 @@ fn remove(node: Node) {
 }
 
 #[test]
+fn business_admission_checks_context_and_withdrawal_before_receipt_reuse() {
+    use super::business::BusinessIdentity;
+    use dewbow_protocol::network::peer::BusinessContext;
+    let a = Node::new();
+    let b = Node::new();
+    a.create();
+    join(&a, &b);
+    let repo = &a.store.network;
+    let selected = repo.current_selection().unwrap().unwrap();
+    let caller = b
+        .store
+        .network
+        .current_selection()
+        .unwrap()
+        .unwrap()
+        .local_member();
+    let target = selected.local_member();
+    let source = selected.history().member(caller).unwrap();
+    let local = selected.history().member(target).unwrap();
+    let identity = BusinessIdentity {
+        caller,
+        target,
+        caller_key: source.public_key,
+        target_key: local.public_key,
+    };
+    let mut context = BusinessContext {
+        protocol_version: 1,
+        network_id: selected.history().network_id(),
+        caller_membership_id: caller,
+        target_membership_id: target,
+        history_id: selected.history().snapshot().history_id,
+        source_host_id: source.host_id,
+        target_host_id: local.host_id,
+    };
+    let scope = ReceiptScope {
+        network_id: context.network_id,
+        source_host_id: context.source_host_id,
+        request_id: "synthetic-business".into(),
+    };
+    let receipt = json!({"requestId":scope.request_id,"commandId":"synthetic-business-command","operation":"sendMessage","authority":"operator","sessionId":"synthetic-business-session","turnId":null,"status":"accepted","createdAt":dewbow_protocol::now(),"error":null,"fingerprint":"11".repeat(32)});
+    let forged = BusinessIdentity {
+        caller_key: local.public_key,
+        ..identity
+    };
+    assert!(
+        repo.admit_business(&context, forged, &scope, [17; 32], &receipt)
+            .unwrap_err()
+            .to_string()
+            .contains("FORBIDDEN")
+    );
+    let original_history = context.history_id;
+    context.history_id = HistoryId::from_bytes([8; 32]);
+    assert!(
+        repo.admit_business(&context, identity, &scope, [17; 32], &receipt)
+            .unwrap_err()
+            .to_string()
+            .contains("SYNC_REQUIRED")
+    );
+    assert!(repo.request_receipt(&scope).unwrap().is_none());
+    context.history_id = original_history;
+    repo.admit_business(&context, identity, &scope, [17; 32], &receipt)
+        .unwrap();
+    assert!(
+        repo.admit_business(&context, identity, &scope, [18; 32], &receipt)
+            .unwrap_err()
+            .to_string()
+            .contains("REQUEST_CONFLICT")
+    );
+    let record = repo
+        .sign_active_change(
+            &selected.selection_id().to_string(),
+            Nonce::from_bytes([15; 32]),
+            Change::Remove(caller),
+        )
+        .unwrap();
+    repo.commit_adoption(
+        &selected.selection_id().to_string(),
+        &proposal(selected.history(), &record),
+    )
+    .unwrap();
+    // Even an existing receipt is inaccessible through the revoked caller.
+    assert!(
+        repo.admit_business(&context, identity, &scope, [17; 32], &receipt)
+            .unwrap_err()
+            .to_string()
+            .contains("FORBIDDEN")
+    );
+    assert!(
+        repo.read_business_receipt(&context, identity, &scope)
+            .unwrap_err()
+            .to_string()
+            .contains("FORBIDDEN")
+    );
+    assert_eq!(
+        repo.request_receipt(&scope).unwrap().unwrap()["status"],
+        "accepted"
+    );
+    remove(a);
+    remove(b);
+}
+
+#[test]
 fn admission_restart_and_expired_retry_preserve_identity_and_results() {
     let a = Node::new();
     let mut b = Node::new();

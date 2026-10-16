@@ -13,6 +13,7 @@ export function apiRequest(operation: string, input: Record<string, unknown> = {
     case "listSessions": method = "GET"; path = "/sessions"; break;
     case "getSession": method = "GET"; path = `/sessions/${segment("sessionId")}`; break;
     case "getOperation": method = "GET"; path = `/operations/${segment("commandId")}`; break;
+    case "getRequestReceipt": method = "GET"; path = `/hosts/${segment("hostId")}/request-receipts/${segment("requestId")}`; break;
     case "readSessionHistory": method = "GET"; path = `/sessions/${segment("sessionId")}/history`; break;
     case "getSessionActivity": method = "GET"; path = `/sessions/${segment("sessionId")}/activities/${segment("itemId")}`; break;
     case "readSessionContent": method = "GET"; path = `/sessions/${segment("sessionId")}/contents/${segment("contentId")}`; break;

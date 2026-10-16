@@ -95,18 +95,26 @@ impl PeerRuntime {
         repo: Repository,
         capacity: super::PeerCapacity,
     ) -> anyhow::Result<Option<Self>> {
-        Self::start_inner(repo, capacity, None).await
+        Self::start_inner(repo, capacity, None, std::sync::Weak::new()).await
     }
     pub(crate) async fn start_in_service(
         repo: Repository,
         maintenance: Arc<crate::maintenance::Maintenance>,
+        business: std::sync::Weak<crate::service::Service>,
     ) -> anyhow::Result<Option<Self>> {
-        Self::start_inner(repo, super::PeerCapacity::default(), Some(maintenance)).await
+        Self::start_inner(
+            repo,
+            super::PeerCapacity::default(),
+            Some(maintenance),
+            business,
+        )
+        .await
     }
     async fn start_inner(
         repo: Repository,
         capacity: super::PeerCapacity,
         maintenance: Option<Arc<crate::maintenance::Maintenance>>,
+        business: std::sync::Weak<crate::service::Service>,
     ) -> anyhow::Result<Option<Self>> {
         let Some(address) = repo.peer_settings()?.listen_endpoint else {
             return Ok(None);
@@ -117,6 +125,7 @@ impl PeerRuntime {
         let identities = Arc::new(tls::server(repo.clone())?);
         let mut shared = Shared::with_capacity(capacity)?;
         shared.maintenance = maintenance;
+        shared.business = business;
         let shared = Arc::new(shared);
         *shared.conflicts.lock().unwrap() = repo.peer_conflicts()?;
         let retained_repo = repo.clone();
@@ -160,6 +169,12 @@ impl PeerRuntime {
     }
     pub fn local_addr(&self) -> SocketAddr {
         self.address
+    }
+    pub(crate) fn connector(&self) -> PeerConnector {
+        PeerConnector {
+            repo: self.repo.clone(),
+            shared: self.shared.clone(),
+        }
     }
     pub fn address_hint_is_fresh(
         &self,
@@ -296,6 +311,32 @@ async fn handle(
         .to_bytes();
         let input: Value = decode(&bytes)?;
         let work = shared.begin_work()?;
+        if matches!(operation.as_str(), "executeOperation" | "getRequestReceipt") {
+            let memory = shared
+                .memory
+                .clone()
+                .try_acquire_many_owned((bytes.len() * 4 + 1024).try_into().map_err(unavailable)?)
+                .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?;
+            let worker = shared
+                .business_workers
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?;
+            let identity = session.lock().unwrap().business_identity()?;
+            let service = shared
+                .business
+                .upgrade()
+                .ok_or_else(|| PeerError::new("NOT_READY"))?;
+            // Dropping this HTTP future must not cancel target-owned admitted work.
+            return tokio::spawn(async move {
+                let _work = work;
+                let _memory = memory;
+                let _worker = worker;
+                service.peer_business(&operation, input, identity).await
+            })
+            .await
+            .map_err(unavailable)?;
+        }
         tokio::task::spawn_blocking(move || {
             let _work = work;
             session.lock().unwrap().dispatch(&operation, input)
@@ -321,6 +362,82 @@ async fn handle(
         .header("cache-control", "no-store")
         .body(Full::new(Bytes::from(bytes)))
         .unwrap())
+}
+
+#[derive(Clone)]
+pub(crate) struct PeerConnector {
+    repo: Repository,
+    shared: Arc<Shared>,
+}
+impl PeerConnector {
+    /// Read-only connection: no proof adoption, reconciliation or contact writes.
+    pub async fn query(
+        &self,
+        address: &str,
+        member: MembershipId,
+        explicit: bool,
+    ) -> Result<PeerClient> {
+        let selected = self
+            .repo
+            .current_selection()
+            .map_err(unavailable)?
+            .ok_or_else(|| PeerError::new("NOT_READY"))?;
+        if selected.status() != SelectionStatus::Active {
+            return Err(PeerError::new("FORBIDDEN"));
+        }
+        if self
+            .shared
+            .conflicts
+            .lock()
+            .unwrap()
+            .contains(&(selected.history().network_id(), member))
+        {
+            return Err(PeerError::new("HISTORY_CONFLICT"));
+        }
+        let expected = selected
+            .history()
+            .member(member)
+            .filter(|_| selected.history().is_active(member))
+            .ok_or_else(|| PeerError::new("FORBIDDEN"))?;
+        let mut client = PeerClient::open_transport(
+            &self.repo,
+            address,
+            Some(expected.public_key),
+            explicit,
+            &self.shared,
+        )
+        .await?;
+        client.hello = client
+            .request(
+                "hello",
+                &Hello::Member {
+                    protocol_version: 1,
+                    network_id: selected.history().network_id(),
+                    membership_id: selected.local_member(),
+                    history: selected.history().snapshot().clone(),
+                },
+            )
+            .await?;
+        if client.hello.protocol_version != 1
+            || client.hello.network_id != selected.history().network_id()
+            || client.hello.membership_id != Some(member)
+            || client.hello.access == Access::ProofOnly
+        {
+            return Err(PeerError::new("FORBIDDEN"));
+        }
+        if client.hello.history.as_ref() != Some(selected.history().snapshot()) {
+            return Err(PeerError::new("SYNC_REQUIRED"));
+        }
+        Ok(client)
+    }
+    pub async fn connect(
+        &self,
+        address: &str,
+        member: MembershipId,
+        explicit: bool,
+    ) -> Result<PeerClient> {
+        PeerClient::connect_shared(&self.repo, address, member, explicit, Some(&self.shared)).await
+    }
 }
 
 pub struct PeerClient {
@@ -705,19 +822,23 @@ impl PeerClient {
         .map_err(|_| PeerError::new("UNAVAILABLE"))?
         .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?
         .to_bytes();
-        let body: Value = decode(&bytes)?;
+        // A malformed mutation reply may follow native admission; it is never a
+        // confirmed input rejection and must not reopen the outbound attempt.
+        let invalid_reply = || {
+            PeerError::new(if operation == "executeOperation" {
+                "DELIVERY_UNCERTAIN"
+            } else {
+                "INVALID_INPUT"
+            })
+        };
+        let body: Value = decode(&bytes).map_err(|_| invalid_reply())?;
         if let Some(error) = body.get("error") {
-            return Err(serde_json::from_value(error.clone())
-                .map_err(|_| PeerError::new("INVALID_INPUT"))?);
+            return Err(serde_json::from_value(error.clone()).map_err(|_| invalid_reply())?);
         }
         if !status.is_success() {
             return Err(PeerError::new("UNAVAILABLE"));
         }
-        serde_json::from_value(
-            body.get("result")
-                .cloned()
-                .ok_or_else(|| PeerError::new("INVALID_INPUT"))?,
-        )
-        .map_err(|_| PeerError::new("INVALID_INPUT"))
+        serde_json::from_value(body.get("result").cloned().ok_or_else(invalid_reply)?)
+            .map_err(|_| invalid_reply())
     }
 }

@@ -2,6 +2,8 @@ export type SessionState = "idle" | "running" | "awaiting_approval" | "awaiting_
 export type TurnMode = "default" | "plan";
 export type TurnState = "accepted" | "running" | "awaiting_approval" | "awaiting_input" | "completed" | "interrupted" | "error" | "unknown";
 export type OperationStatus = "accepted" | "delivered" | "error" | "unknown";
+export interface RemoteReceiptScope { networkId: string; sourceHostId: string; requestId: string }
+export interface RequestReceiptResult { receiptScope: RemoteReceiptScope; receipt: Omit<Operation, "caller" | "fingerprint" | "input"> | null; receiptRetentionSeconds: number }
 export interface Host {
   hostId: string; name: string; status: "connected" | "disconnected" | "revoked"; lastSeenAt: string | null;
 }
@@ -153,9 +155,11 @@ const sessionOptions = { type: "object", properties: {
   instructionsAppend: { type: "string", minLength: 0, maxLength: 100000 },
 }, required: [], additionalProperties: false };
 function tool(name: string, description: string, properties: Record<string, unknown>, required: string[]) {
+  if (["connectSession", "sendMessage", "steerTurn", "answerQuestions", "decideApproval", "interruptTurn"].includes(name)) properties = { hostId: text, ...properties };
   return { name, description, inputSchema: { type: "object", properties, required, additionalProperties: false } };
 }
 export const tools = [
+  tool("getRequestReceipt", "Inspect an original target's scoped delivery receipt under current Network authority.", { hostId: text, networkId: text, sourceHostId: text, requestId: request }, ["hostId", "networkId", "sourceHostId", "requestId"]),
   tool("listHosts", "List configured hosts and observed connection state.", {}, []),
   tool("listSessions", "List SDK-discovered Codex conversations with optional managed execution metadata.", { hostId: text }, []),
   tool("createSession", "Create a local session with optional execution overrides frozen for recovery.", { hostId: text, workDir: text, requestId: request, sessionOptions }, ["hostId", "workDir", "requestId"]),
@@ -170,7 +174,7 @@ export const tools = [
   tool("interruptTurn", "Request interruption of the exact active turn. Poll final state separately.", { sessionId: text, turnId: text, requestId: request }, ["sessionId", "turnId", "requestId"]),
 ] as const;
 const approvalTool = tool("decideApproval", "Decide an exact pending approval; operator authority required.", { sessionId:text,turnId:text,interactionId:text,requestId:request,decision:{type:"string",enum:["allow","deny"]} },["sessionId","turnId","interactionId","requestId","decision"]);
-export type ToolName = Command["operation"] | "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent";
+export type ToolName = Command["operation"] | "listHosts" | "listSessions" | "getSession" | "readSessionHistory" | "getSessionActivity" | "readSessionContent" | "getRequestReceipt";
 export function validateInput(name: string, input: unknown): Record<string, unknown> {
   const schema = [...tools, approvalTool].find(t => t.name === name)?.inputSchema;
   if (!schema) fail("INVALID_INPUT", "Unknown operation.");

@@ -7,7 +7,11 @@ use serde_json::Value;
 use std::sync::atomic::Ordering;
 
 impl Service {
-    pub(crate) async fn network_control(&self, name: &str, input: &Value) -> anyhow::Result<Value> {
+    pub(crate) async fn network_control(
+        self: &std::sync::Arc<Self>,
+        name: &str,
+        input: &Value,
+    ) -> anyhow::Result<Value> {
         anyhow::ensure!(
             !self.stopped.load(Ordering::Acquire),
             "UNAVAILABLE: daemon stopping"
@@ -36,8 +40,12 @@ impl Service {
                     previous.shutdown().await;
                 }
                 repo.configure_peer(&settings)?;
-                *peer =
-                    PeerRuntime::start_in_service(repo.clone(), self.maintenance.clone()).await?;
+                *peer = PeerRuntime::start_in_service(
+                    repo.clone(),
+                    self.maintenance.clone(),
+                    std::sync::Arc::downgrade(self),
+                )
+                .await?;
             }
         }
         let mut result = if name == "getNetworkJoin" {

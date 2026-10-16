@@ -26,6 +26,8 @@ pub(super) struct Shared {
     pub memory: Arc<Semaphore>,
     pub proof_budget: Duration,
     pub maintenance: Option<Arc<crate::maintenance::Maintenance>>,
+    pub business: std::sync::Weak<crate::service::Service>,
+    pub business_workers: Arc<Semaphore>,
     rates: Mutex<BTreeMap<PublicKey, (Instant, usize)>>,
     leases: Mutex<BTreeMap<(NetworkId, MembershipId, Nonce), Instant>>,
 }
@@ -43,6 +45,8 @@ impl Default for Shared {
             memory: Arc::new(Semaphore::new(64 * 1024 * 1024)),
             proof_budget: Duration::from_secs(300),
             maintenance: None,
+            business: std::sync::Weak::new(),
+            business_workers: Arc::new(Semaphore::new(32)),
             rates: Mutex::new(BTreeMap::new()),
             leases: Mutex::new(BTreeMap::new()),
         }
@@ -247,6 +251,19 @@ pub(super) struct Session {
     parts: [usize; 3],
 }
 impl Session {
+    pub fn business_identity(&mut self) -> Result<super::super::business::BusinessIdentity> {
+        self.expire();
+        let selected = self.authorize()?;
+        let Some(Hello::Member { membership_id, .. }) = self.hello else {
+            return Err(PeerError::new("FORBIDDEN"));
+        };
+        Ok(super::super::business::BusinessIdentity {
+            caller: membership_id,
+            target: selected.local_member(),
+            caller_key: self.peer_key,
+            target_key: self.local_key,
+        })
+    }
     pub fn new(
         repo: Repository,
         shared: Arc<Shared>,

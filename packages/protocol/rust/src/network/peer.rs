@@ -9,6 +9,126 @@ pub const MAX_MISSING_IDS: usize = 128;
 pub const MAX_RECORD_PAGE: usize = 32;
 pub const CHUNK_BYTES: usize = 64 * 1024;
 
+/// Refreshable authority is deliberately separate from durable request identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BusinessContext {
+    pub protocol_version: u64,
+    pub network_id: NetworkId,
+    pub caller_membership_id: MembershipId,
+    pub target_membership_id: MembershipId,
+    pub history_id: HistoryId,
+    pub source_host_id: HostId,
+    pub target_host_id: HostId,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Mutation {
+    CreateSession,
+    ConnectSession,
+    SendMessage,
+    SteerTurn,
+    AnswerQuestions,
+    DecideApproval,
+    InterruptTurn,
+}
+impl Mutation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::CreateSession => "createSession",
+            Self::ConnectSession => "connectSession",
+            Self::SendMessage => "sendMessage",
+            Self::SteerTurn => "steerTurn",
+            Self::AnswerQuestions => "answerQuestions",
+            Self::DecideApproval => "decideApproval",
+            Self::InterruptTurn => "interruptTurn",
+        }
+    }
+}
+
+// Explicit fields avoid serde flatten/deny_unknown_fields ambiguities.
+macro_rules! business_request {
+    ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
+        #[derive(Clone, Debug, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        pub struct $name {
+            pub protocol_version: u64,
+            pub network_id: NetworkId,
+            pub caller_membership_id: MembershipId,
+            pub target_membership_id: MembershipId,
+            pub history_id: HistoryId,
+            pub source_host_id: HostId,
+            pub target_host_id: HostId,
+            $(pub $field: $ty,)*
+        }
+        impl $name {
+            pub fn context(&self) -> BusinessContext {
+                BusinessContext {
+                    protocol_version: self.protocol_version,
+                    network_id: self.network_id,
+                    caller_membership_id: self.caller_membership_id,
+                    target_membership_id: self.target_membership_id,
+                    history_id: self.history_id,
+                    source_host_id: self.source_host_id,
+                    target_host_id: self.target_host_id,
+                }
+            }
+        }
+    };
+}
+business_request!(ExecuteOperation {
+    operation: Mutation,
+    input: Value,
+    request_id: String
+});
+business_request!(GetRequestReceipt {
+    receipt_source_host_id: HostId,
+    request_id: String
+});
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteReceiptScope {
+    pub network_id: NetworkId,
+    pub source_host_id: HostId,
+    pub request_id: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RequestReceiptResult {
+    pub receipt_scope: RemoteReceiptScope,
+    pub receipt: Option<OperationReceipt>,
+    pub receipt_retention_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationReceipt {
+    pub request_id: String,
+    pub command_id: String,
+    pub operation: Mutation,
+    pub authority: OperatorAuthority,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub status: ReceiptStatus,
+    pub created_at: String,
+    pub error: Option<crate::ManagementError>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OperatorAuthority {
+    Operator,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReceiptStatus {
+    Accepted,
+    Delivered,
+    Error,
+    Unknown,
+}
+
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     serde_json::from_value(codec::bounded_value(bytes, MAX_FRAME_BYTES)?).map_err(|_| Error {
         kind: ErrorKind::InvalidInput,

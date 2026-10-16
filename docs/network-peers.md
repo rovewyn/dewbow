@@ -2,7 +2,7 @@
 
 The daemon implements direct authenticated peer connections and membership reconciliation on a separate HTTPS listener. The [membership engine](network-membership-engine.md) remains the only authority validator; [Network storage](storage.md#network-storage-foundation) remains the durable source of accepted management records. There is no coordinator, privileged founder, replicated conversation store or execution relay.
 
-This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Web Network integration, remote native reads and remote execution remain deferred.
+This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. [Remote execution](network-execution.md) adds typed native mutations and scoped receipt recovery. Network Web integration, remote native reads and subscriptions remain deferred.
 
 ## Configuration and lifecycle
 
@@ -24,7 +24,7 @@ One `hello` binds each connection to one Network, identity and purpose. Unknown 
 
 When a retained pin is unavailable or no longer names the responder's current generation, the client explicitly reconnects in proof-only mode. It fetches complete signed responder admission ancestry without invitation secrets or business data, checks the original Network and host binding and validates compatible adoption. It then establishes a fresh member connection pinned to the proven generation key. Another host at the same endpoint cannot replace the original target. The certificate selected before a server handshake remains that connection's exact HTTP identity even if local membership changes during the handshake.
 
-Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation operations use pinned join channels with explicit issuer-local confirmation. Public `joinRecovery` returns only retained signed admission ancestry or an inconclusive result, never new authority. Departure operations use exact old-generation keys and verified recipient contexts, including inactive-recipient acknowledgements and locally constructed rebases. Business operations require ordinary member authority and currently return `NOT_READY`.
+Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation operations use pinned join channels with explicit issuer-local confirmation. Public `joinRecovery` returns only retained signed admission ancestry or an inconclusive result, never new authority. Departure operations use exact old-generation keys and verified recipient contexts, including inactive-recipient acknowledgements and locally constructed rebases. Business operations require ordinary member authority. Typed mutations and receipt queries use the target admission gate; native reads and subscriptions return `NOT_READY`.
 
 ## Reconciliation and addresses
 
@@ -42,7 +42,7 @@ Snapshot and manifest tokens expire after 60 seconds without successful activity
 
 Peer control messages are bounded JSON POST operations under `/network/v1`. Rust request and result types live in the protocol crate. Duplicate JSON properties, unsupported forms and oversized inputs fail before dispatch. The [protocol](network-protocol.md#addresses-retries-and-resource-bounds) defines interoperable frame, page, nesting and record bounds.
 
-The reusable framing module supplies bounded JSON serialization, NDJSON/SSE encoding and incremental receivers. A start/chunk/end transfer preserves one complete typed JSON value, including native items larger than a control frame. Receivers check transfer identity, contiguous indexes, base64url encoding, byte budget, length, digest and complete JSON before publishing. EOF, cancellation or `streamError` discards the incomplete logical value. No frame is spooled to disk. Actual native read, execution and subscription handlers remain deferred.
+The reusable framing module supplies bounded JSON serialization, NDJSON/SSE encoding and incremental receivers. A start/chunk/end transfer preserves one complete typed JSON value, including native items larger than a control frame. Receivers check transfer identity, contiguous indexes, base64url encoding, byte budget, length, digest and complete JSON before publishing. EOF, cancellation or `streamError` discards the incomplete logical value. No frame is spooled to disk. Native execution and receipt handlers use bounded JSON results. Native read and subscription handlers remain deferred.
 
 Focused regression checks run with:
 
@@ -50,7 +50,7 @@ Focused regression checks run with:
 cargo test --locked -p dewbow-daemon --lib network::peer
 ```
 
-These tests use synthetic management state and real loopback TLS/HTTP connections. They cover founder independence, admission proof bootstrap, current-authority checks, key substitution, missing client certificates, automatic reconciliation/restart, conflict quarantine, failed commits, duplicate retries, immutable snapshots with renewable expiry, discarded-child recovery, framing and socket release. They do not constitute acceptance on separate physical machines or remote native execution.
+These tests use synthetic management state and real loopback TLS/HTTP connections. They cover founder independence, admission proof bootstrap, current-authority checks, key substitution, missing client certificates, automatic reconciliation/restart, conflict quarantine, failed commits, duplicate retries, immutable snapshots with renewable expiry, discarded-child recovery, framing and socket release. The [execution checks](network-execution.md#validation) additionally exercise native fixture operations across multiple daemons. These checks do not constitute acceptance on separate physical machines.
 
 ## Lifecycle scheduling and acceptance
 
