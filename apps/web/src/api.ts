@@ -31,10 +31,10 @@ export function authenticateLauncher(): Promise<unknown> {
   launcherLogin ??= api("listHosts");
   return launcherLogin;
 }
-export async function readInteractionDetails(sessionId:string,contentId:string,signal?:AbortSignal):Promise<InteractionDetails> {
+export async function readInteractionDetails(sessionId:string,contentId:string,signal?:AbortSignal,target:Record<string,string>={}):Promise<InteractionDetails> {
   let text="",cursor:string|null=null,offset=0;
   do {
-    const page:ContentPage=await api<ContentPage>("readSessionContent",{sessionId,contentId,...(cursor ? {contentCursor:cursor} : {})},signal);
+    const page:ContentPage=await api<ContentPage>("readSessionContent",{...target,sessionId,contentId,...(cursor ? {contentCursor:cursor} : {})},signal);
     if(page.contentId!==contentId || page.byteOffset!==offset || page.byteLength>1048576 || (page.nextCursor && !page.text))throw new Error("Invalid interaction details page.");
     text+=page.text;offset+=new TextEncoder().encode(page.text).length;cursor=page.nextCursor;
   }while(cursor);

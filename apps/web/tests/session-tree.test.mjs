@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSessionTree, projectSessionTree } from "../src/components/session-tree/model.ts";
+import { sessionKey } from "../src/targets.ts";
 
 const hosts = ["studio", "build"].map(hostId => ({ hostId, name: hostId, status: "connected", lastSeenAt: null }));
 const session = (id, { host = "studio", home = "/synthetic/codex", nativeId = id, parent = null, fork = null, name = id } = {}) => ({
@@ -52,4 +53,14 @@ test("a connection failure has a scoped label without changing the runtime obser
   assert.ok(node.metadata.includes("Runtime: Running"));
   assert.ok(!node.metadata.includes("Managed"));
   assert.equal(item.runtimeState, "running");
+});
+
+test("identical remote session IDs and lineage stay isolated by host and admission", () => {
+  const entries = hosts.map(host => ({ ...session("same", { host: host.hostId }), target: { networkId: "network", hostId: host.hostId, membershipId: `member-${host.hostId}` } }));
+  const tree = buildSessionTree(hosts, entries), all = flatten(tree).filter(node => node.kind === "session");
+  assert.equal(all.length, 2); assert.notEqual(all[0].id, all[1].id);
+  const selection = projectSessionTree(tree, "", sessionKey(entries[1]));
+  assert.equal(selection.selected.sessionId, sessionKey(entries[1]));
+  assert.deepEqual(selection.selectedPath, ["host:build"]);
+  assert.notEqual(sessionKey(entries[1]), sessionKey({ ...entries[1], target: { ...entries[1].target, membershipId: "readmitted" } }));
 });

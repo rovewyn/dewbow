@@ -2,7 +2,7 @@
 
 The daemon implements direct authenticated peer connections and membership reconciliation on a separate HTTPS listener. The [membership engine](network-membership-engine.md) remains the only authority validator; [Network storage](storage.md#network-storage-foundation) remains the durable source of accepted management records. There is no coordinator, privileged founder, replicated conversation store or execution relay.
 
-This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Network reads and subscriptions use direct Peer adapters. [Remote execution](network-execution.md) adds typed native mutations and scoped receipt recovery. Network Web integration remains deferred.
+This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Network reads and subscriptions use direct Peer adapters. [Remote execution](network-execution.md) adds typed native mutations and scoped receipt recovery. The [Network Web dialog](web.md#network-workflow) shares the local lifecycle service and operator-authenticated resources; it never receives the private CLI control credential.
 
 ## Configuration and lifecycle
 

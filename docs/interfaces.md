@@ -35,7 +35,7 @@ For example, `POST /api/v1/sessions/session-example/turns` with `{ "message": "H
 
 ## Remote execution
 
-All seven mutations support an execution host. Creation keeps its required `hostId`; connection, sending, steering, interruption, answers and decisions accept optional `hostId` in the JSON body. Omission means this daemon. An explicit local host is normalized to the original local operation input, preserving existing local fingerprints. A remote host uses a direct authenticated member connection, target-owned native policy and the same typed operation rules. Membership control remains private CLI control; this does not expose browser enrollment.
+All seven mutations support an execution host. Creation keeps its required `hostId`; connection, sending, steering, interruption, answers and decisions accept optional `hostId` in the JSON body. Omission means this daemon. An explicit local host is normalized to the original local operation input, preserving existing local fingerprints. A remote host uses a direct authenticated member connection, target-owned native policy and the same typed operation rules. Network lifecycle management is also available through the operator resources below.
 
 Remote mutation responses retain the existing public operation shape. Their `Location` is `/api/v1/hosts/{hostId}/request-receipts/{requestId}?networkId=…&sourceHostId=…`. This authenticated GET requires both query fields, returns `{ result: { receiptScope: { networkId, sourceHostId, requestId }, receipt, receiptRetentionSeconds } }`, and never writes state or executes work. A currently authorized member can inspect another source's receipt, including after that source was removed; it cannot execute using that source's identity. The target may be this daemon. A missing receipt is `null`, not proof of nonexecution. Existing `/operations/{commandId}` reads remain available for this daemon's retained operations.
 
@@ -143,8 +143,31 @@ npm exec --yes --package=@redocly/cli@2.63.0 --call="redocly lint docs/openapi.y
 
 The validator does not follow the custom `x-sse-events` payload references when finding unused components, so it may warn that `RemoteSessionUpdates` is unused. The extension defines it as the remote snapshot/update schema; its payload uses `SessionUpdates`. Review those extension references and compare representative JSON and SSE payloads with the schemas; syntax validation alone does not establish implementation conformance.
 
+## Operator Network lifecycle
+
+All paths are relative to /api/v1. GET reads require the local operator cookie and Host; POST additionally requires the exact Origin, a JSON object and stable requestId. Path identities cannot be repeated in the body/query; queries are not accepted by mutations. Responses use the existing result/error envelopes, no-store caching and resource error mappings. Lifecycle success returns HTTP 200 without an operation Location. It establishes local management progress, not global propagation or native completion.
+
+| Method and path | Operation | Body |
+| --- | --- | --- |
+| GET /network | getNetwork | None |
+| POST /networks | createNetwork | networkName, requestId; optional listenEndpoint, advertisedEndpoints |
+| POST /network-joins | joinNetwork | invitation, requestId; optional listenEndpoint, advertisedEndpoints |
+| GET /networks/{networkId}/members | listNetworkMembers | None |
+| POST /networks/{networkId}/invitations | createInvitation | requestId |
+| GET /networks/{networkId}/joins | listNetworkJoins | None |
+| GET /networks/{networkId}/joins/{joinAttemptId} | getNetworkJoin | None |
+| POST /networks/{networkId}/joins/{joinAttemptId}/decisions | confirmNetworkJoin | publicKey, decision (allow/deny), requestId |
+| POST /networks/{networkId}/members/{membershipId}/removals | removeNetworkMember | requestId |
+| POST /networks/{networkId}/members/{membershipId}/contact-addresses | setNetworkPeerAddress | endpoint, requestId |
+
+The service checks the explicit Network while holding the local lifecycle/Peer-runtime gate. Removal identifies an exact admission, including self; it never substitutes the current local generation for a stale target. Any active member can invite or remove another member, including an unreachable member or founder. Joining requires invitation possession and local issuer confirmation of the full key. One current Network is selected per state directory; joining and ready membership are distinct.
+
+The seven existing mutation suffixes rooted at /sessions are also available under /networks/{networkId}/hosts/{hostId}. The explicit host must be remote. Network/host identities are path-owned; all other operation inputs and response/Location semantics match the existing mutation resources. The Network is checked before binding and again against the authenticated dispatch context; route context never changes existing semantic fingerprints. A changed Network fails rather than rerouting the request. Legacy local and hostId-body routes remain supported. Scoped receipt GET remains read-only; a missing receipt leaves delivery uncertain.
+
+Invitations and original pending inputs are sensitive. Clients keep them in volatile page memory and clear them on sign-out; invitation display is cleared when its dialog closes. Membership reads, reachability and known-recipient dissemination have separate meanings. Closing the UI cancels reads, not admitted work.
+
 ## Private Network CLI control
 
-The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. Membership control has no browser routes; target-scoped read resources are documented above. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
+The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. The Web uses the operator resources below rather than the private control credential. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
 
 See [CLI membership](cli.md#network-membership) for arguments and output. `getNetwork` adds retained join progress, Peer settings and listener status. Members expose exact admission identities and separate short-lived reachability observations. Dissemination reports known-peer current-history acknowledgements and retained per-recipient departure tasks, without a global completion claim. Maintenance rejects mutations while preserving diagnostic reads. These operations do not read or execute remote native sessions.

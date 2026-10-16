@@ -103,6 +103,26 @@ struct CreateInput {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct JoinInput {
+    invitation: String,
+    request_id: String,
+    listen_endpoint: Option<String>,
+    #[serde(default)]
+    advertised_endpoints: Vec<String>,
+}
+
+pub(crate) fn validate_setup(operation: &str, input: &Value) -> anyhow::Result<()> {
+    if operation == "createNetwork" {
+        let _: CreateInput = parse(input)?;
+    } else {
+        let value: JoinInput = parse(input)?;
+        Invitation::parse(&value.invitation)
+            .map_err(|_| anyhow::anyhow!("INVALID_INPUT: invalid invitation"))?;
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RequestInput {
     request_id: String,
 }
@@ -208,16 +228,7 @@ impl Repository {
         ))
     }
     pub fn start_network_join(&self, input: &Value) -> anyhow::Result<Value> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        struct Input {
-            invitation: String,
-            request_id: String,
-            listen_endpoint: Option<String>,
-            #[serde(default)]
-            advertised_endpoints: Vec<String>,
-        }
-        let parsed: Input = parse(input)?;
+        let parsed: JoinInput = parse(input)?;
         let _ = (
             &parsed.request_id,
             &parsed.listen_endpoint,
