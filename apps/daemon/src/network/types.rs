@@ -78,7 +78,7 @@ pub struct AttemptId {
     pub attempt: Nonce,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReceiptScope {
     pub network_id: NetworkId,
     pub source_host_id: HostId,

@@ -15,7 +15,7 @@ Codex owns native conversations, history, tool content, execution status and cre
 | `packages/ui` | `@dewbow/ui` | Shared controlled ChatView, presentation and theme |
 | `apps/web` | `@dewbow/web` | React/TypeScript operator interface |
 
-The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm workspace builds retained TypeScript packages and Web. Dewbow-owned contracts remain `v1`. The earlier TypeScript Control Plane and Host Daemon have been removed. Network enrollment and membership management are available through the CLI; remote native routing, MCP and external agent management remain deferred.
+The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm workspace builds retained TypeScript packages and Web. Dewbow-owned contracts remain `v1`. The earlier TypeScript Control Plane and Host Daemon have been removed. Network enrollment and membership management are available through the CLI; remote native mutations and scoped receipt recovery are available through the operator API. Remote native reads, Network Web integration, MCP and external agent management remain deferred.
 
 ## Guides
 
@@ -37,6 +37,7 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Session update subscriptions](session-updates.md)
 - [Network membership engine](network-membership-engine.md) describes the independent Rust validator, candidate transitions and caller commit contract.
 - [Network peer transport](network-peers.md) describes authenticated connections, membership reconciliation, configuration and CLI lifecycle recovery.
+- [Remote Network execution](network-execution.md) describes direct typed operations, scoped receipts, authority and conservative recovery.
 
 ## Design proposals
 
@@ -44,4 +45,4 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Network protocol v1](network-protocol.md) specifies signed records, validation, peer exchange, departure delivery and request admission.
 - [Network storage, keys and crash recovery](network-storage-design.md) proposes local tables, protected keys, transaction boundaries and interrupted-state recovery for issue #37.
 
-These documents remain the design baseline. Membership validation, storage, authenticated Peer synchronization and CLI lifecycle are implemented; remote native access and Network Web integration remain deferred.
+These documents remain the design baseline. Membership validation, storage, authenticated Peer synchronization, CLI lifecycle, remote native mutations and receipt recovery are implemented. Remote history/subscriptions and Network Web integration remain deferred.

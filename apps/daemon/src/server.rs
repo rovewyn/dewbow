@@ -36,6 +36,10 @@ const READ_ROUTES: &[(&str, &str)] = &[
         "readSessionContent",
     ),
     ("/api/v1/operations/{commandId}", "getOperation"),
+    (
+        "/api/v1/hosts/{hostId}/request-receipts/{requestId}",
+        "getRequestReceipt",
+    ),
 ];
 const MUTATION_ROUTES: &[(&str, &str)] = &[
     ("/api/v1/sessions", "createSession"),
@@ -69,6 +73,15 @@ fn error_response(cause: anyhow::Error, resource: bool) -> Response {
     let detail = cause
         .downcast_ref::<dewbow_protocol::ManagementError>()
         .cloned()
+        .or_else(|| {
+            cause
+                .downcast_ref::<dewbow_protocol::network::peer::PeerError>()
+                .map(|e| dewbow_protocol::ManagementError {
+                    code: e.code.clone(),
+                    message: e.message.clone(),
+                    retryable: e.retryable,
+                })
+        })
         .unwrap_or_else(|| {
             error(
                 "EXECUTION_FAILED",
@@ -85,7 +98,9 @@ fn error_response(cause: anyhow::Error, resource: bool) -> Response {
         {
             StatusCode::CONFLICT
         }
-        "UNAVAILABLE" if resource => StatusCode::SERVICE_UNAVAILABLE,
+        "UNAVAILABLE" | "NOT_READY" if resource => StatusCode::SERVICE_UNAVAILABLE,
+        "SYNC_REQUIRED" | "HISTORY_CONFLICT" if resource => StatusCode::CONFLICT,
+        "RESOURCE_LIMIT" if resource => StatusCode::TOO_MANY_REQUESTS,
         "LIMIT_EXCEEDED" if resource => StatusCode::TOO_MANY_REQUESTS,
         "DELIVERY_UNCERTAIN" | "EXECUTION_FAILED" if resource => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
@@ -248,6 +263,12 @@ async fn mutate_resource(
         Err(cause) => return resource_failure(cause),
     };
     let name = route_operation(path.as_str(), MUTATION_ROUTES);
+    let remote = input
+        .get("hostId")
+        .and_then(Value::as_str)
+        .filter(|host| *host != service.config.host_id)
+        .map(str::to_owned);
+    let request_id = input["requestId"].as_str().unwrap_or("").to_owned();
     match service.api(name, input).await {
         Ok(result) => {
             let status = match result["status"].as_str() {
@@ -257,10 +278,47 @@ async fn mutate_resource(
                 }
                 _ => StatusCode::OK,
             };
-            let location = format!(
-                "/api/v1/operations/{}",
-                result["commandId"].as_str().unwrap()
-            );
+            let location =
+                if let Some(target) = remote {
+                    let network =
+                        match service.store.network.outbound_network_for_command(
+                            result["commandId"].as_str().unwrap_or(""),
+                        ) {
+                            Ok(Some(network)) => network,
+                            _ => return resource_failure(
+                                error(
+                                    "DELIVERY_UNCERTAIN",
+                                    "Retain the original request identity for receipt recovery.",
+                                )
+                                .into(),
+                            ),
+                        };
+                    // URI query encoding also escapes request IDs when used as path segments.
+                    fn segment(value: &str) -> String {
+                        value
+                            .bytes()
+                            .map(|b| {
+                                if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                                    (b as char).to_string()
+                                } else {
+                                    format!("%{b:02X}")
+                                }
+                            })
+                            .collect()
+                    }
+                    format!(
+                        "/api/v1/hosts/{}/request-receipts/{}?networkId={}&sourceHostId={}",
+                        segment(&target),
+                        segment(&request_id),
+                        network,
+                        segment(&service.config.host_id)
+                    )
+                } else {
+                    format!(
+                        "/api/v1/operations/{}",
+                        result["commandId"].as_str().unwrap()
+                    )
+                };
             (
                 status,
                 [

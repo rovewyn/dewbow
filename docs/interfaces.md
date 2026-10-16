@@ -33,6 +33,14 @@ For example, `POST /api/v1/sessions/session-example/turns` with `{ "message": "H
 
 `GET /api/v1/operations/{commandId}` reads a retained receipt without executing a command or writing management storage. It exposes the same public fields as mutation responses, excluding fingerprints and native callback/process identities. A pruned or unknown receipt returns 404; absence does not establish that the action never happened. Receipt lookup follows the existing retention window and does not create an execution history.
 
+## Remote execution
+
+All seven mutations support an execution host. Creation keeps its required `hostId`; connection, sending, steering, interruption, answers and decisions accept optional `hostId` in the JSON body. Omission means this daemon. An explicit local host is normalized to the original local operation input, preserving existing local fingerprints. A remote host uses a direct authenticated member connection, target-owned native policy and the same typed operation rules. Membership control remains private CLI control; this does not expose browser enrollment.
+
+Remote mutation responses retain the existing public operation shape. Their `Location` is `/api/v1/hosts/{hostId}/request-receipts/{requestId}?networkId=…&sourceHostId=…`. This authenticated GET requires both query fields, returns `{ result: { receiptScope: { networkId, sourceHostId, requestId }, receipt, receiptRetentionSeconds } }`, and never writes state or executes work. A currently authorized member can inspect another source's receipt, including after that source was removed; it cannot execute using that source's identity. The target may be this daemon. A missing receipt is `null`, not proof of nonexecution. Existing `/operations/{commandId}` reads remain available for this daemon's retained operations.
+
+Remote routing adds `NOT_READY` (503), `SYNC_REQUIRED` and `HISTORY_CONFLICT` (409), and `RESOURCE_LIMIT` (429). Possible dispatch without a trustworthy response is `DELIVERY_UNCERTAIN` (500) unless a target receipt is already returned. Preserve the original identity and input; never select another target or invent a replacement request ID. Native completion still requires native state, independently of delivery. See [remote execution](network-execution.md).
+
 ## Contract version
 
 The management contract's current name is `v1`. It covers domain operation names, input/output shapes, errors and session update semantics. The protocol package declares this version, session update snapshots include `contractVersion: "v1"`, and HTTP resources use `/api/v1`. The daemon and bundled Web implement one coordinated contract, without multi-version negotiation. The approved HTTP transition and removed routes are recorded in the [0.2.0 release notes](release-notes/0.2.0.md#http-api-transition).

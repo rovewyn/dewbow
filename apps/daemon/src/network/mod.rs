@@ -1,5 +1,6 @@
 //! Network management storage and authenticated peer integration.
-//! Public operator lifecycle and native business handlers remain deferred.
+//! CLI membership and typed native business operations share this management store.
+pub(crate) mod business;
 mod keys;
 pub mod lifecycle;
 pub(crate) mod migration;

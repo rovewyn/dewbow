@@ -13,6 +13,32 @@ fn nonce(n: u8) -> Nonce {
 fn host(n: u8) -> HostId {
     HostId::parse(&format!("00000000-0000-4000-8000-{n:012}")).unwrap()
 }
+
+#[test]
+fn business_wire_rejects_control_forwarding_and_private_receipt_fields() {
+    use dewbow_protocol::network::peer::{BusinessContext, ExecuteOperation, OperationReceipt};
+    let context = BusinessContext {
+        protocol_version: 1,
+        network_id: NetworkId::from_bytes([1; 32]),
+        caller_membership_id: MembershipId::from_bytes([2; 32]),
+        target_membership_id: MembershipId::from_bytes([3; 32]),
+        history_id: HistoryId::from_bytes([4; 32]),
+        source_host_id: host(1),
+        target_host_id: host(2),
+    };
+    let mut request = serde_json::to_value(context).unwrap();
+    request.as_object_mut().unwrap().extend(json!({"operation":"sendMessage","requestId":"synthetic-wire","input":{"sessionId":"synthetic-session","message":"Synthetic"}}).as_object().unwrap().clone());
+    assert!(serde_json::from_value::<ExecuteOperation>(request.clone()).is_ok());
+    request["operation"] = json!("stopDaemon");
+    assert!(serde_json::from_value::<ExecuteOperation>(request.clone()).is_err());
+    request["operation"] = json!("sendMessage");
+    request["nativeMethod"] = json!("turn/start");
+    assert!(serde_json::from_value::<ExecuteOperation>(request).is_err());
+    let mut receipt = json!({"requestId":"synthetic-wire","commandId":"synthetic-command","operation":"sendMessage","authority":"operator","sessionId":"synthetic-session","turnId":null,"status":"unknown","createdAt":"synthetic-time","error":null});
+    assert!(serde_json::from_value::<OperationReceipt>(receipt.clone()).is_ok());
+    receipt["nativeRequestId"] = json!("private-callback");
+    assert!(serde_json::from_value::<OperationReceipt>(receipt).is_err());
+}
 struct Actor {
     host: HostId,
     key: SigningKey,
