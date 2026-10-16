@@ -146,7 +146,11 @@ pub fn decode_join_proof(bytes: &[u8]) -> Result<JoinProof> {
 }
 
 fn strict_value(bytes: &[u8]) -> Result<Value> {
-    if bytes.len() > MAX_RECORD_BYTES {
+    bounded_value(bytes, MAX_RECORD_BYTES)
+}
+
+pub(crate) fn bounded_value(bytes: &[u8], bound: usize) -> Result<Value> {
+    if bytes.len() > bound {
         return fail(ErrorKind::ResourceLimit, "Record exceeds v1 envelope bound");
     }
     let mut decoder = serde_json::Deserializer::from_slice(bytes);

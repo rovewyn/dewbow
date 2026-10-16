@@ -205,6 +205,20 @@ impl Repository {
     }
 
     pub fn retain_conflict(&self, evidence: &ConflictEvidence) -> anyhow::Result<()> {
+        self.persist_conflict(evidence, None)
+    }
+    pub(super) fn retain_peer_conflict(
+        &self,
+        evidence: &ConflictEvidence,
+        peer: MembershipId,
+    ) -> anyhow::Result<()> {
+        self.persist_conflict(evidence, Some(peer))
+    }
+    fn persist_conflict(
+        &self,
+        evidence: &ConflictEvidence,
+        peer: Option<MembershipId>,
+    ) -> anyhow::Result<()> {
         let records: Vec<Value> = evidence
             .foreign_records
             .iter()
@@ -212,12 +226,16 @@ impl Repository {
             .collect::<std::result::Result<_, _>>()?;
         let value = json!({"localHistoryId":evidence.local_history_id,"foreignHistoryId":evidence.foreign_history_id,"recordIds":evidence.record_ids,"foreignRecords":records});
         let encoded = serde_jcs::to_string(&value)?;
+        let reason = match peer {
+            Some(member) => format!("{:?}:peer:{member}", evidence.kind),
+            None => format!("{:?}", evidence.kind),
+        };
         ensure!(
             encoded.len() <= 16 * 1024 * 1024,
             "Conflict witness too large"
         );
         self.transaction(|tx| {
-            tx.execute("INSERT INTO network_conflicts VALUES(?1,?2,?3,?4,?5,?6)",params![dewbow_protocol::id(),evidence.network_id.as_bytes().as_slice(),format!("{:?}",evidence.kind),encoded,encoded.len() as i64,dewbow_protocol::now()])?;
+            tx.execute("INSERT INTO network_conflicts VALUES(?1,?2,?3,?4,?5,?6)",params![dewbow_protocol::id(),evidence.network_id.as_bytes().as_slice(),reason,encoded,encoded.len() as i64,dewbow_protocol::now()])?;
             loop {let (count,size):(i64,i64)=tx.query_row("SELECT count(*),sum(byte_count) FROM network_conflicts",[],|r|Ok((r.get(0)?,r.get(1)?)))?;if count<=64 && size<=16*1024*1024 {break;}tx.execute("DELETE FROM network_conflicts WHERE witness_id=(SELECT witness_id FROM network_conflicts ORDER BY created_at,witness_id LIMIT 1)",[])?;}
             Ok(())
         })

@@ -11,7 +11,9 @@ use std::{
 };
 
 /// Shares the daemon's existing connection and serialization; no second runtime store.
+#[derive(Clone)]
 pub struct Repository {
+    pub(crate) changed: Arc<tokio::sync::Notify>,
     pub(crate) db: Arc<Mutex<Connection>>,
     pub(crate) state: PathBuf,
     pub(crate) host: Option<HostId>,
@@ -25,6 +27,7 @@ impl Repository {
         limits: Limits,
     ) -> anyhow::Result<Self> {
         let repo = Self {
+            changed: Arc::new(tokio::sync::Notify::new()),
             db,
             state: state.into(),
             host,
@@ -49,9 +52,14 @@ impl Repository {
     ) -> anyhow::Result<T> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
+        let before: String = tx.query_row("SELECT coalesce(current_selection_id,'') || coalesce(hex(history_id),'') || coalesce(status,'') FROM network_settings LEFT JOIN network_selections ON selection_id=current_selection_id", [], |r|r.get(0))?;
         let result = action(&tx)?;
         validation::validate(&tx, &self.state, self.host, self.limits)?;
+        let after: String = tx.query_row("SELECT coalesce(current_selection_id,'') || coalesce(hex(history_id),'') || coalesce(status,'') FROM network_settings LEFT JOIN network_selections ON selection_id=current_selection_id", [], |r|r.get(0))?;
         tx.commit()?;
+        if before != after {
+            self.changed.notify_waiters();
+        }
         Ok(result)
     }
 

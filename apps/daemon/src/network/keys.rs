@@ -92,7 +92,7 @@ impl KeyFiles {
         Ok((id, public))
     }
 
-    fn load(&self, id: &str, expected: PublicKey) -> anyhow::Result<SigningKey> {
+    pub(super) fn load(&self, id: &str, expected: PublicKey) -> anyhow::Result<SigningKey> {
         let path = self.path(id)?;
         self.load_path(&path, expected)
     }
