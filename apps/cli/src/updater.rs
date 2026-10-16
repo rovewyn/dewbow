@@ -907,7 +907,10 @@ mod tests {
         job
     }
     async fn until(mut condition: impl FnMut() -> bool) {
-        tokio::time::timeout(LIMIT, async {
+        until_with_limit(LIMIT, &mut condition).await;
+    }
+    async fn until_with_limit(limit: Duration, mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(limit, async {
             while !condition() {
                 sleep(Duration::from_millis(20)).await;
             }
@@ -916,8 +919,13 @@ mod tests {
         .unwrap();
     }
     async fn at_phase(job: &Path, phase: &str) {
-        until(|| read_json::<Value>(&job.join("progress.json")).is_ok_and(|v| v["phase"] == phase))
-            .await;
+        // Snapshot preparation copies and hashes debug executables before the
+        // injected fault is reached. Its readiness budget must accommodate slow
+        // runners independently of the bounded fault/recovery assertions.
+        until_with_limit(Duration::from_secs(120), || {
+            read_json::<Value>(&job.join("progress.json")).is_ok_and(|v| v["phase"] == phase)
+        })
+        .await;
     }
     async fn validating(env: &Environment, job: &Path) {
         at_phase(job, "validating").await;
