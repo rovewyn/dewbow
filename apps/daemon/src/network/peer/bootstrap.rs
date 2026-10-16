@@ -40,6 +40,14 @@ impl PeerClient {
             .try_acquire_owned()
             .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?;
         let opened: Value = self.request("submitMembershipProof", &open).await?;
+        self.read_opened_proof(repo, opened, worker).await
+    }
+    pub(super) async fn read_opened_proof(
+        &mut self,
+        repo: &Repository,
+        opened: Value,
+        worker: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<ProofView> {
         let token = opened["proofToken"]
             .as_str()
             .ok_or_else(|| PeerError::new("INVALID_PROOF"))?

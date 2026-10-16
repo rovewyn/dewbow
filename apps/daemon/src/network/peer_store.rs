@@ -265,6 +265,12 @@ impl Repository {
         member: MembershipId,
         address: &str,
     ) -> anyhow::Result<()> {
+        self.observations
+            .lock()
+            .unwrap()
+            .entry((network, member))
+            .or_default()
+            .seen = Some(std::time::Instant::now());
         self.transaction(|tx| { tx.execute("UPDATE network_contacts SET last_success_at=? WHERE network_id=? AND membership_id=? AND endpoint=?", params![dewbow_protocol::now(), network.as_bytes().as_slice(), member.as_bytes().as_slice(), address])?; Ok(()) })
     }
 }

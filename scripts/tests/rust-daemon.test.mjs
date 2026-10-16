@@ -38,7 +38,9 @@ async function operator(env) {
   return { request, cookie, ticket, control };
 }
 
-test('upgrade preflight preserves service and maintenance drains admitted work', { timeout: 90000 }, async () => {
+// Packaging and verifying two debug executable archives can dominate this test
+// on small runners; keep individual command and state-transition bounds intact.
+test('upgrade preflight preserves service and maintenance drains admitted work', { timeout: 180000 }, async () => {
   const env = await prepare();
   try {
     const first = JSON.parse(invoke(env.state, 'daemon', 'start'));

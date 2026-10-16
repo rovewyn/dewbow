@@ -6,7 +6,7 @@ The Rust daemon exposes loopback Web operations using the shared `v1` camelCase 
 
 The daemon serves both embedded Web assets and the operator API on `http://127.0.0.1:<configured-port>` (default port `3000`). Management resources use the `/api/v1` prefix. Reads use GET with path identities and optional query parameters; mutations use POST with JSON object bodies. Path identities must not be repeated in a body or query, even with the same value. Unknown fields and repeated query parameters are rejected, and the JSON body limit is 1 MiB. Integer query values use unsigned decimal digits. The HTTP adapter reconstructs the existing domain-operation input before validation, request fingerprinting and execution. The browser never reads databases directly.
 
-There are two authority boundaries. The browser uses an operator cookie for the documented Web API. The CLI uses a private control credential for `/internal/<operation>`, including lifecycle, ticket issuance and upgrade handshakes. Those private control routes and static assets are outside the OpenAPI contract. No MCP endpoint, remote management or external agent bearer access is provided.
+There are two authority boundaries. The browser uses an operator cookie for the documented Web API. The CLI uses a private control credential for `/internal/<operation>`, including lifecycle, ticket issuance and upgrade handshakes. Those private control routes and static assets are outside the OpenAPI contract. No MCP endpoint, remote native-session management or external agent bearer access is provided.
 
 `dewbow web` requests a 60-second one-use ticket through a separate protected local control endpoint. Web removes the URL fragment ticket before `POST /auth/login`, then uses an HttpOnly SameSite=Strict cookie. `POST /auth/logout` revokes it. Tickets and cookies expire in memory and are invalidated when the daemon exits. Never expose the private control credential in browser storage or URLs.
 
@@ -98,3 +98,9 @@ npm exec --yes --package=@redocly/cli@2.63.0 --call="redocly lint docs/openapi.y
 ```
 
 The validator does not follow the custom `x-sse-events` payload references when finding unused components, so it may warn that `SessionUpdates` is unused. It is the schema for both snapshot and update data. Review those extension references and compare representative JSON and SSE payloads with the schemas; syntax validation alone does not establish implementation conformance.
+
+## Private Network CLI control
+
+The authenticated loopback `/internal/<operation>` surface includes `createNetwork`, `createInvitation`, `joinNetwork`, `listNetworkJoins`, `getNetworkJoin`, `confirmNetworkJoin`, `getNetwork`, `listNetworkMembers`, `removeNetworkMember`, `leaveNetwork` and `setNetworkPeerAddress`. These private operations are outside the browser OpenAPI contract and are never served on the Peer listener. No Network browser route is added. `getNetworkJoin` reads the public key for an exact local pending or retained attempt so denial retries survive restart. Mutation inputs use stable `requestId`; confirmation binds `joinAttemptId`, full `publicKey` and allow/deny decision. Reads do not require a request ID.
+
+See [CLI membership](cli.md#network-membership) for arguments and output. `getNetwork` adds retained join progress, Peer settings and listener status. Members expose exact admission identities and separate short-lived reachability observations. Dissemination reports known-peer current-history acknowledgements and retained per-recipient departure tasks, without a global completion claim. Maintenance rejects mutations while preserving diagnostic reads. These operations do not read or execute remote native sessions.

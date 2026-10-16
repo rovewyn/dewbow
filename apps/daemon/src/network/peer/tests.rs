@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     config,
-    network::{Intent, PeerSettings, Repository},
+    network::{AttemptId, Intent, PeerSettings, Repository},
     store::Store,
 };
 use dewbow_protocol::network::{peer::*, *};
@@ -1049,4 +1049,399 @@ async fn sealed_upgrade_blocks_peer_admission_and_shutdown_drains_started_work()
         .await
         .unwrap()
         .unwrap();
+}
+
+fn local(node: &Node, operation: &str, mut input: Value) -> Value {
+    if !matches!(
+        operation,
+        "getNetwork" | "listNetworkJoins" | "listNetworkMembers"
+    ) {
+        input["requestId"] = json!(uuid::Uuid::new_v4().to_string());
+    }
+    node.repo()
+        .local_network_operation(operation, &input)
+        .unwrap()
+}
+async fn lifecycle_join(
+    issuer: &Node,
+    joiner: &Node,
+    runtime: &PeerRuntime,
+    finish: bool,
+) -> AttemptId {
+    let issued = local(issuer, "createInvitation", json!({}));
+    let invitation =
+        crate::network::lifecycle::Invitation::parse(issued["invitation"].as_str().unwrap())
+            .unwrap();
+    let intent = joiner.intent("joinNetwork");
+    let id = joiner
+        .repo()
+        .prepare_join_attempt(
+            &intent,
+            &invitation.public(),
+            *invitation.secret.as_bytes(),
+            intent.operation_id.unwrap(),
+        )
+        .unwrap();
+    let shared = Arc::new(session::Shared::default());
+    super::lifecycle::recover_join(joiner.repo(), &shared, id)
+        .await
+        .unwrap();
+    let pending = local(issuer, "listNetworkJoins", json!({}));
+    assert_eq!(pending["joins"].as_array().unwrap().len(), 1);
+    let proof = &pending["joins"][0];
+    local(
+        issuer,
+        "confirmNetworkJoin",
+        json!({"joinAttemptId":proof["joinAttemptId"],"publicKey":proof["publicKey"],"decision":"allow"}),
+    );
+    if finish {
+        super::lifecycle::recover_join(joiner.repo(), &shared, id)
+            .await
+            .unwrap();
+    }
+    assert!(runtime.local_addr().port() > 0);
+    id
+}
+async fn lifecycle_listener(node: &Node) -> PeerRuntime {
+    let runtime = node.listen().await;
+    node.repo()
+        .configure_peer(&PeerSettings {
+            listen_endpoint: Some(endpoint(&runtime)),
+            advertised_endpoints: vec![endpoint(&runtime)],
+        })
+        .unwrap();
+    runtime
+}
+#[tokio::test]
+async fn lifecycle_bootstrap_lost_reply_founder_exit_and_fresh_invitation() {
+    let a = Node::new();
+    let mut b = Node::new();
+    let c = Node::new();
+    let d = Node::new();
+    local(
+        &a,
+        "createNetwork",
+        json!({"networkName":"Synthetic lifecycle"}),
+    );
+    let ra = lifecycle_listener(&a).await;
+    let id = lifecycle_join(&a, &b, &ra, false).await;
+    // Issuer committed; joiner still uncertain and has not selected a Network.
+    assert!(b.repo().current_selection().unwrap().is_none());
+    b.restart();
+    super::lifecycle::recover_join(b.repo(), &Arc::new(session::Shared::default()), id)
+        .await
+        .unwrap();
+    assert_eq!(b.repo().network_status().unwrap()["localStatus"], "active");
+    let rb = lifecycle_listener(&b).await;
+    lifecycle_join(&a, &c, &ra, true).await;
+    sync(&b, &a, &ra).await.unwrap();
+    // Fixed old-generation endpoints are retained before self-exit.
+    a.repo()
+        .set_peer_address(
+            a.selected().history().network_id(),
+            b.member(),
+            &endpoint(&rb),
+        )
+        .unwrap();
+    local(&a, "leaveNetwork", json!({}));
+    assert_eq!(a.repo().network_status().unwrap()["localStatus"], "left");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = a.repo().network_status().unwrap();
+            if status["dissemination"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["membershipId"] == json!(b.member()) && t["status"] == "confirmed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!b.selected().history().is_active(a.member()));
+    ra.shutdown().await;
+    lifecycle_join(&b, &d, &rb, true).await;
+    assert!(d.selected().history().is_active(d.member()));
+    assert!(!d.selected().history().is_active(a.member()));
+    assert_eq!(
+        a.repo().network_status().unwrap()["dissemination"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["status"] == "confirmed")
+            .count(),
+        1
+    );
+    rb.shutdown().await;
+}
+#[tokio::test]
+async fn lifecycle_offline_exits_restart_and_rebased_departure() {
+    let (mut a, b, c) = common();
+    // A has unseen admissions which conflict with B withdrawing their author C.
+    let d = Node::new();
+    c.admit(&d);
+    a.catch_up(&c);
+    b.change(Change::Remove(c.member()));
+    let rb = lifecycle_listener(&b).await;
+    a.repo()
+        .set_peer_address(
+            a.selected().history().network_id(),
+            b.member(),
+            &endpoint(&rb),
+        )
+        .unwrap();
+    let request = json!({"requestId":"synthetic-offline-exit"});
+    a.repo()
+        .local_network_operation("leaveNetwork", &request)
+        .unwrap();
+    a.restart();
+    let task = a
+        .repo()
+        .departure_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.recipient == b.member())
+        .unwrap();
+    super::lifecycle::deliver_at(
+        a.repo(),
+        &Arc::new(session::Shared::default()),
+        &task,
+        &endpoint(&rb),
+    )
+    .await
+    .unwrap();
+    assert!(!b.selected().history().is_active(a.member()));
+    assert!(!b.selected().history().is_active(c.member()));
+    assert!(!b.selected().history().is_active(d.member()));
+    a.repo()
+        .local_network_operation("leaveNetwork", &request)
+        .unwrap();
+    assert_eq!(a.repo().network_status().unwrap()["localStatus"], "left");
+    rb.shutdown().await;
+    let (a, b, _) = common();
+    let ra = lifecycle_listener(&a).await;
+    let rb = lifecycle_listener(&b).await;
+    a.repo()
+        .set_peer_address(
+            a.selected().history().network_id(),
+            b.member(),
+            &endpoint(&rb),
+        )
+        .unwrap();
+    local(&a, "leaveNetwork", json!({}));
+    local(&b, "leaveNetwork", json!({}));
+    let task = a
+        .repo()
+        .departure_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.recipient == b.member())
+        .unwrap();
+    super::lifecycle::deliver_at(
+        a.repo(),
+        &Arc::new(session::Shared::default()),
+        &task,
+        &endpoint(&rb),
+    )
+    .await
+    .unwrap();
+    assert_eq!(b.repo().network_status().unwrap()["localStatus"], "left");
+    ra.shutdown().await;
+    rb.shutdown().await;
+}
+
+#[tokio::test]
+async fn lifecycle_unknown_departing_generation_proves_claim_without_branch_adoption() {
+    let (a, b, c) = common();
+    let d = Node::new();
+    c.admit(&d);
+    a.change(Change::Remove(c.member()));
+    b.catch_up(&a);
+    let before = b.selected().history().snapshot().clone();
+    let rb = lifecycle_listener(&b).await;
+    d.repo()
+        .set_peer_address(
+            d.selected().history().network_id(),
+            b.member(),
+            &endpoint(&rb),
+        )
+        .unwrap();
+    local(&d, "leaveNetwork", json!({}));
+    let task = d
+        .repo()
+        .departure_tasks()
+        .unwrap()
+        .into_iter()
+        .find(|t| t.recipient == b.member())
+        .unwrap();
+    super::lifecycle::deliver_at(
+        d.repo(),
+        &Arc::new(session::Shared::default()),
+        &task,
+        &endpoint(&rb),
+    )
+    .await
+    .unwrap();
+    assert_eq!(b.selected().history().snapshot(), &before);
+    assert!(b.selected().history().member(d.member()).is_none());
+    assert!(
+        d.repo().network_status().unwrap()["dissemination"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["membershipId"] == json!(b.member()) && t["status"] == "confirmed")
+    );
+    rb.shutdown().await;
+}
+#[tokio::test]
+async fn lifecycle_denial_retry_and_public_result_recovery_without_old_issuer_key() {
+    let mut a = Node::new();
+    let b = Node::new();
+    a.create();
+    let ra = lifecycle_listener(&a).await;
+    let issued = local(&a, "createInvitation", json!({}));
+    let token =
+        crate::network::lifecycle::Invitation::parse(issued["invitation"].as_str().unwrap())
+            .unwrap();
+    let request = b.intent("joinNetwork");
+    let id = b
+        .repo()
+        .prepare_join_attempt(
+            &request,
+            &token.public(),
+            *token.secret.as_bytes(),
+            request.operation_id.unwrap(),
+        )
+        .unwrap();
+    let shared = Arc::new(session::Shared::default());
+    super::lifecycle::recover_join(b.repo(), &shared, id)
+        .await
+        .unwrap();
+    let proof = local(&a, "listNetworkJoins", json!({}))["joins"][0].clone();
+    let deny = json!({"requestId":"synthetic-denial","joinAttemptId":proof["joinAttemptId"],"publicKey":proof["publicKey"],"decision":"deny"});
+    a.repo()
+        .local_network_operation("confirmNetworkJoin", &deny)
+        .unwrap();
+    ra.shutdown().await;
+    a.restart();
+    a.repo()
+        .local_network_operation("confirmNetworkJoin", &deny)
+        .unwrap();
+    assert_eq!(
+        a.repo()
+            .join_details(&json!({"joinAttemptId":id.attempt}))
+            .unwrap()["publicKey"],
+        proof["publicKey"]
+    );
+    let ra = PeerRuntime::start(a.repo().clone()).await.unwrap().unwrap();
+    super::lifecycle::recover_join(b.repo(), &shared, id)
+        .await
+        .unwrap();
+    assert_eq!(b.repo().join_material(id).unwrap().0.status, "denied");
+    assert!(b.repo().current_selection().unwrap().is_none());
+    ra.shutdown().await;
+    let a = Node::new();
+    let b = Node::new();
+    let c = Node::new();
+    a.create();
+    a.admit(&b);
+    let ra = lifecycle_listener(&a).await;
+    let id = lifecycle_join(&a, &c, &ra, false).await;
+    b.catch_up(&a);
+    b.change(Change::Remove(a.member()));
+    a.catch_up(&b);
+    let selection_id = a.selected().selection_id().to_string();
+    let key: String = a
+        .repo()
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT key_id FROM network_selections WHERE selection_id=?",
+            [selection_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    a.repo().cleanup_key(&key).unwrap();
+    super::lifecycle::recover_join(c.repo(), &Arc::new(session::Shared::default()), id)
+        .await
+        .unwrap();
+    assert_eq!(c.repo().join_material(id).unwrap().0.status, "admitted");
+    assert!(c.selected().history().is_active(c.member()));
+    ra.shutdown().await;
+}
+
+#[tokio::test]
+async fn lifecycle_expiry_is_rechecked_at_confirmation_without_consuming_invitation() {
+    let a = Node::new();
+    let b = Node::new();
+    a.create();
+    let ra = lifecycle_listener(&a).await;
+    let issued = a
+        .repo()
+        .create_invitation(&a.intent("createInvitation"), vec![endpoint(&ra)])
+        .unwrap();
+    let selection_id = a.selected().selection_id().to_string();
+    let key: String = a
+        .repo()
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT key_id FROM network_selections WHERE selection_id=?",
+            [selection_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut body = issued.invitation.body;
+    body.issued_at = (chrono::Utc::now() - chrono::Duration::seconds(60))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    body.expires_at = (chrono::Utc::now() + chrono::Duration::seconds(3))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let signed = crate::network::keys::KeyFiles::new(&a.repo().state)
+        .sign_invitation(&key, body)
+        .unwrap();
+    a.repo().transaction(|tx|{tx.execute("UPDATE network_invitations SET public_invitation_json=?,expires_at=? WHERE invitation_id=?",rusqlite::params![serde_jcs::to_string(&signed)?,signed.body.expires_at,signed.body.invitation_id.as_bytes().as_slice()])?;Ok(())}).unwrap();
+    let request = b.intent("joinNetwork");
+    let id = b
+        .repo()
+        .prepare_join_attempt(
+            &request,
+            &signed,
+            **issued.secret.as_ref().unwrap(),
+            request.operation_id.unwrap(),
+        )
+        .unwrap();
+    super::lifecycle::recover_join(b.repo(), &Arc::new(session::Shared::default()), id)
+        .await
+        .unwrap();
+    let p = local(&a, "listNetworkJoins", json!({}))["joins"][0].clone();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let confirm = json!({"requestId":"synthetic-expired-confirmation","joinAttemptId":p["joinAttemptId"],"publicKey":p["publicKey"],"decision":"allow"});
+    assert!(
+        a.repo()
+            .local_network_operation("confirmNetworkJoin", &confirm)
+            .is_err()
+    );
+    a.repo().expire_invitations().unwrap();
+    let status: String = a
+        .repo()
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM network_invitations WHERE invitation_id=?",
+            [signed.body.invitation_id.as_bytes().as_slice()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "expired");
+    assert_eq!(a.selected().history().active_members().count(), 1);
+    assert_eq!(b.repo().join_material(id).unwrap().0.status, "uncertain");
+    ra.shutdown().await;
 }

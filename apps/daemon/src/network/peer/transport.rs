@@ -124,6 +124,11 @@ impl PeerRuntime {
         let runtime_shared = shared.clone();
         let task = tokio::spawn(async move {
             let mut tasks = JoinSet::new();
+            tasks.spawn(super::lifecycle::schedule(
+                repo.clone(),
+                runtime_shared.clone(),
+                stopped.clone(),
+            ));
             tasks.spawn(super::reconcile::schedule(
                 repo.clone(),
                 runtime_shared.clone(),
@@ -324,6 +329,7 @@ pub struct PeerClient {
     pub(super) shared: Arc<Shared>,
     pub(super) remote_key: PublicKey,
     proof_channel: bool,
+    lifecycle_channel: bool,
     sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
     task: JoinHandle<()>,
     authority: String,
@@ -536,12 +542,39 @@ impl PeerClient {
             return Err(PeerError::new("FORBIDDEN"));
         }
         let local = selected.history().member(selected.local_member()).unwrap();
+        Self::open_identity(
+            repo,
+            address,
+            expected,
+            explicit_seed,
+            shared,
+            local.public_key,
+            (
+                selected.selection_id(),
+                selected.history().network_id(),
+                selected.local_member(),
+            ),
+            false,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn open_identity(
+        repo: &Repository,
+        address: &str,
+        expected: Option<PublicKey>,
+        explicit_seed: bool,
+        shared: &Arc<Shared>,
+        local: PublicKey,
+        binding: (uuid::Uuid, NetworkId, MembershipId),
+        lifecycle_channel: bool,
+    ) -> Result<Self> {
         let permit = shared
             .connections
             .clone()
             .try_acquire_owned()
             .map_err(|_| PeerError::new("RESOURCE_LIMIT"))?;
-        let config = tls::client(repo, local.public_key, expected).map_err(unavailable)?;
+        let config = tls::client(repo, local, expected).map_err(unavailable)?;
         let name = rustls::pki_types::ServerName::try_from(
             expected
                 .map(tls::selector)
@@ -579,11 +612,8 @@ impl PeerClient {
         });
         Ok(Self {
             repo: repo.clone(),
-            binding: (
-                selected.selection_id(),
-                selected.history().network_id(),
-                selected.local_member(),
-            ),
+            binding,
+            lifecycle_channel,
             shared: shared.clone(),
             remote_key,
             proof_channel: expected.is_none(),
@@ -597,7 +627,7 @@ impl PeerClient {
                 .to_string(),
             hello: HelloResult {
                 protocol_version: 1,
-                network_id: selected.history().network_id(),
+                network_id: binding.1,
                 membership_id: None,
                 history: None,
                 access: Access::ProofOnly,
@@ -613,27 +643,45 @@ impl PeerClient {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(PeerError::new("UNAVAILABLE"));
         }
-        if self.proof_channel && !matches!(operation, "hello" | "submitMembershipProof") {
-            return Err(PeerError::new("FORBIDDEN"));
-        }
-        let selected = self
-            .repo
-            .current_selection()
-            .map_err(unavailable)?
-            .ok_or_else(|| PeerError::new("FORBIDDEN"))?;
-        if selected.status() != SelectionStatus::Active
-            || (
-                selected.selection_id(),
-                selected.history().network_id(),
-                selected.local_member(),
-            ) != self.binding
-            || (!self.proof_channel
-                && self
-                    .hello
-                    .membership_id
-                    .is_some_and(|id| !selected.history().is_active(id)))
+        if self.proof_channel
+            && !self.lifecycle_channel
+            && !matches!(operation, "hello" | "submitMembershipProof")
         {
             return Err(PeerError::new("FORBIDDEN"));
+        }
+        if self.lifecycle_channel {
+            if !matches!(
+                operation,
+                "hello"
+                    | "submitMembershipProof"
+                    | "getInvitationProof"
+                    | "redeemInvitation"
+                    | "getJoinResult"
+                    | "deliverDeparture"
+                    | "getDepartureStatus"
+            ) {
+                return Err(PeerError::new("FORBIDDEN"));
+            }
+        } else {
+            let selected = self
+                .repo
+                .current_selection()
+                .map_err(unavailable)?
+                .ok_or_else(|| PeerError::new("FORBIDDEN"))?;
+            if selected.status() != SelectionStatus::Active
+                || (
+                    selected.selection_id(),
+                    selected.history().network_id(),
+                    selected.local_member(),
+                ) != self.binding
+                || (!self.proof_channel
+                    && self
+                        .hello
+                        .membership_id
+                        .is_some_and(|id| !selected.history().is_active(id)))
+            {
+                return Err(PeerError::new("FORBIDDEN"));
+            }
         }
         let bytes = super::framing::bounded_json(input, MAX_FRAME_BYTES)?;
         let request = Request::builder()

@@ -1,6 +1,7 @@
 //! Network management storage and authenticated peer integration.
 //! Public operator lifecycle and native business handlers remain deferred.
 mod keys;
+pub mod lifecycle;
 pub(crate) mod migration;
 mod operations;
 pub mod peer;

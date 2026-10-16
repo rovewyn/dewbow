@@ -188,8 +188,10 @@ impl Default for PeerCapacity {
 fn value(value: impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(unavailable)
 }
-fn token() -> String {
-    uuid::Uuid::new_v4().to_string()
+fn token() -> Result<String> {
+    Ok(crate::network::lifecycle::nonce()
+        .map_err(unavailable)?
+        .to_string())
 }
 const IDLE: Duration = Duration::from_secs(60);
 struct Snapshot {
@@ -200,6 +202,8 @@ struct Snapshot {
     complete: bool,
     transfer: Option<Transfer>,
 }
+#[path = "lifecycle_session.rs"]
+mod lifecycle_session;
 struct Transfer {
     request: Vec<RecordId>,
     peer: HistoryId,
@@ -215,6 +219,7 @@ struct Upload {
     last: Option<(Option<RecordId>, Vec<RecordId>, bool)>,
 }
 struct Proof {
+    verified_claim: Option<VerifiedHistory>,
     token: String,
     purpose: ProofPurpose,
     member: Option<MembershipId>,
@@ -428,7 +433,7 @@ impl Session {
                 | "deliverDeparture"
                 | "getDepartureStatus"
         ) {
-            return Err(PeerError::new("NOT_READY"));
+            return self.lifecycle(operation, input);
         }
         let selected = self.authorize()?;
         match operation {
@@ -448,7 +453,7 @@ impl Session {
                     }
                 };
                 self.charge(0, history.records().map(|r| r.encoded().len() + 512).sum())?;
-                let snapshot_token = token();
+                let snapshot_token = token()?;
                 let result = HistoryOpened {
                     snapshot_token: snapshot_token.clone(),
                     history_id: history.snapshot().history_id,
@@ -523,6 +528,20 @@ impl Session {
                     return Err(PeerError::new("INVALID_INPUT"));
                 }
                 s.touched = Instant::now();
+                if s.history
+                    .snapshot()
+                    .frontier
+                    .iter()
+                    .all(|id| request.record_ids.contains(id))
+                {
+                    let network = s.history.network_id();
+                    if let Some(member) = self.hello.as_ref().and_then(|h| h.binding().2) {
+                        let mut observed = self.repo.observations.lock().unwrap();
+                        let entry = observed.entry((network, member)).or_default();
+                        entry.seen = Some(std::time::Instant::now());
+                        entry.acknowledged = Some(request.history_id);
+                    }
+                }
                 Ok(json!({"received":true}))
             }
             "exchangeAddressHints" => {
@@ -579,10 +598,16 @@ impl Session {
         if version != 1 {
             return Err(PeerError::new("PROTOCOL_UNSUPPORTED"));
         }
-        if matches!(hello, Hello::Join { .. } | Hello::JoinRecovery { .. }) {
-            return Err(PeerError::new("NOT_READY"));
+        if let Hello::JoinRecovery { join_proof, .. } = &hello {
+            decode_join_proof(&serde_json::to_vec(join_proof).map_err(unavailable)?)?;
+            if join_proof.body.network_id != network || join_proof.body.public_key != self.peer_key
+            {
+                return Err(PeerError::new("FORBIDDEN"));
+            }
         }
-        let context = if matches!(hello, Hello::Proof { .. }) {
+        let context = if matches!(hello, Hello::JoinRecovery { .. }) {
+            None
+        } else if matches!(hello, Hello::Proof { .. }) {
             self.repo
                 .proof_selection(network, self.local_key)
                 .map_err(unavailable)?
@@ -637,7 +662,7 @@ impl Session {
                         .checked_mul(128)
                         .ok_or_else(|| PeerError::new("RESOURCE_LIMIT"))?,
                 )?;
-                let manifest_token = token();
+                let manifest_token = token()?;
                 self.upload = Some(Upload {
                     token: manifest_token.clone(),
                     history,
@@ -779,7 +804,7 @@ impl Session {
         }
         transfer.remaining.drain(..records.len());
         let has_more = !transfer.remaining.is_empty();
-        transfer.cursor = has_more.then(token);
+        transfer.cursor = has_more.then(token).transpose()?;
         s.touched = Instant::now();
         u.touched = Instant::now();
         value(HistoryRecords {
@@ -791,6 +816,13 @@ impl Session {
     }
     fn proof(&mut self, input: Value) -> Result<Value> {
         let request: SubmitMembershipProof = parse(input)?;
+        if matches!(
+            self.hello,
+            Some(Hello::Join { .. } | Hello::JoinRecovery { .. })
+        ) && !matches!(request, SubmitMembershipProof::Read { .. })
+        {
+            return Err(PeerError::new("FORBIDDEN"));
+        }
         match request {
             SubmitMembershipProof::Open {
                 purpose,
@@ -820,10 +852,12 @@ impl Session {
                 } else {
                     None
                 };
-                if readable.is_none() && purpose != ProofPurpose::Admission {
+                if readable.is_none()
+                    && !matches!(purpose, ProofPurpose::Admission | ProofPurpose::Departure)
+                {
                     return Err(PeerError::new("FORBIDDEN"));
                 }
-                let proof_token = token();
+                let proof_token = token()?;
                 let history = readable.as_ref().map(|h| h.snapshot().clone());
                 self.charge(
                     2,
@@ -835,6 +869,7 @@ impl Session {
                     }),
                 )?;
                 self.proof = Some(Proof {
+                    verified_claim: None,
                     token: proof_token.clone(),
                     purpose,
                     member: membership_id,
@@ -937,7 +972,20 @@ impl Session {
                     acknowledged.extend(all.keys().copied());
                     summary = Some(verified.snapshot().clone());
                     proof.verified = true;
-                    proof.readable = Some(verified);
+                    if proof.purpose == ProofPurpose::Departure {
+                        if verified
+                            .member(selected.local_member())
+                            .is_none_or(|m| m.public_key != self.local_key)
+                        {
+                            return Err(PeerError::new("FORBIDDEN"));
+                        }
+                        if let Some(target)=proof.target && !verified.record(target).is_some_and(|r|matches!(r.body(),RecordBody::LeaveNetwork{author_membership_id,..} if *author_membership_id==member)) {return Err(PeerError::new("FORBIDDEN"));}
+                        proof.verified_claim = Some(verified);
+                        summary = Some(selected.history().snapshot().clone());
+                        proof.readable = Some(selected.history().clone());
+                    } else {
+                        proof.readable = Some(verified);
+                    }
                     complete = true;
                 }
                 proof.touched = Instant::now();

@@ -1,6 +1,7 @@
 //! Direct authenticated peer transport. No native business operations are registered.
 mod bootstrap;
 pub mod framing;
+mod lifecycle;
 mod reconcile;
 mod session;
 mod tls;

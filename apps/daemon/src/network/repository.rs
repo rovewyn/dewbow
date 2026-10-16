@@ -13,6 +13,10 @@ use std::{
 /// Shares the daemon's existing connection and serialization; no second runtime store.
 #[derive(Clone)]
 pub struct Repository {
+    pub(crate) observations: Arc<
+        Mutex<std::collections::BTreeMap<(NetworkId, MembershipId), super::lifecycle::Observation>>,
+    >,
+    pub(crate) pending: Arc<Mutex<std::collections::BTreeMap<Nonce, super::lifecycle::Pending>>>,
     pub(crate) changed: Arc<tokio::sync::Notify>,
     pub(crate) db: Arc<Mutex<Connection>>,
     pub(crate) state: PathBuf,
@@ -27,6 +31,8 @@ impl Repository {
         limits: Limits,
     ) -> anyhow::Result<Self> {
         let repo = Self {
+            observations: Default::default(),
+            pending: Default::default(),
             changed: Arc::new(tokio::sync::Notify::new()),
             db,
             state: state.into(),
@@ -264,7 +270,10 @@ impl Repository {
 
     pub fn detach_inactive(&self, intent: &Intent) -> anyhow::Result<Value> {
         ensure!(
-            intent.operation == "leaveNetwork",
+            matches!(
+                intent.operation.as_str(),
+                "leaveNetwork" | "removeNetworkMember"
+            ),
             "Wrong inactive exit intent"
         );
         self.transaction(|tx| {

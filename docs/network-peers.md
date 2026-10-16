@@ -2,7 +2,7 @@
 
 The daemon implements direct authenticated peer connections and membership reconciliation on a separate HTTPS listener. The [membership engine](network-membership-engine.md) remains the only authority validator; [Network storage](storage.md#network-storage-foundation) remains the durable source of accepted management records. There is no coordinator, privileged founder, replicated conversation store or execution relay.
 
-This is the transport foundation for issue #39. Public enrollment commands, invitation confirmation, departure outbox delivery, remote native reads and remote execution are separate integrations. The existing CLI and operator Web remain local. Do not treat these library interfaces as runnable enrollment instructions.
+This is the transport foundation for issue #39. The [Network CLI lifecycle](cli.md#network-membership) integrates enrollment, issuer-local confirmation, exact-result recovery and departure outbox delivery. CLI control stays authenticated on loopback. Operator Web Network integration, remote native reads and remote execution remain deferred.
 
 ## Configuration and lifecycle
 
@@ -24,7 +24,7 @@ One `hello` binds each connection to one Network, identity and purpose. Unknown 
 
 When a retained pin is unavailable or no longer names the responder's current generation, the client explicitly reconnects in proof-only mode. It fetches complete signed responder admission ancestry without invitation secrets or business data, checks the original Network and host binding and validates compatible adoption. It then establishes a fresh member connection pinned to the proven generation key. Another host at the same endpoint cannot replace the original target. The certificate selected before a server handshake remains that connection's exact HTTP identity even if local membership changes during the handshake.
 
-Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation and departure-delivery operations return `NOT_READY` until their lifecycle integration exists. Business operations require ordinary member authority and currently return `NOT_READY`.
+Admission, exclusion and departure proof tokens are connection-bound and disappear on disconnect. Full proof verification is distinct from durable adoption. A proof from another retained selection never unions that selection into the active history. Invitation operations use pinned join channels with explicit issuer-local confirmation. Public `joinRecovery` returns only retained signed admission ancestry or an inconclusive result, never new authority. Departure operations use exact old-generation keys and verified recipient contexts, including inactive-recipient acknowledgements and locally constructed rebases. Business operations require ordinary member authority and currently return `NOT_READY`.
 
 ## Reconciliation and addresses
 
@@ -51,3 +51,9 @@ cargo test --locked -p dewbow-daemon --lib network::peer
 ```
 
 These tests use synthetic management state and real loopback TLS/HTTP connections. They cover founder independence, admission proof bootstrap, current-authority checks, key substitution, missing client certificates, automatic reconciliation/restart, conflict quarantine, failed commits, duplicate retries, immutable snapshots with renewable expiry, discarded-child recovery, framing and socket release. They do not constitute acceptance on separate physical machines or remote native execution.
+
+## Lifecycle scheduling and acceptance
+
+The Peer runtime revisits retained join attempts and due departure tasks every five seconds. Join attempts retain their original identity and key; expiry clears only never-submitted attempts. Uncertain attempts continue original-result recovery. Unused invitation secrets are cleared after expiry. Departures use up to four independent workers, fixed known destinations and durable exponential retry delays capped at 512 seconds. Tasks never expire automatically. Listener shutdown cancels outgoing work; committed identities, admissions and acknowledgements survive restart.
+
+`network-lifecycle.test.mjs` exercises four real local daemon processes and the public CLI with synthetic native runtimes. It covers founder-independent enrollment, offline removal, restart, self-removal, maintenance and occupied listeners, and verifies shutdown releases both listener ports. Rust lifecycle tests additionally exercise lost-result recovery, inactive recipients and conflicting-branch departure rebasing over real loopback TLS. These checks do not constitute physical-machine acceptance, which remains in issue #44.
