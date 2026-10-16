@@ -22,6 +22,10 @@ dewbow-daemon.workspace = true
 dewbow-protocol.workspace = true
 dewbow-sdk.workspace = true
 
+[dev-dependencies]
+rusqlite.workspace = true
+ed25519-dalek = { workspace = true, features = ["alloc", "pkcs8"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

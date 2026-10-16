@@ -372,7 +372,7 @@ pub async fn run(
     );
     ensure!(
         manifest["upgrade"]["contractVersion"] == "v1"
-            && manifest["upgrade"]["stateSchema"] == 1
+            && manifest["upgrade"]["stateSchema"] == 2
             && manifest["upgrade"]["rollbackSafe"] == true,
         "Release requires manual state or rollback handling; review its upgrade requirements before stopping the daemon"
     );

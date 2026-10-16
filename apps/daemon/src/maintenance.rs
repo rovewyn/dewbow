@@ -25,6 +25,10 @@ pub struct Transaction {
     pub was_running: bool,
     pub config_hash: String,
     pub database_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_schema: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hashes: Option<std::collections::BTreeMap<String, String>>,
 }
 pub fn transaction(state: &Path) -> anyhow::Result<Option<Transaction>> {
     let directory = state.join("upgrade");
@@ -36,12 +40,27 @@ pub fn transaction(state: &Path) -> anyhow::Result<Option<Transaction>> {
     dewbow_sdk::private::regular(&path)?;
     let value: Transaction = serde_json::from_slice(&fs::read(path)?)?;
     anyhow::ensure!(
-        value.contract_version == "v1"
+        matches!(value.contract_version.as_str(), "v1" | "v2")
             && uuid::Uuid::parse_str(&value.token).is_ok()
             && value.executable.is_absolute()
             && value.previous.parent() == value.executable.parent()
             && value.previous != value.executable,
         "Invalid upgrade transaction; preserve its files for recovery"
+    );
+    anyhow::ensure!(
+        if value.contract_version == "v1" {
+            value.state_schema.is_none() && value.key_hashes.is_none()
+        } else {
+            matches!(value.state_schema, Some(0..=2))
+                && value.key_hashes.as_ref().is_some_and(|keys| {
+                    keys.iter().all(|(id, hash)| {
+                        uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == *id)
+                            && hash.len() == 64
+                            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                })
+        },
+        "Invalid upgrade key inventory; preserve its files for recovery"
     );
     Ok(Some(value))
 }

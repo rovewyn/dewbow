@@ -90,6 +90,14 @@ try {
   execFileSync('git', ['merge-base', '--is-ancestor', baselineSource, 'HEAD']);
   const tracked = execFileSync('git', ['archive', '--format=tar', baselineSource], { maxBuffer: 64 * 1024 * 1024 });
   execFileSync(tar, ['-xf', '-', '-C', source], { input: tracked, windowsHide: true });
+  // The immutable predecessor still owns schema 1 and the old HTTP transport.
+  // Only this synthetic coordinator learns the candidate's target format. An
+  // unmodified older updater is not claimed to accept schema 2 automatically.
+  const coordinator = join(source, 'apps/cli/src/upgrade.rs');
+  const coordinatorText = await fs.readFile(coordinator, 'utf8');
+  const targetCheck = 'manifest["upgrade"]["stateSchema"] == 1';
+  assert.equal(coordinatorText.split(targetCheck).length, 2, 'Review the pinned coordinator before changing this fixture overlay');
+  await fs.writeFile(coordinator, coordinatorText.replace(targetCheck, 'manifest["upgrade"]["stateSchema"] == 2'));
   await fs.cp(resolve('apps/web/dist'), join(source, 'apps/web/dist'), { recursive: true });
   synchronizeVersions(source, { version: baselineVersion });
   // Separate build outputs cannot overwrite the caller's binaries or running tests.

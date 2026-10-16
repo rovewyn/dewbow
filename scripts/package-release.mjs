@@ -9,7 +9,7 @@ const targets = new Set(['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', '
 const tarExecutable = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 // Change this policy when a release requires a state reset or cannot restore its predecessor.
-const upgrade = { contractVersion: 'v1', stateSchema: 1, rollbackSafe: true };
+const upgrade = { contractVersion: 'v1', stateSchema: 2, rollbackSafe: false };
 const invoke = (command, args, options = {}) => execFileSync(command, args, { encoding: 'utf8', windowsHide: true, ...options });
 
 function describeRelease(root, target) {
