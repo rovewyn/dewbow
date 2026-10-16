@@ -10,8 +10,9 @@ struct Node {
 }
 impl Node {
     fn new() -> Self {
-        let root =
-            std::env::temp_dir().join(format!("dewbow-network-state-{}", dewbow_protocol::id()));
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("dewbow-network-state-{}", dewbow_protocol::id()));
         config::init(
             &root,
             Some(PathBuf::from("/synthetic/codex")),

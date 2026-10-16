@@ -108,10 +108,12 @@ mod tests {
     use crate::store::Store;
 
     fn fixture() -> std::path::PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "dewbow-network-migration-{}",
-            dewbow_protocol::id()
-        ));
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "dewbow-network-migration-{}",
+                dewbow_protocol::id()
+            ));
         config::secure_directory(&root).unwrap();
         let db = Connection::open(root.join("daemon.sqlite")).unwrap();
         db.execute_batch(schema::RECORDS_SQL).unwrap();
