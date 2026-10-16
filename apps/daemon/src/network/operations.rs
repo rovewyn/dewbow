@@ -137,6 +137,8 @@ impl Repository {
             "Foreign source host"
         );
         self.transaction(|tx| {
+            let rebound:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM network_outbound_requests WHERE source_host_id=?1 AND request_id=?2 AND network_id<>?3)",params![scope.source_host_id.to_string(),scope.request_id,scope.network_id.as_bytes().as_slice()],|r|r.get(0))?;
+            ensure!(!rebound,"REQUEST_CONFLICT: original request belongs to another Network");
             let old:Option<(String,String,Vec<u8>)>=tx.query_row("SELECT target_host_id,operation,fingerprint FROM network_outbound_requests WHERE network_id=?1 AND source_host_id=?2 AND request_id=?3",params![scope.network_id.as_bytes().as_slice(),scope.source_host_id.to_string(),scope.request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             if let Some((host,op,input))=old {ensure!(host==target.to_string() && op==operation && input==fingerprint,"REQUEST_CONFLICT: original target or input changed");}
             else {tx.execute("INSERT INTO network_outbound_requests VALUES(?1,?2,?3,?4,?5,?6,'prepared',NULL,?7)",params![scope.network_id.as_bytes().as_slice(),scope.source_host_id.to_string(),scope.request_id,target.to_string(),operation,fingerprint.as_slice(),dewbow_protocol::now()])?;}

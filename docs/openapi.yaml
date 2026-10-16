@@ -222,7 +222,7 @@ paths:
                 hostId: {$ref: '#/components/schemas/Text'}
                 workDir:
                   $ref: '#/components/schemas/Text'
-                  description: Existing absolute local directory, checked by the daemon.
+                  description: Existing absolute directory on the execution host, checked by that daemon.
                 requestId: {$ref: '#/components/schemas/RequestId'}
                 sessionOptions: {$ref: '#/components/schemas/SessionOptions'}
       responses:
@@ -285,6 +285,7 @@ paths:
               additionalProperties: false
               required: [requestId]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 requestId: {$ref: '#/components/schemas/RequestId'}
       responses:
         '200': {$ref: '#/components/responses/Operation'}
@@ -438,6 +439,7 @@ paths:
               additionalProperties: false
               required: [message, requestId]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 message: {$ref: '#/components/schemas/Text'}
                 requestId: {$ref: '#/components/schemas/RequestId'}
                 mode: {type: string, enum: [default, plan], default: default}
@@ -471,6 +473,7 @@ paths:
               additionalProperties: false
               required: [message, requestId]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 message: {$ref: '#/components/schemas/Text'}
                 requestId: {$ref: '#/components/schemas/RequestId'}
       responses:
@@ -503,6 +506,7 @@ paths:
               additionalProperties: false
               required: [requestId]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 requestId: {$ref: '#/components/schemas/RequestId'}
       responses:
         '200': {$ref: '#/components/responses/Operation'}
@@ -538,6 +542,7 @@ paths:
               additionalProperties: false
               required: [requestId, answers]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 requestId: {$ref: '#/components/schemas/RequestId'}
                 answers:
                   type: array
@@ -573,6 +578,7 @@ paths:
               additionalProperties: false
               required: [requestId, decision]
               properties:
+                hostId: {$ref: '#/components/schemas/Text', description: Optional execution host; omitted means this daemon.}
                 requestId: {$ref: '#/components/schemas/RequestId'}
                 decision: {type: string, enum: [allow, deny]}
       responses:
@@ -931,6 +937,35 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/hosts/{hostId}/request-receipts/{requestId}:
+    get:
+      operationId: getRequestReceipt
+      tags: [Execution]
+      summary: Inspect a target-owned Network delivery receipt under current authority
+      description: Any current compatible member may inspect another source's receipt. Null never proves nonexecution. This read does not execute or write state.
+      parameters:
+        - {name: hostId, in: path, required: true, schema: {$ref: '#/components/schemas/Text'}}
+        - {name: requestId, in: path, required: true, schema: {$ref: '#/components/schemas/RequestId'}}
+        - {name: networkId, in: query, required: true, schema: {$ref: '#/components/schemas/Text'}}
+        - {name: sourceHostId, in: query, required: true, schema: {$ref: '#/components/schemas/Text'}}
+      responses:
+        '200':
+          description: Original scoped delivery receipt or an inconclusive null
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [result]
+                properties:
+                  result: {$ref: '#/components/schemas/RequestReceiptResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/Unavailable'}
 components:
   securitySchemes:
     operatorCookie:
@@ -1077,6 +1112,24 @@ components:
         runtimeId: {type: string, format: uuid}
         historyId: {type: string}
         payload: {$ref: '#/components/schemas/SessionUpdates'}
+    RequestReceiptResult:
+      type: object
+      additionalProperties: false
+      required: [receiptScope, receipt, receiptRetentionSeconds]
+      properties:
+        receiptScope:
+          type: object
+          additionalProperties: false
+          required: [networkId, sourceHostId, requestId]
+          properties:
+            networkId: {type: string}
+            sourceHostId: {type: string}
+            requestId: {$ref: '#/components/schemas/RequestId'}
+        receipt:
+          anyOf:
+            - $ref: '#/components/schemas/Operation'
+            - type: 'null'
+        receiptRetentionSeconds: {type: integer, minimum: 86400}
     Text:
       type: string
       minLength: 1

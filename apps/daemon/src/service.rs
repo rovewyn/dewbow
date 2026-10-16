@@ -86,9 +86,14 @@ pub struct Service {
     pub tickets: Mutex<HashMap<String, Instant>>,
     pub cookies: Mutex<HashMap<String, Instant>>,
     inventory: AsyncMutex<Option<(Instant, Value)>>,
-    requests: AsyncMutex<()>,
-    locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    pub(crate) requests: AsyncMutex<()>,
+    locks: Mutex<HashMap<GateKey, Arc<AsyncMutex<()>>>>,
     pub(crate) live: Mutex<BTreeMap<String, Value>>,
+}
+#[derive(Hash, PartialEq, Eq)]
+enum GateKey {
+    Session(String),
+    Outbound(crate::network::ReceiptScope),
 }
 pub fn public(mut value: Value) -> Value {
     if let Some(map) = value.as_object_mut() {
@@ -292,21 +297,23 @@ impl Service {
     pub async fn details(&self, session: &str) -> anyhow::Result<Value> {
         let summary = self.summary(session).await?;
         let select = |kind: &str| -> anyhow::Result<Vec<Value>> {
-            Ok(self
-                .store
-                .list(kind)?
-                .into_iter()
-                .filter(|row| row["sessionId"] == session)
-                .map(|mut row| {
-                    if kind == "operation" {
-                        row["authority"] = json!("operator");
-                    }
-                    if kind == "turn" && row["observedAt"].is_null() {
-                        row["observedAt"] = row["createdAt"].clone();
-                    }
-                    public(row)
-                })
-                .collect())
+            Ok((if kind == "operation" {
+                self.all_operations()?
+            } else {
+                self.store.list(kind)?
+            })
+            .into_iter()
+            .filter(|row| row["sessionId"] == session)
+            .map(|mut row| {
+                if kind == "operation" {
+                    row["authority"] = json!("operator");
+                }
+                if kind == "turn" && row["observedAt"].is_null() {
+                    row["observedAt"] = row["createdAt"].clone();
+                }
+                public(row)
+            })
+            .collect())
         };
         Ok(
             json!({"host":self.host(),"session":summary,"contextAuthority":"operator","turns":select("turn")?,"interactions":select("interaction")?,"interactionsError":null,"operations":select("operation")?}),
@@ -343,8 +350,25 @@ impl Service {
             live.pop_first();
         }
     }
-    pub async fn api(&self, name: &str, input: Value) -> anyhow::Result<Value> {
+    pub async fn api(&self, name: &str, mut input: Value) -> anyhow::Result<Value> {
+        if name == "getRequestReceipt" {
+            return self.operator_receipt(input).await;
+        }
         validate(name, &input)?;
+        if serde_json::from_value::<dewbow_protocol::network::peer::Mutation>(serde_json::json!(
+            name
+        ))
+        .is_ok()
+        {
+            if let Some(host) = input.get("hostId").and_then(Value::as_str)
+                && host != self.config.host_id
+            {
+                return self.remote_operation(name, input).await;
+            }
+            if name != "createSession" {
+                input.as_object_mut().unwrap().remove("hostId");
+            }
+        }
         match name {
             "listHosts" => Ok(json!({"hosts":[self.host()]})),
             "listSessions" => {
@@ -386,8 +410,7 @@ impl Service {
             }
             "getSession" => self.details(text(&input, "sessionId")?).await,
             "getOperation" => self
-                .store
-                .list("operation")?
+                .all_operations()?
                 .into_iter()
                 .find(|operation| operation["commandId"] == input["commandId"])
                 .map(|mut operation| {
@@ -434,11 +457,33 @@ impl Service {
         self.locks
             .lock()
             .unwrap()
-            .entry(key.to_string())
+            .entry(GateKey::Session(key.to_string()))
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+    pub(crate) fn outbound_lock(
+        &self,
+        scope: &crate::network::ReceiptScope,
+    ) -> Arc<AsyncMutex<()>> {
+        self.locks
+            .lock()
+            .unwrap()
+            .entry(GateKey::Outbound(scope.clone()))
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
     }
     async fn operation(&self, name: &str, input: Value) -> anyhow::Result<Value> {
+        self.operation_scoped(name, input, None).await
+    }
+    pub(crate) async fn operation_scoped(
+        &self,
+        name: &str,
+        input: Value,
+        remote: Option<(
+            dewbow_protocol::network::peer::BusinessContext,
+            crate::network::business::BusinessIdentity,
+        )>,
+    ) -> anyhow::Result<Value> {
         let request = text(&input, "requestId")?.to_string();
         let key = input["sessionId"].as_str().unwrap_or(&request).to_string();
         let lock = self.state_lock(&key);
@@ -447,7 +492,9 @@ impl Service {
         let request_guard = self.requests.lock().await;
         let fingerprint =
             dewbow_protocol::hex(&Sha256::digest(json!([name, input]).to_string().as_bytes()));
-        if let Some(operation) = self.store.get("operation", &request)? {
+        if remote.is_none()
+            && let Some(operation) = self.store.get("operation", &request)?
+        {
             anyhow::ensure!(
                 operation["fingerprint"] == fingerprint,
                 error(
@@ -469,7 +516,34 @@ impl Service {
             .map(str::to_string)
             .unwrap_or_else(id);
         let mut operation = json!({"requestId":request,"commandId":id(),"operation":name,"authority":"operator","sessionId":session,"turnId":input.get("turnId").unwrap_or(&Value::Null),"status":"accepted","createdAt":now(),"error":null,"fingerprint":fingerprint});
-        self.store.put("operation", &request, &operation)?;
+        if let Some((context, identity)) = remote {
+            let scope = crate::network::ReceiptScope {
+                network_id: context.network_id,
+                source_host_id: context.source_host_id,
+                request_id: request.clone(),
+            };
+            let fingerprint = crate::network_business::semantic_fingerprint(
+                name,
+                &input,
+                context.target_host_id,
+            )?;
+            operation["fingerprint"] = json!(dewbow_protocol::hex(&fingerprint));
+            let retained = self.store.network.admit_business(
+                &context,
+                identity,
+                &scope,
+                fingerprint,
+                &operation,
+            )?;
+            if retained["commandId"] != operation["commandId"] {
+                let mut retained = retained;
+                retained["authority"] = json!("operator");
+                return Ok(public(retained));
+            }
+        } else {
+            self.store.network.reject_local_redirect(&request)?;
+            self.store.put("operation", &request, &operation)?;
+        }
         drop(request_guard);
         match self.execute(name, &input, &mut operation).await {
             Ok(()) => operation["status"] = json!("delivered"),
@@ -498,7 +572,7 @@ impl Service {
                 }
             }
         }
-        self.store.put("operation", &request, &operation)?;
+        self.save_operation(&operation)?;
         let _ = self.changed.send(());
         Ok(public(operation))
     }
@@ -675,11 +749,7 @@ impl Service {
             let turn_id = id();
             let mut turn = json!({"turnId":turn_id,"sessionId":sid,"requestId":operation["requestId"],"codexTurnId":null,"state":"accepted","createdAt":now(),"observedAt":now(),"error":null,"mode":mode});
             operation["turnId"] = json!(turn_id);
-            self.store.put(
-                "operation",
-                operation["requestId"].as_str().unwrap(),
-                operation,
-            )?;
+            self.save_operation(operation)?;
             self.store.put("turn", &turn_id, &turn)?;
             session["activeTurnId"] = json!(turn_id);
             session["runtimeState"] = json!("running");
@@ -858,30 +928,25 @@ impl Service {
         Ok(())
     }
     pub(crate) fn confirm_delivery(&self, turn: &Value) -> anyhow::Result<()> {
-        let request = text(turn, "requestId")?;
-        if let Some(mut operation) = self.store.get("operation", request)?
-            && operation["operation"] == "sendMessage"
-            && operation["sessionId"] == turn["sessionId"]
-            && operation["turnId"] == turn["turnId"]
-            && ["accepted", "unknown"]
-                .iter()
-                .any(|state| operation["status"] == *state)
+        if let Some(mut operation) = self.all_operations()?.into_iter().find(|op| {
+            op["sessionId"] == turn["sessionId"]
+                && op["turnId"] == turn["turnId"]
+                && op["operation"] == "sendMessage"
+        }) && ["accepted", "unknown"]
+            .iter()
+            .any(|state| operation["status"] == *state)
         {
             operation["status"] = json!("delivered");
             operation["error"] = Value::Null;
-            self.store.put("operation", request, &operation)?;
+            self.save_operation(&operation)?;
         }
         Ok(())
     }
     async fn recover(&self) -> anyhow::Result<()> {
-        for mut operation in self.store.list("operation")? {
+        for mut operation in self.all_operations()? {
             if operation["status"] == "accepted" {
                 operation["status"] = json!("unknown");
-                self.store.put(
-                    "operation",
-                    operation["requestId"].as_str().unwrap(),
-                    &operation,
-                )?;
+                self.save_operation(&operation)?;
             }
         }
         for retained in self.store.list("session")? {
@@ -1066,7 +1131,12 @@ pub(crate) fn validate(name: &str, input: &Value) -> anyhow::Result<()> {
         .as_object()
         .ok_or_else(|| error("INVALID_INPUT", "Input must be an object."))?;
     anyhow::ensure!(
-        object.keys().all(|key| allowed.contains(&key.as_str())),
+        object.keys().all(|key| allowed.contains(&key.as_str())
+            || (key == "hostId"
+                && serde_json::from_value::<dewbow_protocol::network::peer::Mutation>(json!(
+                    name
+                ))
+                .is_ok())),
         error("INVALID_INPUT", "Unknown input field.")
     );
     for key in required {
@@ -1123,7 +1193,26 @@ pub(crate) fn validate(name: &str, input: &Value) -> anyhow::Result<()> {
     }
     if name == "answerQuestions" {
         anyhow::ensure!(
-            input["answers"].is_array(),
+            input["answers"]
+                .as_array()
+                .is_some_and(|answers| !answers.is_empty()
+                    && answers.len() <= 20
+                    && answers.iter().all(|answer| {
+                        answer.as_object().is_some_and(|fields| {
+                            fields.len() == 2
+                                && fields.contains_key("questionId")
+                                && fields.contains_key("answers")
+                        }) && answer["questionId"]
+                            .as_str()
+                            .is_some_and(|id| !id.trim().is_empty() && id.len() <= 200)
+                            && answer["answers"].as_array().is_some_and(|values| {
+                                !values.is_empty()
+                                    && values.len() <= 20
+                                    && values.iter().all(|value| {
+                                        value.as_str().is_some_and(|s| s.len() <= 100000)
+                                    })
+                            })
+                    })),
             error("INVALID_INPUT", "Invalid answers.")
         );
     }

@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
+import { apiRequest } from '../../apps/web/src/apiRoutes.ts';
 
 const suffix = process.platform === 'win32' ? '.exe' : '';
 const binary = resolve(`target/debug/dewbow${suffix}`);
@@ -78,6 +79,158 @@ async function admit(issuer, joiner) {
   network(issuer, 'set-peer-address', member, joiner.endpoint);
   return invitation;
 }
+
+async function operator(node) {
+  const { ticket } = await control(node, 'ticket');
+  const response = await fetch(`${node.origin}/auth/login`, { method: 'POST', headers: { Connection: 'close', Origin: node.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get('set-cookie').split(';')[0];
+  const raw = async (path, options = {}) => {
+    const response = await fetch(`${node.origin}${path}`, { ...options, headers: { Connection: 'close', Origin: node.origin, Cookie: cookie, 'Content-Type': 'application/json', ...options.headers } });
+    const body = await response.json();
+    if (body.error) throw Object.assign(new Error(body.error.message), body.error);
+    return { value: body.result, location: response.headers.get('location') };
+  };
+  const request = async (name, input) => {
+    const route = apiRequest(name, input);
+    return (await raw(route.path, { method: route.method, ...(route.input ? { body: JSON.stringify(route.input) } : {}) })).value;
+  };
+  return { raw, request };
+}
+
+function journal(node, sql, ...params) {
+  const db = new DatabaseSync(join(node.state, 'daemon.sqlite'), { readOnly: true });
+  try { return db.prepare(sql).all(...params); } finally { db.close(); }
+}
+
+async function recoverOriginal(op, operation, input) {
+  const deadline = Date.now() + 45000;
+  for (;;) {
+    try { return await op.request(operation, input); }
+    catch (cause) {
+      if (!['NOT_READY', 'DELIVERY_UNCERTAIN', 'SYNC_REQUIRED', 'UNAVAILABLE'].includes(cause.code) || Date.now() >= deadline) throw cause;
+      await delay(200);
+    }
+  }
+}
+
+test('remote native operations retain scoped receipts, authority and recovery over real TLS', { timeout: 420000 }, async () => {
+  const nodes = [];
+  try {
+    for (let i = 0; i < 3; i++) nodes.push(await makeNode());
+    const [a, b, c] = nodes;
+    network(a, 'create', 'Synthetic execution', ...settings(a));
+    await admit(a, b); await admit(a, c);
+    await until(() => nodes.map(node => network(node, 'members').members.length), counts => counts.every(n => n === 3), 'all admitted peers known');
+    const member = node => network(node, 'status').membershipId;
+    for (const source of nodes) for (const target of nodes) if (source !== target) network(source, 'set-peer-address', member(target), target.endpoint);
+    await until(() => nodes.map(node => network(node, 'status').historyId), ids => new Set(ids).size === 1, 'compatible execution context');
+    let oa = await operator(a), ob = await operator(b);
+    const oc = await operator(c), hostId = b.config.hostId;
+    const creation = { hostId, workDir: b.state, requestId: 'shared-id' };
+    const created = await oa.request('createSession', creation);
+    assert.equal(created.status, 'delivered', JSON.stringify(created));
+    const racing = await Promise.all([0, 1].map(() => oa.request('createSession', { ...creation, requestId: 'same-entry-race' })));
+    assert.equal(racing[0].commandId, racing[1].commandId, 'concurrent identical entry submissions share one receipt');
+    assert.deepEqual(await oa.request('createSession', creation), created);
+    const fromC = await oc.request('createSession', creation);
+    const local = await ob.request('createSession', creation);
+    assert.equal(new Set([created.commandId, fromC.commandId, local.commandId]).size, 3, 'local and two source scopes do not alias');
+    assert.equal(journal(a, "SELECT count(*) AS n FROM records WHERE kind='session'")[0].n, 0, 'entry does not own remote conversations');
+    await assert.rejects(oa.request('createSession', { ...creation, hostId: c.config.hostId }), { code: 'REQUEST_CONFLICT' });
+    await assert.rejects(oa.request('createSession', { ...creation, hostId: a.config.hostId, workDir: a.state }), { code: 'REQUEST_CONFLICT' });
+    await assert.rejects(oa.request('createSession', { ...creation, workDir: c.state }), { code: 'REQUEST_CONFLICT' });
+    const sid = created.sessionId, details = () => ob.request('getSession', { sessionId: sid });
+    const configuration = (await details()).session.sessionConfig;
+    assert.equal(configuration.resolved.approvalPolicy, 'on-request');
+    assert.equal(configuration.resolved.sandbox.type, 'workspaceWrite');
+    assert.equal((await oa.request('connectSession', { hostId, sessionId: sid, requestId: 'connect' })).status, 'delivered');
+    const send = (op, message, requestId, sessionId = sid) => op.request('sendMessage', { hostId, sessionId, message, requestId });
+    await send(oa, 'WAIT', 'wait');
+    const active = (await until(details, d => !!d.session.activeTurnId, 'remote active turn')).session.activeTurnId;
+    assert.equal((await send(oc, 'competing turn', 'busy')).error.code, 'SESSION_BUSY');
+    assert.equal((await oa.request('steerTurn', { hostId, sessionId: sid, turnId: active, message: 'Synthetic steering', requestId: 'steer' })).status, 'delivered');
+    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: sid, turnId: active, requestId: 'interrupt' })).status, 'delivered');
+    await until(details, d => !d.session.activeTurnId, 'remote interrupt completion');
+    for (const [message, kind] of [['QUESTIONS', 'questions'], ['APPROVAL', 'approval']]) {
+      await send(oa, message, `send-${kind}`);
+      const d = await until(details, d => d.interactions.some(i => i.kind === kind && i.status === 'pending'), kind);
+      const interaction = d.interactions.find(i => i.kind === kind && i.status === 'pending');
+      const name = kind === 'questions' ? 'answerQuestions' : 'decideApproval';
+      const input = { hostId, sessionId: sid, turnId: d.session.activeTurnId, interactionId: interaction.interactionId, requestId: `resolve-${kind}`, ...(kind === 'questions' ? { answers: [{ questionId: 'choice', answers: ['One'] }] } : { decision: 'deny' }) };
+      const receipt = await oc.request(name, input);
+      assert.equal(receipt.status, 'delivered', JSON.stringify(receipt));
+      assert.equal((await oc.request(name, input)).commandId, receipt.commandId, 'callback response is not replayed');
+      await until(details, d => !d.session.activeTurnId, 'callback completion');
+    }
+    // Lose the entry HTTP response after target admission and native dispatch.
+    await fs.writeFile(join(b.home, 'upgrade-slow-start-once'), 'synthetic');
+    const aborted = new AbortController();
+    const lostInput = { hostId, workDir: b.state, requestId: 'lost-response' };
+    const route = apiRequest('createSession', lostInput);
+    const lost = oa.raw(route.path, { method: 'POST', body: JSON.stringify(route.input), signal: aborted.signal }).catch(error => error);
+    await until(() => fs.access(join(b.home, 'upgrade-slow-start-once')).then(() => false, () => true), Boolean, 'native received create');
+    aborted.abort(); await lost;
+    await until(() => journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'"), rows => rows.length && JSON.parse(rows[0].receipt_json).status === 'delivered', 'target continues after entry disconnect');
+    const original = JSON.parse(journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'")[0].receipt_json);
+    await stop(a); await start(a); oa = await operator(a);
+    assert.equal((await oa.request('createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
+    const retryRoute = apiRequest('createSession', lostInput);
+    const retry = await oa.raw(retryRoute.path, { method: 'POST', body: JSON.stringify(retryRoute.input) });
+    assert.equal((await oa.raw(retry.location)).value.receipt.commandId, original.commandId);
+    const networkId = network(b, 'status').networkId;
+    const scopePath = `/api/v1/hosts/${hostId}/request-receipts/shared-id?networkId=${networkId}&sourceHostId=${a.config.hostId}`;
+    // Native persistence without its request acknowledgement must not trigger a second turn.
+    const uncertain = await send(oa, 'UNCERTAIN_COMPLETE', 'native-uncertain', local.sessionId);
+    assert.ok(['unknown', 'delivered'].includes(uncertain.status));
+    const uncertainPath = scopePath.replace('shared-id', 'native-uncertain');
+    await until(() => oa.raw(uncertainPath), r => r.value.receipt?.status === 'delivered', 'native persistence resolves delivery');
+    const recovered = await send(oa, 'UNCERTAIN_COMPLETE', 'native-uncertain', local.sessionId);
+    assert.equal(recovered.commandId, uncertain.commandId);
+    const nativeHistory = await ob.request('readSessionHistory', { sessionId: local.sessionId });
+    assert.equal(nativeHistory.messages.filter(m => m.clientId === uncertain.commandId).length, 1, 'native request was delivered once');
+    const before = journal(b, 'SELECT receipt_json FROM network_request_receipts');
+    assert.equal((await ob.raw(scopePath)).value.receipt.commandId, created.commandId);
+    assert.deepEqual(journal(b, 'SELECT receipt_json FROM network_request_receipts'), before, 'receipt inspection does not write');
+    // A target restart invalidates callbacks but retains all delivery receipts.
+    await send(oa, 'QUESTIONS', 'before-target-restart');
+    const pending = await until(details, d => d.interactions.some(i => i.status === 'pending'), 'restart callback');
+    const question = pending.interactions.find(i => i.status === 'pending');
+    await stop(b); await start(b); ob = await operator(b);
+    assert.equal((await oa.raw(scopePath)).value.receipt.commandId, created.commandId);
+    const stale = await oa.request('answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
+    assert.equal(stale.error.code, 'STALE_INTERACTION');
+    // Withdrawal revokes future access, leaves admitted work running, and permits another member to inspect it.
+    await send(oa, 'WAIT', 'survives-removal', fromC.sessionId);
+    const remoteDetails = () => ob.request('getSession', { sessionId: fromC.sessionId });
+    const running = await until(remoteDetails, d => !!d.session.activeTurnId, 'turn before removal');
+    const oldMember = member(a);
+    network(b, 'remove', oldMember);
+    await until(() => network(a, 'status'), s => s.localStatus === 'removed', 'caller exclusion');
+    await until(() => network(c, 'status').historyId, history => history === network(b, 'status').historyId, 'inspecting member reconciled');
+    assert.equal((await remoteDetails()).session.activeTurnId, running.session.activeTurnId);
+    await assert.rejects(send(oa, 'denied', 'after-removal', fromC.sessionId), { code: 'FORBIDDEN' });
+    const removedReceipt = scopePath.replace('shared-id', 'survives-removal');
+    assert.equal((await oc.raw(removedReceipt)).value.receipt.requestId, 'survives-removal');
+    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
+    network(a, 'leave'); await admit(b, a);
+    assert.notEqual(member(a), oldMember);
+    // Admission can precede the next bounded handshake on a loaded runner. Every
+    // recovery attempt retains the original identity, input and target.
+    assert.equal((await recoverOriginal(oa, 'createSession', creation)).commandId, created.commandId, 'fresh admission does not bypass receipts');
+    const encoded = journal(b, 'SELECT receipt_json,recovery_refs_json FROM network_request_receipts').map(row => JSON.stringify(row)).join('');
+    for (const secret of ['Synthetic steering', '"answers"', '"nativeRequestId"', '"nativeMethod"']) assert.ok(!encoded.includes(secret), 'no callback or message bodies in receipts');
+    assert.ok(journal(b, 'PRAGMA user_version')[0].user_version === 2);
+    assert.deepEqual((await ob.request('getSession', { sessionId: sid })).session.sessionConfig, configuration);
+    network(a, 'leave'); network(a, 'create', 'Synthetic independent Network', ...settings(a));
+    await assert.rejects(oa.request('createSession', creation), { code: 'REQUEST_CONFLICT' }, 'a new Network cannot bypass the original outbound binding');
+  } finally {
+    for (const node of nodes.reverse()) {
+      try { await stop(node); } catch (cause) { console.error(node.diagnostics); throw cause; }
+      await fs.rm(node.state, { recursive: true, force: true });
+    }
+  }
+});
 
 test('CLI membership lifecycle survives founder exit, offline removal and daemon restart', { timeout: 240000 }, async () => {
   const nodes = [], invitations = [];
