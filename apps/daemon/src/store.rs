@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     path::Path,
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 /// Inspect ownership without initializing or changing retained state.
@@ -45,7 +45,7 @@ type Events = BTreeMap<String, (u64, VecDeque<Value>)>;
 
 const RECEIPT_RETENTION_HOURS: i64 = 24;
 
-const INVALID_STATE: &str =
+pub(crate) const INVALID_STATE: &str =
     "RECOVERY_REQUIRED: unsupported or malformed management state; preserve it for recovery";
 
 fn fields(kind: &str, id: &str) -> anyhow::Result<&'static [&'static str]> {
@@ -146,7 +146,7 @@ fn valid_config(value: &Value) -> bool {
             .all(|key| sandbox[*key].is_boolean())
 }
 
-fn validate_record(kind: &str, id: &str, value: &Value) -> anyhow::Result<()> {
+pub(crate) fn validate_record(kind: &str, id: &str, value: &Value) -> anyhow::Result<()> {
     let allowed = fields(kind, id)?;
     if kind == "meta" && value.is_null() {
         return Ok(());
@@ -221,47 +221,10 @@ fn validate_record(kind: &str, id: &str, value: &Value) -> anyhow::Result<()> {
 
 /// Inspect the entire persisted format before initialization, PRAGMAs or writeback.
 fn read_records(db: &Connection) -> anyhow::Result<Option<Records>> {
-    let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let objects = {
-        let mut statement = db.prepare(
-            "SELECT type,name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
-        )?;
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    if version == 0 && objects.is_empty() {
+    let version = crate::network::schema::inspect(db)?;
+    if version == 0 {
         return Ok(None);
     }
-    anyhow::ensure!(
-        version == 1 && objects == [("table".into(), "records".into())],
-        INVALID_STATE
-    );
-    let columns = {
-        let mut statement = db.prepare("PRAGMA table_info(records)")?;
-        statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, u32>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, u32>(5)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-    anyhow::ensure!(
-        columns
-            == [
-                ("kind".into(), "TEXT".into(), 1, None, 1),
-                ("id".into(), "TEXT".into(), 1, None, 2),
-                ("data".into(), "TEXT".into(), 1, None, 0),
-            ],
-        INVALID_STATE
-    );
     let mut statement = db.prepare("SELECT kind,id,data FROM records")?;
     statement
         .query_map([], |row| {
@@ -300,6 +263,9 @@ pub fn checkpoint_for_upgrade(state: &Path) -> anyhow::Result<()> {
     }
     let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     anyhow::ensure!(read_records(&db)?.is_some(), INVALID_STATE);
+    if crate::network::schema::inspect(&db)? == 2 {
+        crate::network::validate_connection(&db, state)?;
+    }
     let integrity: String = db.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     anyhow::ensure!(
         integrity == "ok",
@@ -317,12 +283,14 @@ pub fn checkpoint_for_upgrade(state: &Path) -> anyhow::Result<()> {
 }
 
 pub struct Store {
-    journal: Mutex<Connection>,
+    journal: Arc<Mutex<Connection>>,
+    pub(crate) network: crate::network::Repository,
     records: Mutex<Records>,
     events: Mutex<Events>,
 }
 impl Store {
     pub fn open(state: &Path) -> anyhow::Result<Self> {
+        let (host, limits) = crate::network::environment(state)?;
         dewbow_sdk::private::no_links(&state.join("daemon.sqlite"))?;
         anyhow::ensure!(
             !state.join("content.sqlite").exists(),
@@ -330,15 +298,23 @@ impl Store {
         );
         let mut journal = Connection::open(state.join("daemon.sqlite"))?;
         let existing = read_records(&journal)?;
-        journal.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
-        if existing.is_none() {
-            let transaction = journal.transaction()?;
-            transaction.execute_batch("CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id)); PRAGMA user_version=1;")?;
-            transaction.commit()?;
+        let source = crate::network::schema::inspect(&journal)?;
+        if source == 1 {
+            verify_runtime_stopped(state)?;
         }
+        if source == 2 {
+            crate::network::validate_connection(&journal, state)?;
+        }
+        journal.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
+        )?;
+        crate::network::migration::migrate(&mut journal, state, source)?;
         let records = existing.unwrap_or_default();
+        let journal = Arc::new(Mutex::new(journal));
+        let network = crate::network::Repository::new(Arc::clone(&journal), state, host, limits)?;
         Ok(Self {
-            journal: Mutex::new(journal),
+            journal,
+            network,
             records: Mutex::new(records),
             events: Mutex::new(BTreeMap::new()),
         })
@@ -625,17 +601,26 @@ mod upgrade_tests {
     #[test]
     fn validated_state_preserves_frozen_configuration_and_uncertain_receipts() {
         let root = temporary_state();
-        let store = Store::open(&root).unwrap();
         let pending = json!({"turnId":"synthetic-turn","sessionId":"synthetic-session",
             "requestId":"synthetic-request","mode":"default","createdAt":"synthetic-time"});
-        store
-            .put("session", "synthetic-session", &session())
+        let db = Connection::open(root.join("daemon.sqlite")).unwrap();
+        db.execute_batch(crate::network::schema::RECORDS_SQL)
             .unwrap();
-        store
-            .put("operation", "synthetic-request", &receipt())
+        db.execute_batch(
+            "PRAGMA user_version=1; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;",
+        )
+        .unwrap();
+        for (kind, id, value) in [
+            ("session", "synthetic-session", session()),
+            ("operation", "synthetic-request", receipt()),
+            ("turn", "synthetic-turn", pending.clone()),
+        ] {
+            db.execute(
+                "INSERT INTO records VALUES(?1,?2,?3)",
+                rusqlite::params![kind, id, value.to_string()],
+            )
             .unwrap();
-        store.put("turn", "synthetic-turn", &pending).unwrap();
-        drop(store);
+        }
         let store = Store::open(&root).unwrap();
         assert_eq!(
             store.get("session", "synthetic-session").unwrap(),
@@ -647,6 +632,7 @@ mod upgrade_tests {
         );
         assert_eq!(store.get("turn", "synthetic-turn").unwrap(), Some(pending));
         drop(store);
+        drop(db);
         checkpoint_for_upgrade(&root).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

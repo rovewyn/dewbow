@@ -57,7 +57,7 @@ test('upgrade preflight preserves service and maintenance drains admitted work',
     const packagePath = join(install, `${releaseName}.${process.platform === 'win32' ? 'zip' : 'tar.gz'}`);
     const hash = bytes => createHash('sha256').update(bytes).digest('hex');
     for (const rollbackSafe of [false, true]) {
-      await fs.writeFile(join(packageRoot, 'release.json'), JSON.stringify({ version: '99.0.0', target, executable: `dewbow${suffix}`, binarySha256: hash(await fs.readFile(binary)), upgrade: { contractVersion: 'v1', stateSchema: 1, rollbackSafe } }));
+      await fs.writeFile(join(packageRoot, 'release.json'), JSON.stringify({ version: '99.0.0', target, executable: `dewbow${suffix}`, binarySha256: hash(await fs.readFile(binary)), upgrade: { contractVersion: 'v1', stateSchema: 2, rollbackSafe } }));
       const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
       execFileSync(tar, [process.platform === 'win32' ? '-acf' : '-czf', packagePath, '-C', install, releaseName], { windowsHide: true });
       await fs.writeFile(`${packagePath}.sha256`, `${hash(await fs.readFile(packagePath))}  ${packagePath.slice(install.length + 1)}\n`);
@@ -299,7 +299,12 @@ test('Rust lifecycle, operator authority, execution, callback identity and recov
     const journal = new DatabaseSync(join(env.state, 'daemon.sqlite'), { readOnly: true });
     const rows = journal.prepare('SELECT kind,data FROM records').all();
     const records = rows.map(r=>r.data).join('\n');
-    assert.deepEqual(journal.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r=>r.name),['records']);
+    assert.deepEqual(journal.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),[
+      'network_conflicts','network_contacts','network_departure_tasks','network_departures','network_invitations','network_join_attempts','network_keys',
+      'network_outbound_requests','network_records','network_request_receipts','network_requests','network_selections','network_settings','records',
+    ]);
+    assert.equal(journal.prepare('PRAGMA user_version').get().user_version,2);
+    assert.equal(journal.prepare('SELECT count(*) AS count FROM network_keys').get().count,0,'Unjoined nodes generate no member key');
     assert.ok(rows.every(r=>['session','operation','meta'].includes(r.kind)), 'Confirmed turns and interactions have no durable history');
     assert.ok(rows.filter(r=>r.kind==='session').every(r=>!Object.hasOwn(JSON.parse(r.data),'native') && !Object.hasOwn(JSON.parse(r.data),'runtimeState')));
     journal.close();

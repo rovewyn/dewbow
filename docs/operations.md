@@ -17,6 +17,8 @@ The directory can contain these files:
 | `config.json` | Private daemon configuration, including the stable host ID, port, control credential and selected native Codex executable/home |
 | `daemon.sqlite` | The only Dewbow database: managed conversation bindings, frozen creation configuration, request deduplication receipts and minimum recovery state |
 | `daemon.sqlite-wal`, `daemon.sqlite-shm` | SQLite support files for the same database |
+| `network-keys/` | Private per-admission PKCS#8 keys, deletion residues and quarantined unreferenced files |
+| `migration-backups/` | Verified inactive database/configuration backups from supported storage migrations, with hash manifests |
 | `init.lock`, `daemon.lock`, `instance.json` | Initialization locking, exclusive daemon ownership and process identity used for lifecycle checks and recovery |
 | `daemon.log` | Daemon diagnostics when written; it is not an archive of conversation content or complete command output |
 | `upgrade/`, `upgrade-history-*`, `upgrade-failed-state-*` | Private upgrade transactions and inactive state snapshots retained for guarded recovery; these are not additional runtime databases |
@@ -30,6 +32,8 @@ Initializing Dewbow in an empty state directory creates an independent host iden
 For example, a client submits `req-123`, Dewbow sends it to Codex, and the connection drops before the client receives a response. After restarting with the original state directory, an identical retry within the 24-hour window can find the receipt and return its known result or explicit unknown-delivery state without submitting the command again. Older receipts still required for uncertain delivery or active execution remain protected. A newly initialized directory has no such receipt. After connecting the intended native conversation, it can treat that request ID as new and execute it again; deduplication does not span state directories.
 
 Codex history can help establish what happened in the native conversation, but cannot reconstruct Dewbow's complete request identity and delivery associations. An absent receipt in a new directory does not prove a request never ran. Reuse the original state directory for restart recovery, and inspect uncertain outcomes before retrying from a replacement instance. Native Codex conversations and credentials remain in the selected Codex home.
+
+Network storage and protected key recovery are described in [management storage](storage.md#network-storage-foundation). Network enrollment, listeners and remote execution remain unavailable. `DEWBOW_NETWORK_WORKING_BYTES` sets a positive byte count for complete-history validation; increase it if retained history exceeds the default 16 MiB budget. Never delete history to fit the budget or copy a key as a way to join.
 
 ### Automatic receipt cleanup
 

@@ -1,6 +1,7 @@
 pub mod config;
 pub mod lifecycle;
 pub mod maintenance;
+pub mod network;
 mod observation;
 mod server;
 mod service;

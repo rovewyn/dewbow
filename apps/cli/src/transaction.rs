@@ -153,8 +153,9 @@ fn prepare(
             dewbow_protocol::id()
         ));
         replacement::retain(executable, candidate, &previous)?;
+        let (state_schema, key_hashes) = dewbow_daemon::network::snapshot_keys(state)?;
         let transaction = Transaction {
-            contract_version: "v1".into(),
+            contract_version: "v2".into(),
             token: token.into(),
             executable: executable.into(),
             previous,
@@ -165,7 +166,27 @@ fn prepare(
             was_running,
             config_hash: hash(&directory.join("config.json"))?,
             database_hash,
+            state_schema: Some(state_schema),
+            key_hashes: Some(key_hashes),
         };
+        if let Some(keys) = &transaction.key_hashes {
+            if !keys.is_empty() {
+                config::secure_directory(&directory.join("network-keys"))?;
+            }
+            for (id, expected) in keys {
+                let filename = format!("{id}.pk8");
+                let source = state.join("network-keys").join(&filename);
+                dewbow_sdk::private::private_file(&source)?;
+                ensure!(
+                    &hash(&source)? == expected,
+                    "Private key changed while snapshotting"
+                );
+                copy(&source, &directory.join("network-keys").join(filename))?;
+            }
+            if !keys.is_empty() {
+                maintenance::sync_directory(&directory.join("network-keys"))?;
+            }
+        }
         config::write_json(&directory.join("transaction.json"), &transaction)?;
         maintenance::sync_directory(&directory)?;
         fs::rename(&directory, state.join("upgrade"))?;
@@ -328,6 +349,35 @@ fn restore(state: &Path, record: &Transaction) -> anyhow::Result<()> {
             "Management snapshot is corrupt; rollback refused"
         );
     }
+    if let Some(keys) = &record.key_hashes {
+        for (id, expected) in keys {
+            let snapshot = state.join("upgrade/network-keys").join(format!("{id}.pk8"));
+            dewbow_sdk::private::private_file(&snapshot)?;
+            ensure!(
+                &hash(&snapshot)? == expected,
+                "Private key snapshot is corrupt; rollback refused"
+            );
+            let current = state.join("network-keys").join(format!("{id}.pk8"));
+            dewbow_sdk::private::no_links(&current)?;
+            if current.exists() {
+                dewbow_sdk::private::private_file(&current)?;
+            }
+            let tomb = state.join("network-keys").join(format!(".{id}.deleted"));
+            dewbow_sdk::private::no_links(&tomb)?;
+            if tomb.exists() {
+                dewbow_sdk::private::private_file(&tomb)?;
+                ensure!(
+                    &hash(&tomb)? == expected,
+                    "Unexpected deletion residue; rollback refused"
+                );
+            }
+        }
+        let (schema, inventory) = dewbow_daemon::network::snapshot_keys(&state.join("upgrade"))?;
+        ensure!(
+            Some(schema) == record.state_schema && &inventory == keys,
+            "Management snapshot and key inventory differ; rollback refused"
+        );
+    }
     for name in ["daemon.sqlite", "daemon.sqlite-wal", "daemon.sqlite-shm"] {
         let path = state.join(name);
         dewbow_sdk::private::no_links(&path)?;
@@ -338,6 +388,61 @@ fn restore(state: &Path, record: &Transaction) -> anyhow::Result<()> {
     maintenance::begin_rollback(state)?;
     let failed = state.join(format!("upgrade-failed-state-{}", dewbow_protocol::id()));
     config::secure_directory(&failed)?;
+    if let Some(keys) = &record.key_hashes {
+        if !keys.is_empty() {
+            config::secure_directory(&failed.join("network-keys"))?;
+            config::secure_directory(&state.join("network-keys"))?;
+        }
+        for id in keys.keys() {
+            let filename = format!("{id}.pk8");
+            let current = state.join("network-keys").join(&filename);
+            let unchanged = current.exists() && hash(&current)? == keys[id];
+            let tomb = state.join("network-keys").join(format!(".{id}.deleted"));
+            if tomb.exists() {
+                #[cfg(unix)]
+                let same_file = if unchanged {
+                    use std::os::unix::fs::MetadataExt;
+                    let a = fs::metadata(&current)?;
+                    let b = fs::metadata(&tomb)?;
+                    a.dev() == b.dev() && a.ino() == b.ino()
+                } else {
+                    false
+                };
+                #[cfg(not(unix))]
+                let same_file = false;
+                if !same_file {
+                    copy(
+                        &tomb,
+                        &failed.join("network-keys").join(format!(".{id}.deleted")),
+                    )?;
+                    maintenance::sync_directory(&failed.join("network-keys"))?;
+                    maintenance::sync_directory(&failed)?;
+                    maintenance::sync_directory(state)?;
+                    fs::remove_file(&tomb)?;
+                    maintenance::sync_directory(&state.join("network-keys"))?;
+                }
+            }
+            if unchanged {
+                // Preserve only the original same-inode deletion residue.
+                continue;
+            }
+            if current.exists() {
+                dewbow_sdk::private::private_file(&current)?;
+                copy(&current, &failed.join("network-keys").join(&filename))?;
+                maintenance::sync_directory(&failed.join("network-keys"))?;
+                maintenance::sync_directory(&failed)?;
+                maintenance::sync_directory(state)?;
+                fs::remove_file(&current)?;
+            }
+            copy(
+                &state.join("upgrade/network-keys").join(&filename),
+                &current,
+            )?;
+        }
+        if !keys.is_empty() {
+            maintenance::sync_directory(&state.join("network-keys"))?;
+        }
+    }
     // Retain the failed management files before touching them. Restoring can be retried.
     for name in ["daemon.sqlite", "daemon.sqlite-wal", "daemon.sqlite-shm"] {
         let path = state.join(name);
@@ -1045,6 +1150,111 @@ pub(crate) mod tests {
         assert_eq!(
             crate::status(&env.state, &env.config).await.unwrap()["maintenance"],
             false
+        );
+    }
+
+    #[tokio::test]
+    async fn key_inventory_is_snapshotted_verified_and_restored_before_commit() {
+        use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
+        let env = Environment::new();
+        env.start().await;
+        crate::control(&env.config, "stop").await.unwrap();
+        let _lock = stopped(&env.state, DEADLINE).await.unwrap();
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let id = dewbow_protocol::id();
+        let directory = env.state.join("network-keys");
+        config::secure_directory(&directory).unwrap();
+        let path = directory.join(format!("{id}.pk8"));
+        {
+            use std::io::Write;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&path).unwrap();
+            file.write_all(key.to_pkcs8_der().unwrap().as_bytes())
+                .unwrap();
+            file.sync_all().unwrap();
+        }
+        let db = rusqlite::Connection::open(env.state.join("daemon.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO network_keys VALUES(?1,?2,1,'deletePending',?3)",
+            rusqlite::params![
+                id,
+                key.verifying_key().as_bytes().as_slice(),
+                dewbow_protocol::now()
+            ],
+        )
+        .unwrap();
+        drop(db);
+        #[cfg(unix)]
+        let tomb = {
+            let tomb = directory.join(format!(".{id}.deleted"));
+            fs::hard_link(&path, &tomb).unwrap();
+            tomb
+        };
+        let record = prepare(
+            &env.state,
+            &env.executable,
+            &env.candidate,
+            VERSION,
+            false,
+            &dewbow_protocol::id(),
+        )
+        .unwrap();
+        assert_eq!(record.contract_version, "v2");
+        assert_eq!(record.state_schema, Some(2));
+        let original = fs::read(&path).unwrap();
+        let snapshot = env
+            .state
+            .join("upgrade/network-keys")
+            .join(format!("{id}.pk8"));
+        assert_eq!(fs::read(&snapshot).unwrap(), original);
+        // Also preserve a pending deletion's old inode when nothing changed.
+        restore(&env.state, &record).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().ino(),
+                fs::metadata(&tomb).unwrap().ino()
+            );
+            fs::remove_file(&tomb).unwrap();
+            copy(&path, &tomb).unwrap();
+            restore(&env.state, &record).unwrap();
+            assert!(
+                !tomb.exists(),
+                "A validated distinct-inode residue must be archived"
+            );
+            fs::hard_link(&path, &tomb).unwrap();
+        }
+        fs::remove_file(&path).unwrap();
+        copy(&snapshot, &path).unwrap();
+        fs::write(&path, b"synthetic interrupted candidate key").unwrap();
+        fs::write(&snapshot, b"synthetic corrupt snapshot").unwrap();
+        assert!(restore(&env.state, &record).is_err());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"synthetic interrupted candidate key"
+        );
+        fs::write(&snapshot, &original).unwrap();
+        restore(&env.state, &record).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        #[cfg(unix)]
+        assert!(!tomb.exists());
+        maintenance::commit(&env.state).unwrap();
+        assert!(
+            restore(&env.state, &record).is_err(),
+            "Committed work forbids snapshot restoration"
+        );
+        drop(_lock);
+        env.start().await;
+        assert!(
+            !path.exists(),
+            "Restored pending deletion must finish on restart"
         );
     }
 }

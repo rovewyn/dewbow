@@ -1,5 +1,138 @@
 use std::{fs, path::Path};
 
+/// Publish a unique private file without replacing an existing identity.
+pub fn publish_new(source: &Path, target: &Path) -> anyhow::Result<()> {
+    no_links(source)?;
+    no_links(target)?;
+    #[cfg(unix)]
+    {
+        if target.exists() {
+            use std::os::unix::fs::MetadataExt;
+            let a = fs::metadata(source)?;
+            let b = fs::metadata(target)?;
+            anyhow::ensure!(
+                a.dev() == b.dev() && a.ino() == b.ino(),
+                "Private publication target already exists"
+            );
+        } else {
+            fs::hard_link(source, target)?;
+        }
+        fs::File::open(target.parent().unwrap())?.sync_all()?;
+        fs::remove_file(source)?;
+        fs::File::open(target.parent().unwrap())?.sync_all()?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+        let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+        let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+        anyhow::ensure!(
+            unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) } != 0,
+            "Private file publication failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
+/// Verify privacy on read instead of silently repairing a leaked key file.
+pub fn private_file(path: &Path) -> anyhow::Result<()> {
+    no_links(path)?;
+    regular(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        anyhow::ensure!(
+            fs::metadata(path)?.permissions().mode() & 0o077 == 0,
+            "Private file permissions are too broad"
+        );
+    }
+    #[cfg(windows)]
+    unsafe {
+        use std::{os::windows::ffi::OsStrExt, ptr};
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, LocalFree},
+            Security::{
+                ACCESS_ALLOWED_ACE, ACL,
+                Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
+                DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation, IsWellKnownSid,
+                TOKEN_QUERY, TOKEN_USER, TokenUser, WinLocalSystemSid,
+            },
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut descriptor = ptr::null_mut();
+        let mut acl: *mut ACL = ptr::null_mut();
+        anyhow::ensure!(
+            GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut acl,
+                ptr::null_mut(),
+                &mut descriptor
+            ) == 0,
+            "Cannot inspect private file ACL"
+        );
+        let result = (|| -> anyhow::Result<()> {
+            anyhow::ensure!(!acl.is_null(), "Private file has an unrestricted ACL");
+            let mut token = ptr::null_mut();
+            anyhow::ensure!(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0,
+                "Cannot inspect local account"
+            );
+            let checked = (|| -> anyhow::Result<()> {
+                let mut size = 0;
+                GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut size);
+                let mut buffer =
+                    vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+                anyhow::ensure!(
+                    GetTokenInformation(
+                        token,
+                        TokenUser,
+                        buffer.as_mut_ptr().cast(),
+                        size,
+                        &mut size
+                    ) != 0,
+                    "Cannot inspect local account SID"
+                );
+                let user = (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+                let mut allowed_user = false;
+                for index in 0..(*acl).AceCount {
+                    let mut raw = ptr::null_mut();
+                    anyhow::ensure!(
+                        GetAce(acl, u32::from(index), &mut raw) != 0,
+                        "Cannot inspect private ACE"
+                    );
+                    let ace = raw.cast::<ACCESS_ALLOWED_ACE>();
+                    // Reject unfamiliar grant types rather than interpreting them loosely.
+                    if (*ace).Header.AceType == 1 {
+                        continue;
+                    }
+                    anyhow::ensure!((*ace).Header.AceType == 0, "Unsupported private ACL grant");
+                    let sid = ptr::addr_of!((*ace).SidStart).cast_mut().cast();
+                    let same_user = EqualSid(sid, user) != 0;
+                    anyhow::ensure!(
+                        same_user || IsWellKnownSid(sid, WinLocalSystemSid) != 0,
+                        "Private file ACL grants another account"
+                    );
+                    allowed_user |= same_user;
+                }
+                anyhow::ensure!(allowed_user, "Private file ACL has no local-account grant");
+                Ok(())
+            })();
+            CloseHandle(token);
+            checked
+        })();
+        LocalFree(descriptor);
+        result?;
+    }
+    Ok(())
+}
+
 pub fn regular(path: &Path) -> anyhow::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     anyhow::ensure!(

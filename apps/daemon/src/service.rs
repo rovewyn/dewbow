@@ -115,6 +115,11 @@ impl Service {
                 "RECOVERY_REQUIRED: the previously owned native process is still alive; verify ownership before stopping it"
             );
         }
+        if store.network.resume_key_deletions().is_err() {
+            eprintln!(
+                "RECOVERY_REQUIRED: private Network key cleanup remains pending; retained files were preserved"
+            );
+        }
         for mut session in store.list("session")? {
             session["hostId"] = json!(config.host_id);
             session["connectionState"] = json!("disconnected");
