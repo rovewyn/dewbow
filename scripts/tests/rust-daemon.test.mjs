@@ -33,10 +33,64 @@ async function operator(env) {
   const { ticket } = await control('ticket');
   const response = await fetch(`${env.origin}/auth/login`, { method: 'POST', headers: { Connection: 'close', Origin: env.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
   assert.equal(response.status, 200);
-  const cookie = response.headers.get('set-cookie').split(';')[0];
+  const setCookie = response.headers.get('set-cookie');
+  const cookie = setCookie.split(';')[0];
   const request = async (operation, input = {}) => { const route = apiRequest(operation, input); const response = await fetch(`${env.origin}${route.path}`, { method: route.method, headers: { Connection: 'close', Origin: env.origin, Cookie: cookie, ...(route.input ? { 'Content-Type': 'application/json' } : {}) }, ...(route.input ? { body: JSON.stringify(route.input) } : {}) }); const data = await response.json(); if (data.error) throw Object.assign(new Error(data.error.message), data.error); return data.result; };
-  return { request, cookie, ticket, control };
+  return { request, cookie, setCookie, ticket, control };
 }
+
+test('operator cookies keep loopback daemon logins and logout independent', { timeout: 60000 }, async () => {
+  const envs = [], jar = new Map();
+  // Browsers share host/path cookies across ports, replacing an existing name.
+  const acceptCookie = header => {
+    const [pair, ...attributes] = header.split(';');
+    const separator = pair.indexOf('=');
+    const name = pair.slice(0, separator), value = pair.slice(separator + 1);
+    if (attributes.some(attribute => attribute.trim() === 'Max-Age=0')) jar.delete(name);
+    else jar.set(name, value);
+    return name;
+  };
+  const request = (env, path = '/api/v1/hosts', options = {}) => fetch(`${env.origin}${path}`, {
+    ...options,
+    headers: { Connection: 'close', Origin: env.origin, Cookie: [...jar].map(([name, value]) => `${name}=${value}`).join('; '), ...options.headers },
+  });
+  try {
+    const first = await prepare(); envs.push(first); invoke(first.state, 'daemon', 'start');
+    const second = await prepare(); envs.push(second); invoke(second.state, 'daemon', 'start');
+    const firstLogin = await operator(first), secondLogin = await operator(second);
+    const firstName = acceptCookie(firstLogin.setCookie), secondName = acceptCookie(secondLogin.setCookie);
+    for (const env of envs) assert.equal((await request(env)).status, 200, 'Logging into another port must preserve the first login');
+    assert.notEqual(firstName, secondName);
+    for (const login of [firstLogin, secondLogin]) {
+      for (const attribute of ['HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=43200']) assert.ok(login.setCookie.split(';').some(value => value.trim() === attribute));
+    }
+    const firstToken = jar.get(firstName);
+    for (const cookie of [`${secondName}=${firstToken}`, `${firstName}0=${firstToken}`, `dewbowOperator=${firstToken}`, `${firstName}=${jar.get(secondName)}`]) {
+      assert.equal((await request(first, undefined, { headers: { Cookie: cookie } })).status, 401, 'Only this port name and its own valid token grant authority');
+    }
+    acceptCookie((await operator(first)).setCookie);
+    assert.equal(jar.size, 2, 'Logging in again replaces only the selected port cookie');
+    for (const env of envs) assert.equal((await request(env)).status, 200);
+    const revokedCookie = `${firstName}=${jar.get(firstName)}`;
+    const logout = await request(first, '/auth/logout', { method: 'POST' });
+    assert.equal(logout.status, 200);
+    assert.equal(acceptCookie(logout.headers.get('set-cookie')), firstName);
+    assert.equal(jar.size, 1);
+    assert.equal((await request(first)).status, 401);
+    assert.equal((await request(first, undefined, { headers: { Cookie: revokedCookie } })).status, 401, 'Logout also revokes the server-side token');
+    assert.equal((await request(second)).status, 200, 'Logging out of one port must preserve the other login');
+    const secondLogout = await request(second, '/auth/logout', { method: 'POST' });
+    assert.equal(secondLogout.status, 200);
+    assert.equal(acceptCookie(secondLogout.headers.get('set-cookie')), secondName);
+    assert.equal(jar.size, 0);
+    assert.equal((await request(second)).status, 401);
+  } finally {
+    await Promise.all(envs.map(async env => {
+      try { invoke(env.state, 'daemon', 'stop'); }
+      finally { await fs.rm(env.state, { recursive: true, force: true }); }
+    }));
+  }
+});
 
 // Packaging and verifying two debug executable archives can dominate this test
 // on small runners; keep individual command and state-transition bounds intact.

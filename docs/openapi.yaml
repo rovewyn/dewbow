@@ -82,7 +82,9 @@ paths:
       description: |
         dewbow web obtains a one-use ticket from the private CLI control endpoint.
         Web removes the fragment ticket before sending it here. Tickets expire
-        after 60 seconds. Cookies expire after 12 hours or daemon exit.
+        after 60 seconds. Cookies expire after 12 hours or daemon exit. The cookie
+        name is dewbowOperator_<configured-port>; retain the actual Set-Cookie name
+        so logins on different loopback ports remain independent.
       security: []
       parameters:
         - $ref: '#/components/parameters/Origin'
@@ -101,7 +103,7 @@ paths:
           headers:
             Set-Cookie:
               schema: {type: string}
-              description: dewbowOperator cookie with Path=/ and Max-Age=43200.
+              description: dewbowOperator_<configured-port> cookie with HttpOnly, SameSite=Strict, Path=/ and Max-Age=43200.
             Cache-Control:
               schema: {type: string, const: no-store}
           content:
@@ -129,7 +131,7 @@ paths:
         - $ref: '#/components/parameters/Origin'
       responses:
         '200':
-          description: Revoked; expires the cookie with Max-Age=0.
+          description: Revoked; expires only dewbowOperator_<configured-port> with Max-Age=0, preserving logins on other ports.
           headers:
             Set-Cookie:
               schema: {type: string}
@@ -1999,8 +2001,15 @@ components:
     operatorCookie:
       type: apiKey
       in: cookie
-      name: dewbowOperator
-      description: In-memory operator session created by the CLI-ticket login exchange.
+      name: dewbowOperator_3000
+      x-cookie-name-template: dewbowOperator_{port}
+      description: |
+        In-memory operator session created by the CLI-ticket login exchange.
+        The name above applies to the default server port 3000. For other ports,
+        substitute the configured listener port into x-cookie-name-template;
+        clients must retain the actual name received in Set-Cookie. Cookie names
+        are distinct across ports, including for logout. OpenAPI does not perform
+        this substitution automatically.
   parameters:
     NetworkId:
       name: networkId
