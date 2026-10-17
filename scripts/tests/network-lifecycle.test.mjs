@@ -22,8 +22,9 @@ const invoke = (node, args, input) => execFileSync(binary, ['--state-dir', node.
   encoding: 'utf8', input, timeout: 40000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
 });
 const network = (node, ...args) => JSON.parse(invoke(node, ['network', '--json', ...args]));
-async function until(read, predicate, description) {
-  for (let i = 0; i < 150; i++) { const value = await read(); if (predicate(value)) return value; await delay(200); }
+async function until(read, predicate, description, timeoutMs = 30000) {
+  const deadline = performance.now() + timeoutMs;
+  do { const value = await read(); if (predicate(value)) return value; await delay(200); } while (performance.now() < deadline);
   throw new Error(`Timed out: ${description}`);
 }
 async function control(node, name, input = {}) {
@@ -50,6 +51,13 @@ async function stop(node) {
     await new Promise((resolve, reject) => server.once('error', reject).listen(number, '127.0.0.1', resolve));
     await new Promise(resolve => server.close(resolve));
   }
+}
+async function crash(node) {
+  // Fault injection is restricted to this test's freshly spawned daemon.
+  const child = node.child;
+  assert.equal(child.exitCode, null);
+  child.kill('SIGKILL');
+  await until(() => child.exitCode ?? child.signalCode, value => value !== null, 'abrupt daemon exit');
 }
 async function makeNode() {
   await fs.mkdir(resolve('state'), { recursive: true });
@@ -146,12 +154,12 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     await assert.rejects(oa.raw('/api/v1/network?networkId=unexpected'), { code: 'INVALID_INPUT' });
     await assert.rejects(oa.raw('/api/v1/networks/' + Buffer.alloc(32, 9).toString('base64url') + '/members'), { code: 'FORBIDDEN' });
     await assert.rejects(oa.raw('/api/v1/networks/' + networkId + '/hosts/' + hostId + '/sessions', { method: 'POST', body: JSON.stringify({ ...creation, hostId }) }), { code: 'INVALID_INPUT' });
-    const created = await oa.request('createSession', creation);
+    const created = await recoverOriginal(oa, 'createSession', creation);
     assert.equal(created.status, 'delivered', JSON.stringify(created));
-    const racing = await Promise.all([0, 1].map(() => oa.request('createSession', { ...creation, requestId: 'same-entry-race' })));
+    const racing = await Promise.all([0, 1].map(() => recoverOriginal(oa, 'createSession', { ...creation, requestId: 'same-entry-race' })));
     assert.equal(racing[0].commandId, racing[1].commandId, 'concurrent identical entry submissions share one receipt');
-    assert.deepEqual(await oa.request('createSession', creation), created);
-    const fromC = await oc.request('createSession', creation);
+    assert.deepEqual(await recoverOriginal(oa, 'createSession', creation), created);
+    const fromC = await recoverOriginal(oc, 'createSession', creation);
     const local = await ob.request('createSession', creation);
     assert.equal(new Set([created.commandId, fromC.commandId, local.commandId]).size, 3, 'local and two source scopes do not alias');
     assert.equal(journal(a, "SELECT count(*) AS n FROM records WHERE kind='session'")[0].n, 0, 'entry does not own remote conversations');
@@ -162,13 +170,23 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     const configuration = (await details()).session.sessionConfig;
     assert.equal(configuration.resolved.approvalPolicy, 'on-request');
     assert.equal(configuration.resolved.sandbox.type, 'workspaceWrite');
-    assert.equal((await oa.request('connectSession', { hostId, sessionId: sid, requestId: 'connect' })).status, 'delivered');
-    const send = (op, message, requestId, sessionId = sid) => op.request('sendMessage', { hostId, sessionId, message, requestId });
+    const connectInput = { hostId, sessionId: sid, requestId: 'connect' };
+    // A ready operator listener is not proof that a remote connection can be
+    // admitted. A pre-dispatch refusal must retain the exact original attempt.
+    await stop(b);
+    await assert.rejects(oa.request('connectSession', connectInput), { code: 'NOT_READY' });
+    assert.equal(journal(b, "SELECT count(*) AS n FROM network_request_receipts WHERE request_id='connect'")[0].n, 0);
+    await start(b); ob = await operator(b);
+    const connected = await recoverOriginal(oa, 'connectSession', connectInput);
+    assert.equal(connected.status, 'delivered');
+    assert.equal((await recoverOriginal(oa, 'connectSession', connectInput)).commandId, connected.commandId);
+    assert.equal(journal(b, "SELECT count(*) AS n FROM network_request_receipts WHERE request_id='connect'")[0].n, 1);
+    const send = (op, message, requestId, sessionId = sid) => recoverOriginal(op, 'sendMessage', { hostId, sessionId, message, requestId });
     await send(oa, 'WAIT', 'wait');
     const active = (await until(details, d => !!d.session.activeTurnId, 'remote active turn')).session.activeTurnId;
     assert.equal((await send(oc, 'competing turn', 'busy')).error.code, 'SESSION_BUSY');
-    assert.equal((await oa.request('steerTurn', { hostId, sessionId: sid, turnId: active, message: 'Synthetic steering', requestId: 'steer' })).status, 'delivered');
-    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: sid, turnId: active, requestId: 'interrupt' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oa, 'steerTurn', { hostId, sessionId: sid, turnId: active, message: 'Synthetic steering', requestId: 'steer' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oc, 'interruptTurn', { hostId, sessionId: sid, turnId: active, requestId: 'interrupt' })).status, 'delivered');
     await until(details, d => !d.session.activeTurnId, 'remote interrupt completion');
     for (const [message, kind] of [['QUESTIONS', 'questions'], ['APPROVAL', 'approval']]) {
       await send(oa, message, `send-${kind}`);
@@ -176,9 +194,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
       const interaction = d.interactions.find(i => i.kind === kind && i.status === 'pending');
       const name = kind === 'questions' ? 'answerQuestions' : 'decideApproval';
       const input = { hostId, sessionId: sid, turnId: d.session.activeTurnId, interactionId: interaction.interactionId, requestId: `resolve-${kind}`, ...(kind === 'questions' ? { answers: [{ questionId: 'choice', answers: ['One'] }] } : { decision: 'deny' }) };
-      const receipt = await oc.request(name, input);
+      const receipt = await recoverOriginal(oc, name, input);
       assert.equal(receipt.status, 'delivered', JSON.stringify(receipt));
-      assert.equal((await oc.request(name, input)).commandId, receipt.commandId, 'callback response is not replayed');
+      assert.equal((await recoverOriginal(oc, name, input)).commandId, receipt.commandId, 'callback response is not replayed');
       await until(details, d => !d.session.activeTurnId, 'callback completion');
     }
     // Lose the entry HTTP response after target admission and native dispatch.
@@ -191,8 +209,8 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     aborted.abort(); await lost;
     await until(() => journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'"), rows => rows.length && JSON.parse(rows[0].receipt_json).status === 'delivered', 'target continues after entry disconnect');
     const original = JSON.parse(journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'")[0].receipt_json);
-    await stop(a); await start(a); oa = await operator(a, networkId);
-    assert.equal((await oa.request('createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
+    await crash(a); await start(a); oa = await operator(a, networkId);
+    assert.equal((await recoverOriginal(oa, 'createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
     const retryRoute = apiRequest('createSession', lostInput);
     const retry = await oa.raw(retryRoute.path, { method: 'POST', body: JSON.stringify(retryRoute.input) });
     assert.equal((await oa.raw(retry.location)).value.receipt.commandId, original.commandId);
@@ -214,9 +232,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     await send(oa, 'QUESTIONS', 'before-target-restart');
     const pending = await until(details, d => d.interactions.some(i => i.status === 'pending'), 'restart callback');
     const question = pending.interactions.find(i => i.status === 'pending');
-    await stop(b); await start(b); ob = await operator(b);
+    await crash(b); await start(b); ob = await operator(b);
     assert.equal((await oa.raw(scopePath)).value.receipt.commandId, created.commandId);
-    const stale = await oa.request('answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
+    const stale = await recoverOriginal(oa, 'answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
     assert.equal(stale.error.code, 'STALE_INTERACTION');
     // Withdrawal revokes future access, leaves admitted work running, and permits another member to inspect it.
     await send(oa, 'WAIT', 'survives-removal', fromC.sessionId);
@@ -224,13 +242,15 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     const running = await until(remoteDetails, d => !!d.session.activeTurnId, 'turn before removal');
     const oldMember = member(a);
     network(b, 'remove', oldMember);
-    await until(() => network(a, 'status'), s => s.localStatus === 'removed', 'caller exclusion');
-    await until(() => network(c, 'status').historyId, history => history === network(b, 'status').historyId, 'inspecting member reconciled');
+    // An excluded node learns withdrawal by pulling: the removing peer no longer
+    // dials it as a member. Allow the 30s+jitter revisit plus a bounded 30s attempt.
+    await until(() => network(a, 'status'), s => s.localStatus === 'removed', 'caller exclusion', 90000);
+    await until(() => network(c, 'status').historyId, history => history === network(b, 'status').historyId, 'inspecting member reconciled', 90000);
     assert.equal((await remoteDetails()).session.activeTurnId, running.session.activeTurnId);
     await assert.rejects(send(oa, 'denied', 'after-removal', fromC.sessionId), { code: 'FORBIDDEN' });
     const removedReceipt = scopePath.replace('shared-id', 'survives-removal');
     assert.equal((await oc.raw(removedReceipt)).value.receipt.requestId, 'survives-removal');
-    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oc, 'interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
     network(a, 'leave'); await admit(b, a);
     assert.notEqual(member(a), oldMember);
     // Admission can precede the next bounded handshake on a loaded runner. Every
@@ -252,8 +272,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
   }
 });
 
-test('CLI membership lifecycle survives founder exit, offline removal and daemon restart', { timeout: 240000 }, async () => {
+test('CLI membership survives founder crash, stale snapshots, offline removal and readmission', { timeout: 300000 }, async () => {
   const nodes = [], invitations = [];
+  let stale;
   try {
     for (let i = 0; i < 4; i++) nodes.push(await makeNode());
     const [a, b, c, d] = nodes;
@@ -265,16 +286,22 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await until(() => network(b, 'members'), value => value.members.length === 3, 'membership synchronization');
     // Loopback advertisements are intentionally not learned from remote hints.
     network(b, 'set-peer-address', cMember, c.endpoint);
-    const issuer = await operator(a), leaving = network(a, 'status');
-    const exitInput = { networkId: leaving.networkId, membershipId: founder, requestId: 'synthetic-founder-leave' };
-    const leave = await issuer.request('removeNetworkMember', exitInput);
-    assert.equal(leave.network.localStatus, 'left');
-    await issuer.request('removeNetworkMember', exitInput);
-    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === founder), 'founder withdrawal');
-    await stop(a);
+    await crash(a);
     invitations.push(await admit(b, d));
+    const founderRemover = await operator(d);
+    await until(() => network(d, 'members'), value => value.members.some(m => m.membershipId === founder), 'new member knows absent founder');
+    network(d, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
+    await founderRemover.request('removeNetworkMember', { networkId: network(d, 'status').networkId, membershipId: founder, requestId: 'remove-absent-founder' });
+    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === founder), 'new member removes absent founder');
+    await start(a);
+    await until(() => network(a, 'status'), value => value.localStatus === 'removed', 'returning founder learns removal');
     network(c, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
     await stop(c);
+    const staleState = await fs.mkdtemp(resolve('state/network-stale-'));
+    stale = { ...c, state: staleState, child: undefined, diagnostics: '' };
+    await fs.cp(c.state, stale.state, { recursive: true });
+    assert.equal(journal(stale, "SELECT status FROM network_selections WHERE status='active'").length, 1, 'snapshot retains its old active admission');
+    const oldKey = network(b, 'members').members.find(m => m.membershipId === cMember).publicKey;
     const removing = await operator(b);
     const removalInput = { networkId: network(b, 'status').networkId, membershipId: cMember, requestId: 'synthetic-offline-removal' };
     await removing.request('removeNetworkMember', removalInput);
@@ -284,14 +311,33 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await until(() => network(c, 'status'), value => value.localStatus === 'removed', 'offline target learns removal');
     network(c, 'leave');
     invitations.push(await admit(b, c));
-    assert.notEqual(network(c, 'status').membershipId, cMember, 'readmission creates a new generation');
+    const freshMember = network(c, 'status').membershipId;
+    assert.notEqual(freshMember, cMember, 'readmission creates a new generation');
+    const freshKey = network(c, 'members').members.find(m => m.membershipId === freshMember).publicKey;
+    assert.equal(typeof freshKey, 'string');
+    assert.notEqual(freshKey, oldKey, 'readmission replaces the revoked generation key');
+    // Restore only a marked, offline synthetic copy. Other members retain the
+    // accepted removal and fresh admission; the old private key grants no return.
+    await stop(c);
+    await start(stale);
+    await until(() => network(stale, 'status'), value => value.localStatus === 'removed', 'old snapshot learns exact-generation removal');
+    await assert.rejects(control(stale, 'createInvitation', { requestId: 'stale-key-invite' }), { code: 'UNAVAILABLE' });
+    assert.ok(!network(b, 'members').members.some(m => m.membershipId === cMember));
+    assert.equal(network(b, 'members').members.find(m => m.membershipId === freshMember).publicKey, freshKey);
+    await stop(stale);
+    await start(c);
     network(b, 'remove', cMember, '--request-id', 'synthetic-offline-removal');
     assert.equal(network(c, 'status').localStatus, 'active', 'old removal retry cannot withdraw a fresh generation');
     network(c, 'leave');
     const own = network(d, 'status').membershipId;
     const ownOperator = await operator(d);
+    await stop(b);
     await ownOperator.request('removeNetworkMember', { networkId: network(d, 'status').networkId, membershipId: own, requestId: 'web-self-exit' });
     assert.equal(network(d, 'status').localStatus, 'left');
+    await stop(d); await start(d);
+    assert.equal(network(d, 'status').localStatus, 'left', 'offline self-exit persists across restart');
+    await start(b);
+    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === own), 'restarted departing node propagates offline self-exit');
     // Maintenance blocks membership writes without disabling status reads.
     const status = await control(b, 'status');
     const ownership = { instanceId: status.instanceId, token: crypto.randomUUID() };
@@ -304,7 +350,6 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await assert.rejects(control(c, 'createNetwork', invalidRequest));
     assert.equal(network(c, 'status').peerListenerStatus, 'stopped');
     network(c, 'create', 'Synthetic replacement', ...settings(c));
-    await start(a);
     for (const node of nodes) {
       const db = new DatabaseSync(join(node.state, 'daemon.sqlite'), { readOnly: true });
       assert.equal(db.prepare("SELECT count(*) AS count FROM records WHERE kind='session'").get().count, 0, 'membership alone starts no conversation');
@@ -313,6 +358,10 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
       assert.ok(!JSON.stringify(network(node, 'status')).includes('dewbow-network-v1.'));
     }
   } finally {
+    if (stale) {
+      await stop(stale);
+      await fs.rm(stale.state, { recursive: true, force: true });
+    }
     for (const node of nodes) {
       try { await stop(node); } finally {
         if (node.child?.exitCode === null) { node.child.kill(); await until(() => node.child.exitCode, value => value !== null, 'fixture cleanup'); }

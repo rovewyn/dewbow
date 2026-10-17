@@ -935,6 +935,83 @@ fn discarded_child_is_rediscovered_and_proof_connection_stays_restricted() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn http1_requests_wait_for_dispatcher_readiness_within_the_send_deadline() {
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::Bytes;
+    use hyper_util::rt::TokioIo;
+    let request = || {
+        hyper::Request::builder()
+            .uri("/synthetic")
+            .header("host", "synthetic")
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    };
+    let (client, server) = tokio::io::duplex(4096);
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+        .await
+        .unwrap();
+    let first = sender.send_request(request());
+    assert!(!sender.is_ready());
+    let (response, driver, serving) = {
+        let pending = transport::send_request(&mut sender, request());
+        tokio::pin!(pending);
+        // Occupy the dispatch slot before driving the connection. A second direct
+        // send fails deterministically with "connection was not ready".
+        assert!(futures::poll!(pending.as_mut()).is_pending());
+        let driver = tokio::spawn(connection);
+        let serving = tokio::spawn(async move {
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(server),
+                    hyper::service::service_fn(|_| async {
+                        Ok::<_, std::convert::Infallible>(hyper::Response::new(Full::new(
+                            Bytes::from_static(b"synthetic response"),
+                        )))
+                    }),
+                )
+                .await
+        });
+        let (first, response) = tokio::join!(
+            async {
+                first
+                    .await
+                    .unwrap()
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+            },
+            pending
+        );
+        assert_eq!(first, "synthetic response");
+        (response.unwrap(), driver, serving)
+    };
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "synthetic response"
+    );
+    drop(sender);
+    driver.abort();
+    serving.abort();
+
+    let (idle, _peer) = tokio::io::duplex(4096);
+    let (mut sender, _connection) = hyper::client::conn::http1::handshake(TokioIo::new(idle))
+        .await
+        .unwrap();
+    let began = Instant::now();
+    assert_eq!(
+        transport::send_request(&mut sender, request())
+            .await
+            .unwrap_err()
+            .code,
+        "UNAVAILABLE"
+    );
+    assert_eq!(began.elapsed(), Duration::from_secs(60));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retained_old_key_has_only_its_proof_binding_after_fresh_admission() {
     use http_body_util::{BodyExt, Full};
@@ -992,6 +1069,7 @@ async fn retained_old_key_has_only_its_proof_binding_after_fresh_admission() {
         .header("host", "synthetic")
         .body(Full::new(Bytes::from(serde_json::to_vec(&hello).unwrap())))
         .unwrap();
+    sender.ready().await.unwrap();
     let response = sender.send_request(request).await.unwrap();
     assert_eq!(response.status(), 200);
     let response: Value =
@@ -1004,6 +1082,7 @@ async fn retained_old_key_has_only_its_proof_binding_after_fresh_admission() {
         .header("host", "synthetic")
         .body(Full::new(Bytes::from_static(b"{\"frontier\":null}")))
         .unwrap();
+    sender.ready().await.unwrap();
     assert_eq!(sender.send_request(request).await.unwrap().status(), 403);
     assert_eq!(*a.selected().history().snapshot(), current);
     task.abort();

@@ -26,6 +26,8 @@ Windows GitHub Actions and local command hosts that retain an outer Job Object r
 
 Run `npm run test:upgrade` for end-to-end versioned upgrade acceptance after building the executable and native fixture. It builds a distinctly versioned synthetic predecessor and exercises installed upgrade commands, interruption, rollback and duplicate retries on isolated current-format state. See [upgrade acceptance](docs/upgrade-acceptance.md) for prerequisites, injected network boundaries, Windows host requirements and the distinction from published-release compatibility. CI runs it on every supported platform; Release repeats it with the optimized candidate.
 
+Run `npm run test:network-upgrade` as well to preserve schema-2 Network keys, signed withdrawals and remote receipts across installed upgrades and failure recovery. On Windows use `./scripts/test-windows.ps1 -networkUpgrade`. The [Network acceptance guide](docs/network-acceptance.md) maps the synthetic checks and defines separate physical LAN/VPN and live native acceptance; keep actual node information and results private.
+
 ## Enable commit checks
 
 On Windows, `npm --version` must report 12.2.0 and `node --version` must report v24.21.0 before installing dependencies. Install Gitleaks from a trusted distribution with the `git` scan command. If `sh` is not on PATH, run the hook installer using Git for Windows' `sh.exe`. The same environment must expose Gitleaks when committing, including when an optional environment manager is used. See [local operations](docs/operations.md#windows-runtime-and-private-state) for standalone Codex and Windows state protection.

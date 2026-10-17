@@ -210,6 +210,21 @@ fn control(service: &Service, headers: &HeaderMap) -> bool {
             .get(header::ORIGIN)
             .is_none_or(|_| origin(service, headers))
 }
+fn operator_cookie_name(service: &Service) -> String {
+    // Cookies are shared across ports; keep concurrent loopback logins independent.
+    format!("dewbowOperator_{}", service.config.port)
+}
+fn operator_cookie_token<'a>(service: &Service, headers: &'a HeaderMap) -> Option<&'a str> {
+    let prefix = format!("{}=", operator_cookie_name(service));
+    headers
+        .get(header::COOKIE)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .find_map(|cookie| cookie.trim().strip_prefix(prefix.as_str()))
+        })
+}
 fn operator(service: &Service, headers: &HeaderMap) -> bool {
     if !host(service, headers)
         || headers
@@ -218,14 +233,7 @@ fn operator(service: &Service, headers: &HeaderMap) -> bool {
     {
         return false;
     }
-    let token = headers
-        .get(header::COOKIE)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|cookies| {
-            cookies
-                .split(';')
-                .find_map(|cookie| cookie.trim().strip_prefix("dewbowOperator="))
-        });
+    let token = operator_cookie_token(service, headers);
     let mut cookies = service.cookies.lock().unwrap();
     cookies.retain(|_, expires| *expires > Instant::now());
     token.is_some_and(|token| cookies.contains_key(token))
@@ -584,7 +592,8 @@ async fn login(
             (
                 header::SET_COOKIE,
                 format!(
-                    "dewbowOperator={cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
+                    "{}={cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200",
+                    operator_cookie_name(&service)
                 ),
             ),
             (header::CACHE_CONTROL, "no-store".into()),
@@ -597,20 +606,16 @@ async fn logout(State(service): State<Arc<Service>>, headers: HeaderMap) -> Resp
     if !origin(&service, &headers) || !operator(&service, &headers) {
         return failure(error("UNAUTHORIZED", "Authentication required.").into());
     }
-    if let Some(cookie) = headers
-        .get(header::COOKIE)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| {
-            s.split(';')
-                .find_map(|s| s.trim().strip_prefix("dewbowOperator="))
-        })
-    {
+    if let Some(cookie) = operator_cookie_token(&service, &headers) {
         service.cookies.lock().unwrap().remove(cookie);
     }
     (
         [(
             header::SET_COOKIE,
-            "dewbowOperator=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+            format!(
+                "{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+                operator_cookie_name(&service)
+            ),
         )],
         Json(json!({"result":{}})),
     )

@@ -12,7 +12,11 @@ import { apiRequest } from '../apps/web/src/apiRoutes.ts';
 // This is a compatible current-format fixture, never a published source release.
 // Keep an immutable predecessor implementation across candidate changes. Update
 // this pin deliberately when release preparation selects a supported source.
-const baselineSource = '2be0d8f4a4efbb6f0954b5cbda892baad8615d33';
+const options = new Set(process.argv.slice(2));
+assert.ok(options.size === process.argv.length - 2 && [...options].every(option => ['--release', '--network'].includes(option)),
+  'Usage: upgrade-acceptance.mjs [--release] [--network]');
+const networkMode = options.has('--network');
+const baselineSource = networkMode ? 'a9c0f0103bb8d03398dfb71646589bd31c36c749' : '2be0d8f4a4efbb6f0954b5cbda892baad8615d33';
 const baselineVersion = '0.0.0-upgrade-acceptance.0';
 const repo = process.cwd();
 const windows = process.platform === 'win32';
@@ -21,8 +25,7 @@ const target = windows ? 'x86_64-pc-windows-msvc' : process.platform === 'linux'
   process.platform === 'darwin' && process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
 assert.ok((windows && process.arch === 'x64') || (process.platform === 'linux' && process.arch === 'x64') ||
   (process.platform === 'darwin' && ['x64', 'arm64'].includes(process.arch)), 'Unsupported acceptance platform');
-assert.ok(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === '--release'), 'Usage: upgrade-acceptance.mjs [--release]');
-const release = process.argv[2] === '--release';
+const release = options.has('--release');
 const candidate = resolve(release ? `target/${target}/release/${executable}` : `target/debug/${executable}`);
 const fixture = resolve(`target/debug/examples/fixture${windows ? '.exe' : ''}`);
 const tar = windows ? join(process.env.SystemRoot, 'System32/tar.exe') : 'tar';
@@ -90,14 +93,15 @@ try {
   execFileSync('git', ['merge-base', '--is-ancestor', baselineSource, 'HEAD']);
   const tracked = execFileSync('git', ['archive', '--format=tar', baselineSource], { maxBuffer: 64 * 1024 * 1024 });
   execFileSync(tar, ['-xf', '-', '-C', source], { input: tracked, windowsHide: true });
-  // The immutable predecessor still owns schema 1 and the old HTTP transport.
-  // Only this synthetic coordinator learns the candidate's target format. An
-  // unmodified older updater is not claimed to accept schema 2 automatically.
-  const coordinator = join(source, 'apps/cli/src/upgrade.rs');
-  const coordinatorText = await fs.readFile(coordinator, 'utf8');
-  const targetCheck = 'manifest["upgrade"]["stateSchema"] == 1';
-  assert.equal(coordinatorText.split(targetCheck).length, 2, 'Review the pinned coordinator before changing this fixture overlay');
-  await fs.writeFile(coordinator, coordinatorText.replace(targetCheck, 'manifest["upgrade"]["stateSchema"] == 2'));
+  if (!networkMode) {
+    // The schema-1 predecessor retains its old storage and HTTP transport.
+    // Only this synthetic coordinator learns the candidate's target format.
+    const coordinator = join(source, 'apps/cli/src/upgrade.rs');
+    const coordinatorText = await fs.readFile(coordinator, 'utf8');
+    const targetCheck = 'manifest["upgrade"]["stateSchema"] == 1';
+    assert.equal(coordinatorText.split(targetCheck).length, 2, 'Review the pinned coordinator before changing this fixture overlay');
+    await fs.writeFile(coordinator, coordinatorText.replace(targetCheck, 'manifest["upgrade"]["stateSchema"] == 2'));
+  }
   await fs.cp(resolve('apps/web/dist'), join(source, 'apps/web/dist'), { recursive: true });
   synchronizeVersions(source, { version: baselineVersion });
   // Separate build outputs cannot overwrite the caller's binaries or running tests.
@@ -137,7 +141,7 @@ try {
   }
   const archive = await syntheticArchive(true), manualArchive = await syntheticArchive(false);
 
-  async function prepare(name) {
+  async function prepare(name, image = baseline) {
     const directory = join(root, name);
     const installed = join(directory, 'bin space', executable);
     const state = join(directory, 'state');
@@ -147,7 +151,7 @@ try {
     await fs.mkdir(home); await fs.mkdir(work);
     await fs.writeFile(join(home, 'synthetic.fixture'), 'synthetic');
     await fs.writeFile(join(home, 'credentials-canary'), 'synthetic credential preservation');
-    await fs.copyFile(baseline, installed); await fs.chmod(installed, 0o755);
+    await fs.copyFile(image, installed); await fs.chmod(installed, 0o755);
     const cli = (...args) => run(installed, ['--state-dir', state, ...args]);
     await cli('init', '--codex-executable', fixture, '--codex-home', home, '--port', String(await freePort()));
     const config = await readJson(join(state, 'config.json'));
@@ -165,7 +169,7 @@ try {
       assert.equal(login.status, 200);
       const cookie = login.headers.get('set-cookie').split(';')[0];
       // Only the immutable synthetic predecessor uses the removed RPC transport.
-      const legacy = (await control('status')).version === baselineVersion;
+      const legacy = !networkMode && (await control('status')).version === baselineVersion;
       return async (name, input) => {
         const route = legacy ? { path: `/api/${name}`, method: 'POST', input } : apiRequest(name, input);
         const response = await fetch(`${origin}${route.path}`, { method: route.method, signal: AbortSignal.timeout(10000),
@@ -220,7 +224,86 @@ try {
         listener.once('connect', () => { listener.destroy(); reject(new Error('Synthetic listener remains open')); });
       });
     };
-    return { installed, state, home, job, cli, control, first, upgradeArgs, status, done, preserved, cleanup };
+    return { installed, state, home, work, config, created, operator, job, cli, control, first, upgradeArgs, status, done, preserved, cleanup };
+  }
+  async function addNetwork(env, name) {
+    const peers = [], endpoints = new Map();
+    const originalCleanup = env.cleanup, originalPreserved = env.preserved;
+    env.cleanup = async () => {
+      const outcomes = await Promise.allSettled([originalCleanup(), ...peers.map(peer => peer.cleanup())]);
+      const failures = outcomes.filter(outcome => outcome.status === 'rejected').map(outcome => outcome.reason);
+      if (failures.length) throw new AggregateError(failures, 'Network fixture cleanup failed');
+      for (const endpoint of endpoints.values()) {
+        const listener = createServer();
+        await new Promise((resolve, reject) => listener.once('error', reject).listen(Number(new URL(endpoint).port), '127.0.0.1', resolve));
+        await new Promise(resolve => listener.close(resolve));
+      }
+    };
+    for (const suffix of ['b', 'c']) {
+      const peerName = `${name}-${suffix}`;
+      try { peers.push(await prepare(peerName, candidate)); }
+      catch (error) {
+        const state = join(root, peerName, 'state');
+        if (await exists(join(state, 'config.json'))) {
+          try { await run(join(root, peerName, 'bin space', executable), ['--state-dir', state, 'daemon', 'stop']); }
+          catch (cleanupError) { throw new AggregateError([error, cleanupError], 'Peer setup and cleanup failed'); }
+        }
+        throw error;
+      }
+    }
+    const [b, c] = peers;
+    const net = async (node, ...args) => JSON.parse(await node.cli('network', '--json', ...args));
+    for (const node of [env, b, c]) endpoints.set(node, `https://127.0.0.1:${await freePort()}`);
+    const settings = node => ({ listenEndpoint: endpoints.get(node), advertisedEndpoints: [endpoints.get(node)] });
+    const op = await env.operator();
+    const created = await op('createNetwork', { networkName: 'Synthetic upgrade Network', requestId: randomUUID(), ...settings(env) });
+    const networkId = created.network.networkId;
+    for (const peer of peers) {
+      const invitation = (await op('createInvitation', { networkId, requestId: randomUUID() })).invitation;
+      const joining = await peer.operator();
+      const pending = await joining('joinNetwork', { invitation, requestId: randomUUID(), ...settings(peer) });
+      const request = await until(() => op('listNetworkJoins', { networkId }), result => result.joins.some(join => join.joinAttemptId === pending.joinAttemptId), 'upgrade peer pending');
+      const joiningKey = request.joins.find(join => join.joinAttemptId === pending.joinAttemptId).publicKey;
+      await op('confirmNetworkJoin', { networkId, joinAttemptId: pending.joinAttemptId, publicKey: joiningKey, decision: 'allow', requestId: randomUUID() });
+      await until(() => net(peer, 'status'), status => status.localStatus === 'active', 'upgrade peer admission');
+      await op('setNetworkPeerAddress', { networkId, membershipId: (await net(peer, 'status')).membershipId, endpoint: endpoints.get(peer), requestId: randomUUID() });
+    }
+    await until(() => Promise.all([env, b, c].map(node => net(node, 'status'))), statuses => new Set(statuses.map(status => status.historyId)).size === 1, 'upgrade common history');
+    const removed = (await net(c, 'status')).membershipId;
+    await c.cli('daemon', 'stop');
+    await op('removeNetworkMember', { networkId, membershipId: removed, requestId: 'upgrade-offline-removal' });
+    await until(() => Promise.all([env, b].map(node => net(node, 'status'))), statuses => statuses[0].historyId === statuses[1].historyId, 'upgrade withdrawal convergence');
+    const remoteInput = { networkId, hostId: env.config.hostId, sessionId: env.created.sessionId,
+      message: 'Synthetic Network upgrade receipt', requestId: 'network-upgrade-send' };
+    const source = await b.operator();
+    const receipt = await source('sendMessage', remoteInput);
+    assert.equal(receipt.status, 'delivered');
+    await until(() => op('getSession', { sessionId: env.created.sessionId }), result => !result.session.activeTurnId, 'upgrade remote turn complete');
+    const rows = sql => {
+      const db = new DatabaseSync(join(env.state, 'daemon.sqlite'), { readOnly: true });
+      try { return db.prepare(sql).all(); } finally { db.close(); }
+    };
+    const records = () => rows('SELECT record_id, envelope_json FROM network_records ORDER BY record_id');
+    const keys = async () => Promise.all((await fs.readdir(join(env.state, 'network-keys'))).filter(file => file.endsWith('.pk8')).sort().map(async file => [file, await hash(join(env.state, 'network-keys', file))]));
+    const beforeRecords = records(), beforeKeys = await keys();
+    assert.ok(beforeRecords.length >= 4 && beforeKeys.length > 0, 'upgrade fixture must contain signed authority and private keys');
+    const beforeReceipt = rows("SELECT receipt_json FROM network_request_receipts WHERE request_id='network-upgrade-send'");
+    assert.equal(beforeReceipt.length, 1);
+    env.preserved = async expected => {
+      const result = await originalPreserved(expected);
+      assert.deepEqual(records(), beforeRecords, 'upgrade/rollback preserves signed removal evidence');
+      assert.deepEqual(await keys(), beforeKeys, 'upgrade/rollback preserves exact private key bytes');
+      assert.deepEqual(rows("SELECT receipt_json FROM network_request_receipts WHERE request_id='network-upgrade-send'"), beforeReceipt);
+      assert.equal((await source('sendMessage', remoteInput)).commandId, receipt.commandId, 'remote retry retains target receipt');
+      const history = await result.op('readSessionHistory', { sessionId: env.created.sessionId });
+      assert.equal(history.messages.filter(message => message.clientId === receipt.commandId).length, 1, 'upgrade does not replay remote work');
+      assert.equal((await net(env, 'status')).networkId, networkId);
+      assert.ok(!(await net(env, 'members')).members.some(member => member.membershipId === removed));
+      await c.cli('daemon', 'start');
+      await until(() => net(c, 'status'), status => status.localStatus === 'removed', 'offline peer receives retained withdrawal after upgrade');
+      await c.cli('daemon', 'stop');
+      return result;
+    };
   }
   async function scenario(name, action) {
     console.log(`Upgrade acceptance: ${name}`);
@@ -235,7 +318,10 @@ try {
       throw error;
     }
     let failure;
-    try { await action(env); } catch (error) { failure = error; }
+    try {
+      if (networkMode) await addNetwork(env, name);
+      await action(env);
+    } catch (error) { failure = error; }
     try { await env.cleanup(); }
     catch (error) { if (failure) throw new AggregateError([failure, error], 'Acceptance and cleanup failed'); throw error; }
     if (failure) throw failure;
@@ -247,7 +333,7 @@ try {
     assert.equal(await hash(env.installed), candidateHash, 'Fault must occur after real replacement');
   }
 
-  await scenario('manual-transition-policy', async env => {
+  if (!networkMode) await scenario('manual-transition-policy', async env => {
     const args = [...env.upgradeArgs]; args[args.indexOf('--archive') + 1] = manualArchive;
     const result = await start(env.installed, args).finished;
     assert.equal(result.code, 1); assert.match(result.stdout + result.stderr, /manual state or rollback/);
@@ -256,7 +342,7 @@ try {
     assert.equal(await exists(join(env.job, 'intent.json')), false);
     await env.preserved(baselineVersion);
   });
-  await scenario('interrupted-archive', async env => {
+  if (!networkMode) await scenario('interrupted-archive', async env => {
     const partial = join(root, 'partial-release');
     await fs.writeFile(partial, (await fs.readFile(archive)).subarray(0, 4096));
     await fs.copyFile(`${archive}.sha256`, `${partial}.sha256`);
@@ -268,7 +354,7 @@ try {
     assert.equal(await exists(join(env.job, 'intent.json')), false);
     await env.preserved(baselineVersion);
   });
-  await scenario('release-connection-loss', async env => {
+  if (!networkMode) await scenario('release-connection-loss', async env => {
     // Interrupt the public command's actual release connection locally. Partial
     // archive response bodies are injected into the real download function by
     // the Rust suite; neither case depends on public API availability or quota.
@@ -355,7 +441,7 @@ try {
     assert.equal((await env.status()).status, 'succeeded');
   });
   passed = true;
-  console.log(`Upgrade acceptance passed on ${target}: synthetic ${baselineVersion} -> ${version}`);
+  console.log(`Upgrade acceptance passed on ${target}: ${networkMode ? 'Network schema 2' : 'schema 1'} synthetic ${baselineVersion} -> ${version}`);
 } finally {
   if (passed) {
     const cleanupTarget = await fs.realpath(root), cleanupParent = await fs.realpath(parent);

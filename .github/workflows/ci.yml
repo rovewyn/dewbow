@@ -67,6 +67,12 @@ jobs:
       - name: Accept Windows upgrades outside the launcher job
         if: runner.os == 'Windows'
         run: ./scripts/test-windows.ps1 -upgradeAcceptance
+      - name: Accept retained Network state across upgrades and recovery
+        if: runner.os != 'Windows'
+        run: npm run test:network-upgrade
+      - name: Accept Windows Network upgrades outside the launcher job
+        if: runner.os == 'Windows'
+        run: ./scripts/test-windows.ps1 -networkUpgrade
       - name: Check SDK package contents
         if: runner.os == 'Linux'
         run: npm pack --workspace @dewbow/sdk --dry-run --ignore-scripts

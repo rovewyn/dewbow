@@ -461,6 +461,21 @@ impl PeerConnector {
     }
 }
 
+pub(super) async fn send_request(
+    sender: &mut hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+    request: Request<Full<Bytes>>,
+) -> Result<Response<Incoming>> {
+    // A consumed response can precede the dispatcher's next ready notification.
+    // Keep readiness and transmission in one deadline, without replaying on error.
+    tokio::time::timeout(Duration::from_secs(60), async {
+        sender.ready().await?;
+        sender.send_request(request).await
+    })
+    .await
+    .map_err(|_| PeerError::new("UNAVAILABLE"))?
+    .map_err(unavailable)
+}
+
 pub struct PeerClient {
     pub(super) business_context: Option<super::business::Authorization>,
     pub(super) repo: Repository,
@@ -831,11 +846,7 @@ impl PeerClient {
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(bytes)))
             .map_err(unavailable)?;
-        let response =
-            tokio::time::timeout(Duration::from_secs(60), self.sender.send_request(request))
-                .await
-                .map_err(|_| PeerError::new("UNAVAILABLE"))?
-                .map_err(unavailable)?;
+        let response = send_request(&mut self.sender, request).await?;
         let status = response.status();
         let bytes = tokio::time::timeout(
             Duration::from_secs(60),

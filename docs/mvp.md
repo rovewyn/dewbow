@@ -2,7 +2,7 @@
 
 Dewbow provides a single `dewbow` executable containing a Rust CLI, local daemon and embedded operator Web. Codex remains independently installed and owns native conversations, messages and credentials.
 
-The operator initializes private state, checks native capabilities with `doctor`, and opens authenticated Web with `web`. The daemon manages local execution independently of browser lifetime.
+The operator initializes private state, checks native capabilities with `doctor`, and opens authenticated Web with `web`. The daemon manages local execution independently of browser lifetime. [Network operation and acceptance](network-acceptance.md) defines decentralized membership and recovery, and separates synthetic validation from physical LAN/VPN and live native acceptance.
 
 This version includes native discovery and bounded history, explicit adoption of an existing native ID, creation with frozen execution settings, Default and Plan turns, steering, question cards, single-request approvals, interruption, tool output/diffs, durable request deduplication and conservative restart recovery. One session has at most one active or unresolved turn; independent sessions may execute concurrently.
 
