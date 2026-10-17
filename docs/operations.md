@@ -85,4 +85,6 @@ For an explicitly authorized reset, including unsupported unpublished developmen
 
 ## Acceptance
 
+For decentralized membership, partitions, exact-generation removal, remote execution recovery and the physical-machine checklist, see [Network operation, recovery and acceptance](network-acceptance.md). Keep each node's selected state and protected keys together; restoring an old snapshot can discard receipts or withdrawal evidence.
+
 Use dedicated synthetic workspaces and fresh private state for real Codex checks. Discover and inspect existing sessions without continuing private conversations; prepare an independent synthetic native session for adoption. Verify creation, follow-ups, question responses, Allow/Deny, tool output/diffs, interruption and browser refresh. Synthetic CI checks do not substitute for this real environment acceptance.

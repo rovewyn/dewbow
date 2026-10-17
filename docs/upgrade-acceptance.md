@@ -32,6 +32,14 @@ The baseline is deliberately a current-format synthetic predecessor. The harness
 
 Every scenario also checks the retained host identity, frozen session creation configuration, request deduplication target, absence of duplicate native work and a synthetic native credential canary. Successful upgrade checks the installed binary hash, reported version, new daemon identity and admission of a new request. Cleanup stops the selected synthetic daemon and verifies its listener has closed.
 
+## Retained Network state
+
+Run `npm run test:network-upgrade` in addition to `test:upgrade`, or append `-- --release` for an already built optimized candidate. This uses the immutable [Network Web implementation](https://github.com/rovewyn/dewbow/commit/a9c0f0103bb8d03398dfb71646589bd31c36c749) as a distinct-version schema-2 predecessor. It applies no coordinator overlay and uses resource routes on both sides. The older schema-1 acceptance remains a separate check; the Network fixture does not replace migration-interruption tests or add a new supported published source release.
+
+The Network mode runs the candidate startup-failure, worker-termination and frontend-disconnect/duplicate scenarios. Each installation has three independent daemon/native fixtures connected with real loopback Peer TLS. Before replacement, the target admits B/C, removes offline C and receives a remote native request from B. After guarded recovery or successful upgrade, assertions compare exact private-key hashes, signed record bytes and the target's remote receipt. B's identical retry must return the original command, with one matching native message. The returning offline C must learn the retained withdrawal. Local identities, configuration, receipts and credential canaries retain the checks above.
+
+Both CI and Release run the two predecessor modes on all supported targets; Release uses the optimized candidate. The synthetic archive's compatible rollback declaration applies only before that transaction admits new work. It does not authorize restoring an old Network snapshot after commit or changing the real distribution policy. Keep actual run evidence private and follow the [Network acceptance guide](network-acceptance.md) for separate physical LAN/VPN and live native checks.
+
 Network failures are injected at distinct boundaries: public-CLI release discovery connection loss, incomplete/stalled/oversized archive response bodies in the actual Rust download function, and truncated archive rejection through the installed CLI. The CLI network fixture makes no external connection and cannot mistake an upstream discovery failure for an archive download fault. These checks do not establish a complete successful online download from GitHub. Existing Rust process tests additionally cover simultaneous controller loss, restart-triggered recovery, bounded failure and repair, delayed workers, interrupted checkpoint publication and Windows job policies.
 
 ## Windows execution host
@@ -41,6 +49,8 @@ Production handoff requires complete Job Object escape. A local or CI command ho
 ```powershell
 ./scripts/test-windows.ps1 -upgradeAcceptance
 ./scripts/test-windows.ps1 -upgradeAcceptance -releaseCandidate
+./scripts/test-windows.ps1 -networkUpgrade
+./scripts/test-windows.ps1 -networkUpgrade -releaseCandidate
 ```
 
 The script works locally and in GitHub Actions. It starts a hidden WMI process, verifies the initiating user, preserves selected tool paths and actual CI variables, and records private diagnostics under ignored `outputs/`. It installs no service and changes no job policy. No production detachment check is disabled, and the restrictive synthetic host cases still verify refusal before maintenance. Local runs do not set GitHub Actions identity. If WMI cannot create an independent process, validation fails at startup; production upgrades launched directly from a host that forbids complete escape still refuse handoff. Cargo and npm are build/test prerequisites only; the installed product still runs without Node.js or Rust.

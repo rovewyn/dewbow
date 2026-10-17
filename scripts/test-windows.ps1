@@ -1,4 +1,4 @@
-param([string]$workerDirectory, [switch]$upgradeAcceptance, [switch]$releaseCandidate)
+param([string]$workerDirectory, [switch]$upgradeAcceptance, [switch]$networkUpgrade, [switch]$releaseCandidate)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -16,8 +16,9 @@ if ($workerDirectory) {
         $env:CI = $settings.ci
         $env:GITHUB_ACTIONS = $settings.githubActions
         $env:RUNNER_TRACKING_ID = $settings.trackingId
-        if ($settings.upgradeAcceptance) {
+        if ($settings.upgradeAcceptance -or $settings.networkUpgrade) {
             $arguments = @('scripts/upgrade-acceptance.mjs')
+            if ($settings.networkUpgrade) { $arguments += '--network' }
             if ($settings.releaseCandidate) { $arguments += '--release' }
             & $settings.node @arguments *> $log
             $code = $LASTEXITCODE
@@ -55,6 +56,7 @@ New-Item -ItemType Directory -Path $workerDirectory | Out-Null
     trackingId = $env:RUNNER_TRACKING_ID
     sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     upgradeAcceptance = [bool]$upgradeAcceptance
+    networkUpgrade = [bool]$networkUpgrade
     releaseCandidate = [bool]$releaseCandidate
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workerDirectory 'settings.json') -Encoding utf8
 
@@ -76,7 +78,7 @@ $process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Argumen
 }
 if ($process.ReturnValue -ne 0) { throw "Independent Windows validation failed to start ($($process.ReturnValue))." }
 Write-Output "Independent Windows validation started; private diagnostics: $workerDirectory"
-$deadline = [DateTime]::UtcNow.AddMinutes($(if ($upgradeAcceptance) { 40 } else { 20 }))
+$deadline = [DateTime]::UtcNow.AddMinutes($(if ($upgradeAcceptance -or $networkUpgrade) { 40 } else { 20 }))
 $result = Join-Path $workerDirectory 'result.json'
 while (!(Test-Path -LiteralPath $result)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'Independent Windows validation exceeded its deadline; private diagnostics retained.' }

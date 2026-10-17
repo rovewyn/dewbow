@@ -277,9 +277,9 @@ The implementation issues still deliver separate changes: identity/storage, memb
 
 Before enabling Network writes, the storage implementation must audit the supported tagged formats, select the ordered next format and implement the preserving migration/configuration extension. Before exposing operator operations, align interfaces.md and openapi.yaml with the actual routes. Select and audit library versions in those implementation PRs; the protocol's algorithms and bytes do not depend on a specific library. Release targets and publication require their separate workflow.
 
-## Acceptance requirements for a future implementation
+## Acceptance requirements
 
-These are required scenarios, not claims of completed validation:
+These are required scenarios, not claims of completed validation. The [Network acceptance guide](network-acceptance.md) maps the implemented synthetic checks and defines separate physical LAN/VPN and live native acceptance.
 
 1. A creates a Network; B and C join. A goes offline. B and C continue operating and B admits D without A.
 2. A node admitted through B can authenticate and operate with C after B goes offline, using retained verifiable membership information.

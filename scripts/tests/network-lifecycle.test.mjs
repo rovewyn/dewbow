@@ -51,6 +51,13 @@ async function stop(node) {
     await new Promise(resolve => server.close(resolve));
   }
 }
+async function crash(node) {
+  // Fault injection is restricted to this test's freshly spawned daemon.
+  const child = node.child;
+  assert.equal(child.exitCode, null);
+  child.kill('SIGKILL');
+  await until(() => child.exitCode ?? child.signalCode, value => value !== null, 'abrupt daemon exit');
+}
 async function makeNode() {
   await fs.mkdir(resolve('state'), { recursive: true });
   const state = await fs.mkdtemp(resolve('state/network-cli-'));
@@ -191,7 +198,7 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     aborted.abort(); await lost;
     await until(() => journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'"), rows => rows.length && JSON.parse(rows[0].receipt_json).status === 'delivered', 'target continues after entry disconnect');
     const original = JSON.parse(journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'")[0].receipt_json);
-    await stop(a); await start(a); oa = await operator(a, networkId);
+    await crash(a); await start(a); oa = await operator(a, networkId);
     assert.equal((await oa.request('createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
     const retryRoute = apiRequest('createSession', lostInput);
     const retry = await oa.raw(retryRoute.path, { method: 'POST', body: JSON.stringify(retryRoute.input) });
@@ -214,7 +221,7 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     await send(oa, 'QUESTIONS', 'before-target-restart');
     const pending = await until(details, d => d.interactions.some(i => i.status === 'pending'), 'restart callback');
     const question = pending.interactions.find(i => i.status === 'pending');
-    await stop(b); await start(b); ob = await operator(b);
+    await crash(b); await start(b); ob = await operator(b);
     assert.equal((await oa.raw(scopePath)).value.receipt.commandId, created.commandId);
     const stale = await oa.request('answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
     assert.equal(stale.error.code, 'STALE_INTERACTION');
@@ -252,8 +259,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
   }
 });
 
-test('CLI membership lifecycle survives founder exit, offline removal and daemon restart', { timeout: 240000 }, async () => {
+test('CLI membership survives founder crash, stale snapshots, offline removal and readmission', { timeout: 300000 }, async () => {
   const nodes = [], invitations = [];
+  let stale;
   try {
     for (let i = 0; i < 4; i++) nodes.push(await makeNode());
     const [a, b, c, d] = nodes;
@@ -265,16 +273,22 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await until(() => network(b, 'members'), value => value.members.length === 3, 'membership synchronization');
     // Loopback advertisements are intentionally not learned from remote hints.
     network(b, 'set-peer-address', cMember, c.endpoint);
-    const issuer = await operator(a), leaving = network(a, 'status');
-    const exitInput = { networkId: leaving.networkId, membershipId: founder, requestId: 'synthetic-founder-leave' };
-    const leave = await issuer.request('removeNetworkMember', exitInput);
-    assert.equal(leave.network.localStatus, 'left');
-    await issuer.request('removeNetworkMember', exitInput);
-    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === founder), 'founder withdrawal');
-    await stop(a);
+    await crash(a);
     invitations.push(await admit(b, d));
+    const founderRemover = await operator(d);
+    await until(() => network(d, 'members'), value => value.members.some(m => m.membershipId === founder), 'new member knows absent founder');
+    network(d, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
+    await founderRemover.request('removeNetworkMember', { networkId: network(d, 'status').networkId, membershipId: founder, requestId: 'remove-absent-founder' });
+    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === founder), 'new member removes absent founder');
+    await start(a);
+    await until(() => network(a, 'status'), value => value.localStatus === 'removed', 'returning founder learns removal');
     network(c, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
     await stop(c);
+    const staleState = await fs.mkdtemp(resolve('state/network-stale-'));
+    stale = { ...c, state: staleState, child: undefined, diagnostics: '' };
+    await fs.cp(c.state, stale.state, { recursive: true });
+    assert.equal(journal(stale, "SELECT status FROM network_selections WHERE status='active'").length, 1, 'snapshot retains its old active admission');
+    const oldKey = network(b, 'members').members.find(m => m.membershipId === cMember).publicKey;
     const removing = await operator(b);
     const removalInput = { networkId: network(b, 'status').networkId, membershipId: cMember, requestId: 'synthetic-offline-removal' };
     await removing.request('removeNetworkMember', removalInput);
@@ -284,7 +298,21 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await until(() => network(c, 'status'), value => value.localStatus === 'removed', 'offline target learns removal');
     network(c, 'leave');
     invitations.push(await admit(b, c));
-    assert.notEqual(network(c, 'status').membershipId, cMember, 'readmission creates a new generation');
+    const freshMember = network(c, 'status').membershipId;
+    assert.notEqual(freshMember, cMember, 'readmission creates a new generation');
+    const freshKey = network(c, 'members').members.find(m => m.membershipId === freshMember).publicKey;
+    assert.equal(typeof freshKey, 'string');
+    assert.notEqual(freshKey, oldKey, 'readmission replaces the revoked generation key');
+    // Restore only a marked, offline synthetic copy. Other members retain the
+    // accepted removal and fresh admission; the old private key grants no return.
+    await stop(c);
+    await start(stale);
+    await until(() => network(stale, 'status'), value => value.localStatus === 'removed', 'old snapshot learns exact-generation removal');
+    await assert.rejects(control(stale, 'createInvitation', { requestId: 'stale-key-invite' }), { code: 'UNAVAILABLE' });
+    assert.ok(!network(b, 'members').members.some(m => m.membershipId === cMember));
+    assert.equal(network(b, 'members').members.find(m => m.membershipId === freshMember).publicKey, freshKey);
+    await stop(stale);
+    await start(c);
     network(b, 'remove', cMember, '--request-id', 'synthetic-offline-removal');
     assert.equal(network(c, 'status').localStatus, 'active', 'old removal retry cannot withdraw a fresh generation');
     network(c, 'leave');
@@ -304,7 +332,6 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await assert.rejects(control(c, 'createNetwork', invalidRequest));
     assert.equal(network(c, 'status').peerListenerStatus, 'stopped');
     network(c, 'create', 'Synthetic replacement', ...settings(c));
-    await start(a);
     for (const node of nodes) {
       const db = new DatabaseSync(join(node.state, 'daemon.sqlite'), { readOnly: true });
       assert.equal(db.prepare("SELECT count(*) AS count FROM records WHERE kind='session'").get().count, 0, 'membership alone starts no conversation');
@@ -313,6 +340,10 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
       assert.ok(!JSON.stringify(network(node, 'status')).includes('dewbow-network-v1.'));
     }
   } finally {
+    if (stale) {
+      await stop(stale);
+      await fs.rm(stale.state, { recursive: true, force: true });
+    }
     for (const node of nodes) {
       try { await stop(node); } finally {
         if (node.child?.exitCode === null) { node.child.kill(); await until(() => node.child.exitCode, value => value !== null, 'fixture cleanup'); }
