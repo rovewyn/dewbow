@@ -318,8 +318,13 @@ test('CLI membership survives founder crash, stale snapshots, offline removal an
     network(c, 'leave');
     const own = network(d, 'status').membershipId;
     const ownOperator = await operator(d);
+    await stop(b);
     await ownOperator.request('removeNetworkMember', { networkId: network(d, 'status').networkId, membershipId: own, requestId: 'web-self-exit' });
     assert.equal(network(d, 'status').localStatus, 'left');
+    await stop(d); await start(d);
+    assert.equal(network(d, 'status').localStatus, 'left', 'offline self-exit persists across restart');
+    await start(b);
+    await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === own), 'restarted departing node propagates offline self-exit');
     // Maintenance blocks membership writes without disabling status reads.
     const status = await control(b, 'status');
     const ownership = { instanceId: status.instanceId, token: crypto.randomUUID() };
