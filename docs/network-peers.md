@@ -42,6 +42,8 @@ Snapshot and manifest tokens expire after 60 seconds without successful activity
 
 Peer control messages are bounded JSON POST operations under `/network/v1`. Rust request and result types live in the protocol crate. Duplicate JSON properties, unsupported forms and oversized inputs fail before dispatch. The [protocol](network-protocol.md#addresses-retries-and-resource-bounds) defines interoperable frame, page, nesting and record bounds.
 
+HTTP/1 sends wait for the connection dispatcher to become ready. Readiness and transmission share the existing 60-second send deadline for control, execution and read/subscription requests. A transport failure does not automatically replay a transmitted request; execution recovery keeps the original identity and uncertainty rules.
+
 The reusable framing module supplies bounded JSON serialization, NDJSON/SSE encoding and incremental receivers. A start/chunk/end transfer preserves one complete typed JSON value, including native items larger than a control frame. Receivers check transfer identity, contiguous indexes, base64url encoding, byte budget, length, digest and complete JSON before publishing. EOF, cancellation or `streamError` discards the incomplete logical value. No frame is spooled to disk. Native read and subscription handlers share these bounded frames. Typed execution uses bounded JSON responses.
 
 Focused regression checks run with:

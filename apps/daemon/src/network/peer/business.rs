@@ -379,11 +379,7 @@ impl PeerClient {
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(bytes)))
             .map_err(unavailable)?;
-        let response =
-            tokio::time::timeout(Duration::from_secs(60), self.sender.send_request(request))
-                .await
-                .map_err(unavailable)?
-                .map_err(unavailable)?;
+        let response = super::transport::send_request(&mut self.sender, request).await?;
         if !response.status().is_success() {
             let bytes = tokio::time::timeout(
                 Duration::from_secs(60),
