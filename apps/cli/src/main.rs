@@ -157,6 +157,36 @@ fn open_browser(url: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn installed_executable() -> anyhow::Result<PathBuf> {
+    let executable = std::env::current_exe()?;
+    #[cfg(target_os = "linux")]
+    if !executable.try_exists()? {
+        use anyhow::Context;
+        use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+        // Atomic replacement can leave /proc/self/exe naming a removed dentry.
+        // AT_EXECFN retains the kernel's original execve path, unlike argv[0].
+        let launch = unsafe { libc::getauxval(libc::AT_EXECFN) } as *const libc::c_char;
+        anyhow::ensure!(
+            !launch.is_null(),
+            "The original executable path is unavailable"
+        );
+        // The kernel supplies a NUL-terminated string for the process lifetime.
+        let launch = unsafe { CStr::from_ptr(launch) };
+        let installed = fs::canonicalize(std::ffi::OsStr::from_bytes(launch.to_bytes()))?;
+        let parent = fs::canonicalize(
+            executable
+                .parent()
+                .context("Executable has no installation directory")?,
+        )?;
+        anyhow::ensure!(
+            installed.parent() == Some(parent.as_path()),
+            "The original executable path no longer selects this installation"
+        );
+        return Ok(installed);
+    }
+    Ok(executable)
+}
 fn follow_installation(executable: &std::path::Path) -> anyhow::Result<()> {
     let mut command = Command::new(executable);
     command.args(std::env::args_os().skip(1));
@@ -197,7 +227,7 @@ async fn execute() -> anyhow::Result<()> {
     }
     let state = std::path::absolute(cli.state_dir.unwrap_or(config::default_state()?))?;
     if let Commands::Upgrade(options) = &cli.command {
-        return updater::submit(&std::env::current_exe()?, &state, options).await;
+        return updater::submit(&installed_executable()?, &state, options).await;
     }
     if matches!(
         &cli.command,
@@ -207,7 +237,7 @@ async fn execute() -> anyhow::Result<()> {
                 command: Daemon::Start | Daemon::Run { background: false }
             }
     ) {
-        let installed = std::env::current_exe()?;
+        let installed = installed_executable()?;
         if updater::recover_before_start(&installed, &state).await? {
             return follow_installation(&installed);
         }

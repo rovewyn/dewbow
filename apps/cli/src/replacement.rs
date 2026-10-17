@@ -143,7 +143,8 @@ mod tests {
             assert_eq!(
                 outcome.status.code(),
                 Some(73),
-                "{}",
+                "{}\n{}",
+                String::from_utf8_lossy(&outcome.stdout),
                 String::from_utf8_lossy(&outcome.stderr)
             );
             assert!(executable.is_file(), "Launch path missing after {phase}");
@@ -190,6 +191,24 @@ mod tests {
             std::process::exit(73)
         }
         commit(&executable, &candidate).unwrap();
+        // A live process must still select its installation after its mapped
+        // image is replaced, including Linux's removed executable dentry.
+        let installed = crate::installed_executable().unwrap();
+        assert_eq!(installed, executable);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(crate::updater::submit(
+                &installed,
+                &directory.join("state"),
+                &crate::upgrade::Options {
+                    status: true,
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert!(!directory.join(".dewbow-updater").exists());
         std::process::exit(73)
     }
 }
