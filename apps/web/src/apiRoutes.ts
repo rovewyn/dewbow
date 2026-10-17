@@ -8,7 +8,20 @@ export function apiRequest(operation: string, input: Record<string, unknown> = {
     return encodeURIComponent(value);
   }
   let path: string, method: "GET" | "POST";
+  const lifecycle = ["getNetwork", "createNetwork", "joinNetwork", "listNetworkMembers", "createInvitation", "listNetworkJoins", "getNetworkJoin", "confirmNetworkJoin", "removeNetworkMember", "setNetworkPeerAddress"].includes(operation);
+  const remote = !lifecycle && operation !== "getRequestReceipt" && typeof body.networkId === "string";
+  const prefix = remote ? `/networks/${segment("networkId")}/hosts/${segment("hostId")}` : "";
   switch (operation) {
+    case "getNetwork": method = "GET"; path = "/network"; break;
+    case "createNetwork": method = "POST"; path = "/networks"; break;
+    case "joinNetwork": method = "POST"; path = "/network-joins"; break;
+    case "listNetworkMembers": method = "GET"; path = `/networks/${segment("networkId")}/members`; break;
+    case "createInvitation": method = "POST"; path = `/networks/${segment("networkId")}/invitations`; break;
+    case "listNetworkJoins": method = "GET"; path = `/networks/${segment("networkId")}/joins`; break;
+    case "getNetworkJoin": method = "GET"; path = `/networks/${segment("networkId")}/joins/${segment("joinAttemptId")}`; break;
+    case "confirmNetworkJoin": method = "POST"; path = `/networks/${segment("networkId")}/joins/${segment("joinAttemptId")}/decisions`; break;
+    case "removeNetworkMember": method = "POST"; path = `/networks/${segment("networkId")}/members/${segment("membershipId")}/removals`; break;
+    case "setNetworkPeerAddress": method = "POST"; path = `/networks/${segment("networkId")}/members/${segment("membershipId")}/contact-addresses`; break;
     case "listHosts": method = "GET"; path = "/hosts"; break;
     case "listSessions": method = "GET"; path = "/sessions"; break;
     case "getSession": method = "GET"; path = `/sessions/${segment("sessionId")}`; break;
@@ -32,7 +45,7 @@ export function apiRequest(operation: string, input: Record<string, unknown> = {
       break;
     default: throw new Error(`Unknown operation: ${operation}.`);
   }
-  path = `/api/v1${path}`;
+  path = `/api/v1${prefix}${remote && operation === "listHosts" ? "" : path}`;
   if (method === "GET") {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(body)) if (value !== undefined) query.set(key, String(value));
@@ -41,4 +54,5 @@ export function apiRequest(operation: string, input: Record<string, unknown> = {
   return { path, method, input: method === "POST" ? body : undefined };
 }
 
-export const sessionUpdatesPath = (sessionId: string) => `/api/v1/sessions/${encodeURIComponent(sessionId)}/updates`;
+export const sessionUpdatesPath = (sessionId: string, target?: { networkId: string; hostId: string }) =>
+  `/api/v1${target ? `/networks/${encodeURIComponent(target.networkId)}/hosts/${encodeURIComponent(target.hostId)}` : ""}/sessions/${encodeURIComponent(sessionId)}/updates`;

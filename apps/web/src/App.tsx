@@ -1,41 +1,49 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, PanelLeft, PanelRight, Plus, X } from "lucide-react";
-import type { Host, SessionSummary } from "@dewbow/protocol";
 import { Alert, AlertDescription, Badge, Button, Input, NativeSelect, NativeSelectOption } from "@dewbow/ui/ui";
 import { api, ApiError, request, authenticateLauncher } from "./api";
 import type { OperationSummary } from "./api";
 import { Chat, createChatMemory } from "./Chat";
+import { NetworkDialog } from "./NetworkDialog";
+import { useInventory } from "./useInventory";
+import { type RemoteTarget, parseSelection, readSelection, selectionFragment, selectionInput, sessionKey, selectionKey } from "./targets";
 import { SessionDetails } from "./components/SessionDetails";
 import { useHistory } from "./useHistory";
 import { SessionTreeView } from "@/components/session-tree/SessionTreeView";
 import { buildSessionTree, projectSessionTree } from "@/components/session-tree/model";
 
-const selection = () => new URLSearchParams(window.location.hash.slice(1)).get("session") ?? "";
+const selection = () => readSelection(window.location.hash.slice(1));
 const isNarrow = () => window.matchMedia("(max-width: 759px)").matches;
 const time = (value: string | null) => value ? new Date(value).toLocaleString() : "Not yet observed";
 const describe = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [hosts, setHosts] = useState<Host[]>([]), [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [discoveryError, setDiscoveryError] = useState("");
+  const authorized = useRef(false); authorized.current = authenticated === true;
+  const expired = useCallback(() => { authorized.current = false; setAuthenticated(false); }, []);
+  const inventory = useInventory(authenticated === true, expired);
+  const { hosts, sessions, setHosts, setSessions, status, members, joins, connectionError, discoveryError, localHostId } = inventory;
+  const [networkOpen, setNetworkOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(selection);
-  const observed = useHistory(authenticated === true ? selected : "");
+  const selectedTarget = parseSelection(selected).target;
+  const validTarget = !selectedTarget || (status?.localStatus === "active" && status.networkId === selectedTarget.networkId && members.some(member => member.hostId === selectedTarget.hostId && member.membershipId === selectedTarget.membershipId));
+  const loadingMembership = Boolean(selectedTarget && !inventory.ready);
+  const observed = useHistory(authenticated === true && validTarget ? selected : "");
   // A selection change must never expose the previous conversation's controls.
-  const detail = authenticated === true && observed.details?.session.sessionId === selected ? observed.details : null;
+  const detail = authenticated === true && validTarget && observed.details?.session.sessionId === parseSelection(selected).sessionId ? observed.details : null;
   useEffect(() => {
-    if (authenticated !== true || observed.details?.session.sessionId !== selected) return;
+    if (authenticated !== true || observed.details?.session.sessionId !== parseSelection(selected).sessionId) return;
     if (observed.details.host) {
-      const host = observed.details.host;
+      const source = observed.details.host;
+      const host = { ...source, name: selectedTarget ? `${source.name} · ${source.hostId.slice(0, 8)}` : `${source.name} · This machine` };
       setHosts(previous => previous.some(item => item.hostId === host.hostId) ? previous.map(item => item.hostId === host.hostId ? host : item) : [...previous, host]);
     }
-    const session = observed.details.session;
-    setSessions(previous => previous.some(item => item.sessionId === session.sessionId) ? previous.map(item => item.sessionId === session.sessionId ? session : item) : [...previous, session]);
+    const session = { ...observed.details.session, ...(selectedTarget ? { target: selectedTarget } : {}) };
+    setSessions(previous => previous.some(item => sessionKey(item) === selected) ? previous.map(item => sessionKey(item) === selected ? session : item) : [...previous, session]);
   }, [authenticated, observed.details, selected]);
   useEffect(() => { if (observed.authExpired) { setAuthenticated(false); setHosts([]); setSessions([]); } }, [observed.authExpired]);
   const chatMemory = useRef(createChatMemory());
-  const [connectionError, setConnectionError] = useState("");
   const [error, setError] = useState(""), [notice, setNotice] = useState(""), [busy, setBusy] = useState(false);
   useEffect(() => {
     const authenticate = () => { void authenticateLauncher().then(() => setAuthenticated(true)).catch(cause => { setAuthenticated(false); if (!(cause instanceof ApiError && cause.detail.code === "UNAUTHORIZED")) setError(describe(cause)); }); };
@@ -43,9 +51,10 @@ export function App() {
     authenticate(); window.addEventListener("hashchange", relaunch);
     return () => window.removeEventListener("hashchange", relaunch);
   }, []);
+  const [createTarget, setCreateTarget] = useState<RemoteTarget | null>(null);
   const [hostId, setHostId] = useState(""), [workDir, setWorkDir] = useState("");
   const [createError, setCreateError] = useState("");
-  const [retry, setRetry] = useState<{ operation: string; input: Record<string, unknown> } | null>(null);
+  const [retry, setRetry] = useState<{ operation: string; input: Record<string, unknown>; target?: RemoteTarget } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(() => !isNarrow()), [detailsOpen, setDetailsOpen] = useState(false);
   const sidebar = useRef<HTMLElement>(null), inspector = useRef<HTMLElement>(null), conversation = useRef<HTMLElement>(null);
   const sidebarToggle = useRef<HTMLButtonElement>(null), detailsToggle = useRef<HTMLButtonElement>(null);
@@ -53,7 +62,7 @@ export function App() {
   useEffect(() => {
     if (authenticated === false) {
       chatMemory.current.drafts.clear(); chatMemory.current.inputs.clear(); setRetry(null);
-      setDetailsOpen(false); createDialog.current?.close();
+      setDetailsOpen(false); setNetworkOpen(false); createDialog.current?.close();
     }
   }, [authenticated]);
   useEffect(() => { if (detailsOpen) inspector.current?.focus({ preventScroll: true }); }, [detailsOpen]);
@@ -70,41 +79,19 @@ export function App() {
     return () => window.removeEventListener("hashchange", change);
   }, []);
   useEffect(() => {
-    if (authenticated !== true) return;
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      try {
-        const [hostData, sessionData] = await Promise.all([
-          api<{ hosts: Host[] }>("listHosts", {}, controller.signal),
-          api<{ sessions: SessionSummary[]; discovery: { hostId: string; error: { message: string } | null }[] }>("listSessions", {}, controller.signal),
-        ]);
-        if (controller.signal.aborted) return;
-        setHosts(hostData.hosts); setSessions(sessionData.sessions);
-        setDiscoveryError(sessionData.discovery.filter(d => d.error).map(d => `${d.hostId}: ${d.error!.message}`).join(" "));
-        setConnectionError("");
-      } catch (cause) {
-        if (controller.signal.aborted) return;
-        if (cause instanceof ApiError && cause.detail.code === "UNAUTHORIZED") { setAuthenticated(false); setHosts([]); setSessions([]); }
-        else setConnectionError(describe(cause));
-      }
-      if (!controller.signal.aborted) timer = setTimeout(() => { void poll(); }, 10000);
-    }
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, [authenticated]);
-  useEffect(() => {
     if (authenticated !== true || selected || selection() || !sessions.length) return;
-    const candidates = sessions.filter(session => !session.native?.archived);
-    const timestamp = (session: SessionSummary) => Date.parse(session.native?.updatedAt ?? session.createdAt ?? "") || 0;
-    const recent = (candidates.length ? candidates : sessions).reduce((latest, session) => timestamp(session) > timestamp(latest) ? session : latest);
+    const localSessions = sessions.filter(session => !session.target);
+    if (!localSessions.length) return;
+    const candidates = localSessions.filter(session => !session.native?.archived);
+    const timestamp = (session: typeof sessions[number]) => Date.parse(session.native?.updatedAt ?? session.createdAt ?? "") || 0;
+    const recent = (candidates.length ? candidates : localSessions).reduce((latest, session) => timestamp(session) > timestamp(latest) ? session : latest);
     const fragment = new URLSearchParams(window.location.hash.slice(1));
     fragment.set("session", recent.sessionId);
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${fragment}`);
     setSelected(recent.sessionId);
   }, [authenticated, selected, sessions]);
   const select = (id: string) => {
-    window.location.hash = new URLSearchParams({ session: id }).toString(); setSelected(id); setNotice(""); setRetry(null);
+    window.location.hash = selectionFragment(id); setSelected(id); setNotice("");
     if (isNarrow()) { setSidebarOpen(false); setDetailsOpen(false); requestAnimationFrame(() => conversation.current?.focus({ preventScroll: true })); }
   };
   const closeDetails = () => {
@@ -118,25 +105,29 @@ export function App() {
   const closeSidebar = () => { setSidebarOpen(false); sidebarToggle.current?.focus({ preventScroll: true }); };
   const openCreate = () => {
     setCreateError("");
-    if (!hosts.some(host => host.hostId === hostId && host.status === "connected")) setHostId(hosts.find(host => host.status === "connected")?.hostId ?? "");
+    if (!hostId) { setHostId(localHostId); setCreateTarget(null); }
     createDialog.current?.showModal();
     createDialog.current?.querySelector<HTMLInputElement>("#workDir")?.focus();
   };
-  async function operation(name: string, input: Record<string, unknown>) {
+  async function operation(name: string, input: Record<string, unknown>, target?: RemoteTarget) {
+    const recovering = retry?.input.requestId === input.requestId;
     setBusy(true); setError(""); setRetry(null); setNotice("Sending request…");
     if (name === "createSession") setCreateError("");
     try {
       const result = await api<OperationSummary>(name, input);
+      if (!authorized.current) return;
       setRetry(null); setNotice(`${name} ${result.status} · ${result.requestId}`);
-      if (name === "createSession") { createDialog.current?.close(); select(result.sessionId); setNotice(`Session creation ${result.status} · ${result.requestId}`); }
+      if (name === "createSession") { createDialog.current?.close(); select(selectionKey({ sessionId: result.sessionId, ...(target ? { target } : {}) })); setNotice(`Session creation ${result.status} · ${result.requestId}`); }
     } catch (cause) {
+      if (!authorized.current) return;
       setError(describe(cause)); setNotice("");
       if (name === "createSession") setCreateError(describe(cause));
-      if (!(cause instanceof ApiError) || cause.detail.retryable) setRetry({ operation: name, input });
+      if (recovering || !(cause instanceof ApiError) || cause.detail.retryable) setRetry({ operation: name, input, ...(target ? { target } : {}) });
     } finally { setBusy(false); }
   }
+  const createTargetValid = createTarget ? status?.localStatus === "active" && status.networkId === createTarget.networkId && members.some(member => member.hostId === createTarget.hostId && member.membershipId === createTarget.membershipId) : hostId === localHostId;
   const connected = hosts.find(host => host.hostId === detail?.session.hostId)?.status === "connected";
-  const selectedSession = detail?.session ?? sessions.find(session => session.sessionId === selected);
+  const selectedSession = detail?.session ?? sessions.find(session => sessionKey(session) === selected);
   const sessionTree = useMemo(() => buildSessionTree(hosts, sessions), [hosts, sessions]);
   const treeModel = useMemo(() => projectSessionTree(sessionTree, search, selected), [sessionTree, search, selected]);
   const runningCount = sessions.filter(session => session.runtimeState === "running").length;
@@ -148,14 +139,15 @@ export function App() {
       <header className="app-header">
         {authenticated && <Button ref={sidebarToggle} variant="ghost" size="icon" aria-label="Toggle sessions" aria-controls="sessions" aria-expanded={sidebarOpen} onClick={() => { setSidebarOpen(!sidebarOpen); if (isNarrow()) setDetailsOpen(false); }}><PanelLeft aria-hidden="true" /></Button>}
         <a className="brand" href="/" aria-label="Dewbow home">dewbow<span aria-hidden="true">.</span></a>
-        <span className="workspace-label">Local workspace</span>
-        {authenticated && <Button variant="ghost" className="sign-out" onClick={() => { void request("/auth/logout", {}).then(() => { setAuthenticated(false); setHosts([]); setSessions([]); setNotice(""); setError(""); setConnectionError(""); }).catch(cause => setError(describe(cause))); }}><LogOut aria-hidden="true" /><span>Sign out</span></Button>}
+        <span className="workspace-label">{status?.localStatus === "active" ? status.networkName : "Local workspace"}</span>
+        {authenticated && <Button variant="outline" onClick={() => setNetworkOpen(true)}>Network{joins.length > 0 ? ` (${joins.length})` : ""}</Button>}
+        {authenticated && <Button variant="ghost" className="sign-out" onClick={() => { void request("/auth/logout", {}).then(() => { authorized.current = false; setAuthenticated(false); setNetworkOpen(false); setHosts([]); setSessions([]); setNotice(""); setError("");  }).catch(cause => setError(describe(cause))); }}><LogOut aria-hidden="true" /><span>Sign out</span></Button>}
       </header>
       {(connectionError || error || notice || retry) && <div className="workspace-notices">
         {connectionError && <Alert variant="destructive"><AlertDescription>{connectionError}</AlertDescription></Alert>}
         {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
         {notice && <Alert role="status"><AlertDescription>{notice}</AlertDescription></Alert>}
-        {retry && <Button variant="outline" disabled={busy} onClick={() => { void operation(retry.operation, retry.input); }}>Retry the same request</Button>}
+        {retry && <Button variant="outline" disabled={busy} onClick={() => { void operation(retry.operation, retry.input, retry.target); }}>Retry the same request</Button>}
       </div>}
       {authenticated !== true ? <main id="main" ref={conversation} tabIndex={-1} className="login-workspace">
         {authenticated === null ? <p role="status">Connecting to Dewbow daemon…</p> : <section className="login-panel" aria-labelledby="login-title"><h1 id="login-title">Open Dewbow from your terminal</h1><p>Run <code>dewbow web</code> on this machine to open an authenticated Web session.</p><p>If you selected a separate configuration, include its <code>--state-dir</code> option.</p></section>}
@@ -164,20 +156,20 @@ export function App() {
           <div className="inventory-toolbar"><Button variant="outline" onClick={openCreate}><Plus aria-hidden="true" />New session</Button><Button className="mobile-sidebar-close" variant="ghost" size="icon" aria-label="Close sessions" onClick={closeSidebar}><X aria-hidden="true" /></Button></div>
           <SessionTreeView model={treeModel} search={search} onSearchChange={setSearch} onSelect={select} error={discoveryError} />
         </aside>
-        <main ref={conversation} id="main" tabIndex={-1} className="conversation" aria-labelledby="conversation-title" aria-busy={Boolean(selected && !detail && observed.loading)}>
+        <main ref={conversation} id="main" tabIndex={-1} className="conversation" aria-labelledby="conversation-title" aria-busy={Boolean(selected && !detail && (observed.loading || loadingMembership))}>
           <header className="conversation-heading">
             <div className="conversation-heading-text"><h1 id="conversation-title" title={selectedSession?.name}>{selectedSession?.name || (selected ? "Conversation" : "Your conversations")}</h1>{selectedSession?.workDir && <p className="conversation-directory" title={selectedSession.workDir}>{selectedSession.workDir}</p>}</div>
             <div className="conversation-heading-actions">{detail && <Badge variant="secondary" className={`status ${detail.session.runtimeState}`}>{detail.session.runtimeState.replaceAll("_", " ")}</Badge>}<Button ref={detailsToggle} variant="ghost" size="icon" disabled={!detail} aria-label="Toggle session details" aria-controls="session-details" aria-expanded={detailsOpen} onClick={() => { setDetailsOpen(!detailsOpen); if (isNarrow()) setSidebarOpen(false); }}><PanelRight aria-hidden="true" /></Button></div>
           </header>
-          {!detail ? <div className="empty-state" role="status"><h2>{selected ? observed.error ? "Conversation unavailable" : "Loading conversation…" : "Start a conversation"}</h2><p>{selected ? observed.error ?? "Loading messages, progress, and approvals." : "Create a session or choose a conversation from the sidebar."}</p>{!selected && <Button onClick={openCreate}><Plus aria-hidden="true" />New session</Button>}</div> : <>
+          {!detail ? <div className="empty-state" role="status"><h2>{selected ? (observed.error || !validTarget && !loadingMembership) ? "Conversation unavailable" : "Loading conversation…" : "Start a conversation"}</h2><p>{selected ? loadingMembership ? "Loading Network membership…" : !validTarget ? "The selected Network membership is unavailable. Choose a current member to continue." : observed.error ?? "Loading messages, progress, and approvals." : "Create a session or choose a conversation from the sidebar."}</p>{!selected && <Button onClick={openCreate}><Plus aria-hidden="true" />New session</Button>}</div> : <>
             {(!detail.session.managed || detail.session.connectionState !== "connected" || detail.session.runtimeState === "unknown") && <div className="conversation-connection">
-              {(!detail.session.managed || detail.session.connectionState === "error") && <div className="connection-action"><p>{detail.session.managed ? "Reconnect this conversation to continue." : "Connect this Codex conversation to continue here."}</p><Button disabled={busy || !connected || !detail.session.workDir} onClick={() => { void operation("connectSession", { sessionId: detail.session.sessionId, requestId: crypto.randomUUID() }); }}>Connect conversation</Button></div>}
+              {(!detail.session.managed || detail.session.connectionState === "error") && <div className="connection-action"><p>{detail.session.managed ? "Reconnect this conversation to continue." : "Connect this Codex conversation to continue here."}</p><Button disabled={busy || !connected || !detail.session.workDir} onClick={() => { void operation("connectSession", { ...selectionInput(selected), requestId: crypto.randomUUID() }, selectedTarget); }}>Connect conversation</Button></div>}
               {detail.session.connectionState === "error" && <p role="alert">{detail.operations.filter(op => op.operation === "connectSession").at(-1)?.error?.message ?? "Connection failed. Inspect request delivery and retry."}</p>}
               {detail.session.connectionState === "connecting" && <p role="status">Connecting conversation…</p>}
               {detail.session.managed && detail.session.connectionState === "disconnected" && <p role="status">Execution is disconnected. Your draft stays in this session.</p>}
               {detail.session.runtimeState === "unknown" && <p role="status">Last known: {detail.session.lastKnownState} at {time(detail.session.lastKnownAt)}. Reconcile the host before continuing.</p>}
             </div>}
-            <Chat key={detail.session.sessionId} detail={detail} connected={connected && !connectionError} memory={chatMemory.current} globalBusy={busy} observed={observed} />
+            <Chat key={`${selected}:${observed.runtimeId}`} selectionKey={selected} localHostId={localHostId} detail={detail} connected={connected && !connectionError} memory={chatMemory.current} globalBusy={busy} observed={observed} />
           </>}
         </main>
         <aside ref={inspector} id="session-details" className="session-details" tabIndex={-1} aria-labelledby="details-title" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); closeDetails(); } }}>
@@ -187,18 +179,19 @@ export function App() {
       </div>}
       <footer className="status-bar">
         <span className={`daemon-status${daemonConnected ? " is-connected" : ""}`}><span className="status-dot" aria-hidden="true" />{connectionError ? "Daemon unavailable" : authenticated === false ? "Sign in required" : daemonConnected ? "Daemon connected" : "Connecting to daemon…"}</span>
-        {authenticated && <span className="execution-status">{runningCount} running{attentionCount > 0 && ` · ${attentionCount} need attention`}</span>}<span className="local-status">Local execution</span>
+        {authenticated && <span className="execution-status">{runningCount} running{attentionCount > 0 && ` · ${attentionCount} need attention`}</span>}<span className="local-status">{selectedTarget ? "Remote execution" : "Local execution"}</span>
       </footer>
       {authenticated && <dialog ref={createDialog} className="create-dialog" aria-labelledby="create-title">
         <header className="details-heading"><h2 id="create-title">New session</h2><Button variant="ghost" size="icon" aria-label="Close new session" onClick={() => createDialog.current?.close()}><X aria-hidden="true" /></Button></header>
-        <form className="form-body" onSubmit={event => { event.preventDefault(); if (!busy) void operation("createSession", { hostId, workDir, requestId: crypto.randomUUID() }); }}>
-          <label htmlFor="host">Machine</label><NativeSelect className="w-full" id="host" required value={hostId} onChange={event => setHostId(event.target.value)}><NativeSelectOption value="">Select a connected machine</NativeSelectOption>{hosts.filter(host => host.status === "connected").map(host => <NativeSelectOption key={host.hostId} value={host.hostId}>{host.name}</NativeSelectOption>)}</NativeSelect>
+        <form className="form-body" onSubmit={event => { event.preventDefault(); if (!busy) void operation("createSession", { hostId, workDir, ...(createTarget ? { networkId: createTarget.networkId } : {}), requestId: crypto.randomUUID() }, createTarget ?? undefined); }}>
+          <label htmlFor="host">Machine</label><NativeSelect className="w-full" id="host" required value={hostId} onChange={event => { const id = event.target.value; setHostId(id); const member = members.find(member => member.hostId === id && !member.isSelf); setCreateTarget(member && status?.networkId ? { networkId: status.networkId, hostId: member.hostId, membershipId: member.membershipId } : null); }}><NativeSelectOption value="">Select a connected machine</NativeSelectOption>{hosts.filter(host => host.status === "connected").map(host => <NativeSelectOption key={host.hostId} value={host.hostId}>{host.name}</NativeSelectOption>)}</NativeSelect>
           <label htmlFor="workDir">Working directory on that machine</label><Input id="workDir" required placeholder="/path/to/workspace" value={workDir} onChange={event => setWorkDir(event.target.value)} />
-          <Button type="submit" disabled={busy || retry?.operation === "createSession" || !hosts.some(host => host.hostId === hostId && host.status === "connected")}>{busy ? "Creating…" : "Create session"}</Button>
+          <Button type="submit" disabled={busy || !createTargetValid || retry?.operation === "createSession" || !hosts.some(host => host.hostId === hostId && host.status === "connected")}>{busy ? "Creating…" : "Create session"}</Button>
           {createError && <p className="form-error" role="alert">{createError}</p>}
           {retry?.operation === "createSession" && <Button type="button" variant="outline" disabled={busy} onClick={() => { void operation(retry.operation, retry.input); }}>Retry the same request</Button>}
         </form>
       </dialog>}
+      {authenticated && <NetworkDialog open={networkOpen} close={() => setNetworkOpen(false)} status={status} members={members} joins={joins} refresh={inventory.refresh} />}
     </div>
   );
 }

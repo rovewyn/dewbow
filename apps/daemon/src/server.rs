@@ -86,6 +86,59 @@ const MUTATION_ROUTES: &[(&str, &str)] = &[
     ),
 ];
 
+const NETWORK_READ_ROUTES: &[(&str, &str)] = &[
+    ("/api/v1/network", "getNetwork"),
+    ("/api/v1/networks/{networkId}/members", "listNetworkMembers"),
+    ("/api/v1/networks/{networkId}/joins", "listNetworkJoins"),
+    (
+        "/api/v1/networks/{networkId}/joins/{joinAttemptId}",
+        "getNetworkJoin",
+    ),
+];
+const NETWORK_MUTATION_ROUTES: &[(&str, &str)] = &[
+    ("/api/v1/networks", "createNetwork"),
+    ("/api/v1/network-joins", "joinNetwork"),
+    (
+        "/api/v1/networks/{networkId}/invitations",
+        "createInvitation",
+    ),
+    (
+        "/api/v1/networks/{networkId}/joins/{joinAttemptId}/decisions",
+        "confirmNetworkJoin",
+    ),
+    (
+        "/api/v1/networks/{networkId}/members/{membershipId}/removals",
+        "removeNetworkMember",
+    ),
+    (
+        "/api/v1/networks/{networkId}/members/{membershipId}/contact-addresses",
+        "setNetworkPeerAddress",
+    ),
+];
+
+async fn network_resource(
+    service: &Arc<Service>,
+    name: &str,
+    mut input: Value,
+) -> anyhow::Result<Value> {
+    let network = if matches!(name, "getNetwork" | "createNetwork" | "joinNetwork") {
+        None
+    } else {
+        input.as_object_mut().and_then(|o| o.remove("networkId"))
+    };
+    if network.as_ref().is_some_and(|n| !n.is_string()) {
+        return Err(error("INVALID_INPUT", "Invalid Network.").into());
+    }
+    service.network_lifecycle(name, &input, network.as_ref().and_then(Value::as_str)).await
+        .map_err(|cause| {
+            if cause.downcast_ref::<dewbow_protocol::ManagementError>().is_some() { return cause; }
+            let detail = cause.to_string();
+            let code = ["INVALID_INPUT", "REQUEST_CONFLICT", "SYNC_REQUIRED", "FORBIDDEN", "HISTORY_CONFLICT"]
+                .into_iter().find(|code| detail.starts_with(code)).unwrap_or("UNAVAILABLE");
+            error(code, "Network operation unavailable; inspect status, exact member, key and Peer settings.").into()
+        })
+}
+
 pub fn failure(cause: anyhow::Error) -> Response {
     error_response(cause, false)
 }
@@ -243,7 +296,14 @@ async fn read_resource(
             input.insert(key, value);
         }
         let input = resource_input(params, Value::Object(input))?;
-        if path.as_str().starts_with("/api/v1/networks/") {
+        if NETWORK_READ_ROUTES.iter().any(|(p, _)| *p == path.as_str()) {
+            network_resource(
+                &service,
+                route_operation(path.as_str(), NETWORK_READ_ROUTES),
+                input,
+            )
+            .await
+        } else if path.as_str().starts_with("/api/v1/networks/") {
             crate::remote::read(
                 &service,
                 route_operation(path.as_str(), REMOTE_READ_ROUTES),
@@ -288,18 +348,64 @@ async fn mutate_resource(
             error("INVALID_INPUT", "Mutation query fields are not supported.").into(),
         );
     }
-    let input = match resource_input(params, input) {
+    let mut input = match resource_input(params, input) {
         Ok(input) => input,
         Err(cause) => return resource_failure(cause),
     };
-    let name = route_operation(path.as_str(), MUTATION_ROUTES);
+    if NETWORK_MUTATION_ROUTES
+        .iter()
+        .any(|(p, _)| *p == path.as_str())
+    {
+        return match network_resource(
+            &service,
+            route_operation(path.as_str(), NETWORK_MUTATION_ROUTES),
+            input,
+        )
+        .await
+        {
+            Ok(result) => (
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(json!({"result":result})),
+            )
+                .into_response(),
+            Err(cause) => resource_failure(cause),
+        };
+    }
+    let suffix = path
+        .as_str()
+        .strip_prefix("/api/v1/networks/{networkId}/hosts/{hostId}");
+    let operation_path = suffix.map(|s| format!("/api/v1{s}"));
+    let name = route_operation(
+        operation_path.as_deref().unwrap_or(path.as_str()),
+        MUTATION_ROUTES,
+    );
+    let network = if suffix.is_some() {
+        input.as_object_mut().unwrap().remove("networkId")
+    } else {
+        None
+    };
     let remote = input
         .get("hostId")
         .and_then(Value::as_str)
         .filter(|host| *host != service.config.host_id)
         .map(str::to_owned);
     let request_id = input["requestId"].as_str().unwrap_or("").to_owned();
-    match service.api(name, input).await {
+    let result = if let Some(network) = network {
+        match network
+            .as_str()
+            .and_then(|n| dewbow_protocol::network::NetworkId::parse(n).ok())
+        {
+            Some(network) => {
+                service
+                    .remote_operation_in(name, input, Some(network))
+                    .await
+            }
+            None => Err(error("INVALID_INPUT", "Invalid Network.").into()),
+        }
+    } else {
+        service.api(name, input).await
+    };
+    match result {
         Ok(result) => {
             let status = match result["status"].as_str() {
                 Some("accepted") => StatusCode::ACCEPTED,
@@ -755,6 +861,17 @@ pub async fn run(state: &Path) -> anyhow::Result<()> {
         router = router.route(path, get(read_resource));
     }
     for &(path, _) in MUTATION_ROUTES {
+        router = router.route(path, post(mutate_resource));
+        let suffix = path.strip_prefix("/api/v1").unwrap();
+        router = router.route(
+            &format!("/api/v1/networks/{{networkId}}/hosts/{{hostId}}{suffix}"),
+            post(mutate_resource),
+        );
+    }
+    for &(path, _) in NETWORK_READ_ROUTES {
+        router = router.route(path, get(read_resource));
+    }
+    for &(path, _) in NETWORK_MUTATION_ROUTES {
         router = router.route(path, post(mutate_resource));
     }
     let router = router

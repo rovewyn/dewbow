@@ -1,4 +1,6 @@
-import type { Host, SessionSummary } from "@dewbow/protocol";
+import type { Host } from "@dewbow/protocol";
+
+import { sessionKey, type SessionEntry } from "../../targets.ts";
 
 export interface SessionTreeNode {
   id: string;
@@ -33,7 +35,7 @@ const statusTones = {
 } as const;
 
 /** Native lineage IDs are scoped to both host and Codex home, not management IDs. */
-export function buildSessionTree(hosts: Host[], sessions: SessionSummary[]): SessionTreeNode[] {
+export function buildSessionTree(hosts: Host[], sessions: SessionEntry[]): SessionTreeNode[] {
   const hostNodes = new Map(hosts.map(host => [host.hostId, {
     id: `host:${host.hostId}`, kind: "host" as const, title: host.name,
     sessionId: null, statusLabel: { connected: "Online", disconnected: "Offline", revoked: "Revoked" }[host.status],
@@ -53,9 +55,9 @@ export function buildSessionTree(hosts: Host[], sessions: SessionSummary[]): Ses
     });
     const connectionLabel = { disconnected: "Not connected", connecting: "Connecting", connected: "Connected", error: "Connection failed" }[session.connectionState];
     const connectionHint = session.connectionState === "error" || session.connectionState === "connecting";
-    nodes.set(session.sessionId, {
-      id: `session:${session.sessionId}`, kind: "session", title: session.name,
-      sessionId: session.sessionId, statusLabel: connectionHint ? connectionLabel : statusLabels[session.runtimeState],
+    nodes.set(sessionKey(session), {
+      id: `session:${sessionKey(session)}`, kind: "session", title: session.name,
+      sessionId: sessionKey(session), statusLabel: connectionHint ? connectionLabel : statusLabels[session.runtimeState],
       statusTone: connectionHint ? "warning" : statusTones[session.runtimeState],
       metadata: [hostNodes.get(session.hostId)!.title, connectionLabel, `Runtime: ${statusLabels[session.runtimeState]}`,
         ...(session.native?.archived ? ["Archived"] : []),
@@ -69,15 +71,15 @@ export function buildSessionTree(hosts: Host[], sessions: SessionSummary[]): Ses
     const nativeId = session.native?.id ?? session.codexThreadId;
     if (home && nativeId) {
       const key = nativeKey(session.hostId, home, nativeId);
-      nativeIndex.set(key, [...(nativeIndex.get(key) ?? []), session.sessionId]);
+      nativeIndex.set(key, [...(nativeIndex.get(key) ?? []), sessionKey(session)]);
     }
   }
   const parents = new Map<string, string>();
   for (const session of sessions) {
     if (!session.native?.parentId) continue;
     const matches = nativeIndex.get(nativeKey(session.hostId, session.native.codexHome, session.native.parentId)) ?? [];
-    if (matches.length === 1) parents.set(session.sessionId, matches[0]!);
-    else nodes.get(session.sessionId)!.parentWarning = matches.length ? "Parent relationship is ambiguous" : "Parent session unavailable";
+    if (matches.length === 1) parents.set(sessionKey(session), matches[0]!);
+    else nodes.get(sessionKey(session))!.parentWarning = matches.length ? "Parent relationship is ambiguous" : "Parent session unavailable";
   }
   // Break every cycle before linking nodes so malformed inventory cannot hide a branch.
   const checked = new Set<string>();
@@ -98,8 +100,8 @@ export function buildSessionTree(hosts: Host[], sessions: SessionSummary[]): Ses
     for (const member of path) checked.add(member);
   }
   for (const session of sessions) {
-    const node = nodes.get(session.sessionId)!;
-    const parentId = parents.get(session.sessionId);
+    const node = nodes.get(sessionKey(session))!;
+    const parentId = parents.get(sessionKey(session));
     const parent = parentId ? nodes.get(parentId)! : hostNodes.get(session.hostId)!;
     parent.children.push(node);
   }

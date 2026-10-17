@@ -64,23 +64,28 @@ async function makeNode() {
 }
 const settings = node => ['--listen-endpoint', node.endpoint, '--advertised-endpoint', node.endpoint];
 async function admit(issuer, joiner) {
-  const invitation = network(issuer, 'invite').invitation;
-  const joined = JSON.parse(invoke(joiner, ['network', '--json', 'join', '--invitation-stdin', ...settings(joiner)], `${invitation}\n`));
+  const issuing = await operator(issuer), joining = await operator(joiner);
+  const { networkId } = await issuing.request('getNetwork', {});
+  const invitation = (await issuing.request('createInvitation', { networkId, requestId: crypto.randomUUID() })).invitation;
+  const input = { invitation, requestId: crypto.randomUUID(), listenEndpoint: joiner.endpoint, advertisedEndpoints: [joiner.endpoint] };
+  const joined = await joining.request('joinNetwork', input);
   assert.equal(joined.status, 'prepared');
-  const pending = await until(() => network(issuer, 'pending'), value => value.joins.length === 1, 'pending join');
+  assert.equal((await joining.request('joinNetwork', input)).joinAttemptId, joined.joinAttemptId);
+  const pending = await until(() => issuing.request('listNetworkJoins', { networkId }), value => value.joins.length === 1, 'pending Web join');
   const request = pending.joins[0];
   assert.equal(request.hostId, joiner.config.hostId);
   assert.equal(request.publicKey, joined.publicKey);
   assert.equal(request.publicKeyFingerprint, joined.publicKeyFingerprint);
-  assert.throws(() => network(issuer, 'confirm', request.joinAttemptId, '--public-key', Buffer.alloc(32, 7).toString('base64url')), /INVALID_INPUT/);
-  network(issuer, 'confirm', request.joinAttemptId, '--public-key', request.publicKey);
-  await until(() => network(joiner, 'status'), value => value.localStatus === 'active', 'joiner ready');
+  const confirmation = { networkId, joinAttemptId: request.joinAttemptId, publicKey: request.publicKey, decision: 'allow', requestId: crypto.randomUUID() };
+  await assert.rejects(issuing.request('confirmNetworkJoin', { ...confirmation, publicKey: Buffer.alloc(32, 7).toString('base64url') }), { code: 'INVALID_INPUT' });
+  await issuing.request('confirmNetworkJoin', confirmation);
+  await until(() => joining.request('getNetwork', {}), value => value.localStatus === 'active', 'joiner ready');
   const member = network(joiner, 'status').membershipId;
-  network(issuer, 'set-peer-address', member, joiner.endpoint);
+  await issuing.request('setNetworkPeerAddress', { networkId, membershipId: member, endpoint: joiner.endpoint, requestId: crypto.randomUUID() });
   return invitation;
 }
 
-async function operator(node) {
+async function operator(node, networkId) {
   const { ticket } = await control(node, 'ticket');
   const response = await fetch(`${node.origin}/auth/login`, { method: 'POST', headers: { Connection: 'close', Origin: node.origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
   assert.equal(response.status, 200);
@@ -92,7 +97,8 @@ async function operator(node) {
     return { value: body.result, location: response.headers.get('location') };
   };
   const request = async (name, input) => {
-    const route = apiRequest(name, input);
+    const scoped = networkId && input?.hostId && input.hostId !== node.config.hostId && name !== "getRequestReceipt" ? { ...input, networkId } : input;
+    const route = apiRequest(name, scoped);
     return (await raw(route.path, { method: route.method, ...(route.input ? { body: JSON.stringify(route.input) } : {}) })).value;
   };
   return { raw, request };
@@ -119,15 +125,27 @@ test('remote native operations retain scoped receipts, authority and recovery ov
   try {
     for (let i = 0; i < 3; i++) nodes.push(await makeNode());
     const [a, b, c] = nodes;
-    network(a, 'create', 'Synthetic execution', ...settings(a));
+    const setup = await operator(a);
+    assert.equal((await fetch(a.origin + '/api/v1/network')).status, 401);
+    const beforeSetup = await setup.request('getNetwork', {});
+    const badSetup = { networkName: 'Synthetic execution', listenEndpoint: a.endpoint, advertisedEndpoints: [a.endpoint], requestId: 'bad-web-setup', unexpected: true };
+    await assert.rejects(setup.request('createNetwork', badSetup), { code: 'INVALID_INPUT' });
+    assert.deepEqual((await setup.request('getNetwork', {})).peerSettings, beforeSetup.peerSettings, 'invalid input cannot reconfigure the Peer listener');
+    await assert.rejects(setup.raw('/api/v1/networks', { method: 'POST', headers: { Origin: 'http://invalid.example' }, body: JSON.stringify(badSetup) }), { code: 'UNAUTHORIZED' });
+    await setup.request('createNetwork', { networkName: 'Synthetic execution', listenEndpoint: a.endpoint, advertisedEndpoints: [a.endpoint], requestId: 'web-create-network' });
+    await assert.rejects(setup.request('createNetwork', { ...badSetup, requestId: 'web-create-network' }), { code: 'REQUEST_CONFLICT' }, 'changed retries retain the original fingerprint conflict precedence');
     await admit(a, b); await admit(a, c);
     await until(() => nodes.map(node => network(node, 'members').members.length), counts => counts.every(n => n === 3), 'all admitted peers known');
     const member = node => network(node, 'status').membershipId;
     for (const source of nodes) for (const target of nodes) if (source !== target) network(source, 'set-peer-address', member(target), target.endpoint);
     await until(() => nodes.map(node => network(node, 'status').historyId), ids => new Set(ids).size === 1, 'compatible execution context');
-    let oa = await operator(a), ob = await operator(b);
-    const oc = await operator(c), hostId = b.config.hostId;
+    const networkId = network(a, 'status').networkId;
+    let oa = await operator(a, networkId), ob = await operator(b);
+    const oc = await operator(c, networkId), hostId = b.config.hostId;
     const creation = { hostId, workDir: b.state, requestId: 'shared-id' };
+    await assert.rejects(oa.raw('/api/v1/network?networkId=unexpected'), { code: 'INVALID_INPUT' });
+    await assert.rejects(oa.raw('/api/v1/networks/' + Buffer.alloc(32, 9).toString('base64url') + '/members'), { code: 'FORBIDDEN' });
+    await assert.rejects(oa.raw('/api/v1/networks/' + networkId + '/hosts/' + hostId + '/sessions', { method: 'POST', body: JSON.stringify({ ...creation, hostId }) }), { code: 'INVALID_INPUT' });
     const created = await oa.request('createSession', creation);
     assert.equal(created.status, 'delivered', JSON.stringify(created));
     const racing = await Promise.all([0, 1].map(() => oa.request('createSession', { ...creation, requestId: 'same-entry-race' })));
@@ -173,12 +191,12 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     aborted.abort(); await lost;
     await until(() => journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'"), rows => rows.length && JSON.parse(rows[0].receipt_json).status === 'delivered', 'target continues after entry disconnect');
     const original = JSON.parse(journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'")[0].receipt_json);
-    await stop(a); await start(a); oa = await operator(a);
+    await stop(a); await start(a); oa = await operator(a, networkId);
     assert.equal((await oa.request('createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
     const retryRoute = apiRequest('createSession', lostInput);
     const retry = await oa.raw(retryRoute.path, { method: 'POST', body: JSON.stringify(retryRoute.input) });
     assert.equal((await oa.raw(retry.location)).value.receipt.commandId, original.commandId);
-    const networkId = network(b, 'status').networkId;
+
     const scopePath = `/api/v1/hosts/${hostId}/request-receipts/shared-id?networkId=${networkId}&sourceHostId=${a.config.hostId}`;
     // Native persistence without its request acknowledgement must not trigger a second turn.
     const uncertain = await send(oa, 'UNCERTAIN_COMPLETE', 'native-uncertain', local.sessionId);
@@ -223,7 +241,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     assert.ok(journal(b, 'PRAGMA user_version')[0].user_version === 2);
     assert.deepEqual((await ob.request('getSession', { sessionId: sid })).session.sessionConfig, configuration);
     network(a, 'leave'); network(a, 'create', 'Synthetic independent Network', ...settings(a));
-    await assert.rejects(oa.request('createSession', creation), { code: 'REQUEST_CONFLICT' }, 'a new Network cannot bypass the original outbound binding');
+    await assert.rejects(oa.request('createSession', creation), { code: 'FORBIDDEN' }, 'a scoped Web request cannot follow a new Network selection');
+    const legacy = await operator(a);
+    await assert.rejects(legacy.request('createSession', creation), { code: 'REQUEST_CONFLICT' }, 'legacy requests retain their original outbound binding');
   } finally {
     for (const node of nodes.reverse()) {
       try { await stop(node); } catch (cause) { console.error(node.diagnostics); throw cause; }
@@ -245,15 +265,19 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     await until(() => network(b, 'members'), value => value.members.length === 3, 'membership synchronization');
     // Loopback advertisements are intentionally not learned from remote hints.
     network(b, 'set-peer-address', cMember, c.endpoint);
-    const leave = network(a, 'leave', '--request-id', 'synthetic-founder-leave');
+    const issuer = await operator(a), leaving = network(a, 'status');
+    const exitInput = { networkId: leaving.networkId, membershipId: founder, requestId: 'synthetic-founder-leave' };
+    const leave = await issuer.request('removeNetworkMember', exitInput);
     assert.equal(leave.network.localStatus, 'left');
-    network(a, 'leave', '--request-id', 'synthetic-founder-leave');
+    await issuer.request('removeNetworkMember', exitInput);
     await until(() => network(b, 'members'), value => !value.members.some(m => m.membershipId === founder), 'founder withdrawal');
     await stop(a);
     invitations.push(await admit(b, d));
     network(c, 'set-peer-address', network(b, 'status').membershipId, b.endpoint);
     await stop(c);
-    network(b, 'remove', cMember, '--request-id', 'synthetic-offline-removal');
+    const removing = await operator(b);
+    const removalInput = { networkId: network(b, 'status').networkId, membershipId: cMember, requestId: 'synthetic-offline-removal' };
+    await removing.request('removeNetworkMember', removalInput);
     network(b, 'remove', cMember, '--request-id', 'synthetic-offline-removal');
     assert.throws(() => network(b, 'remove', network(d, 'status').membershipId, '--request-id', 'synthetic-offline-removal'), /REQUEST_CONFLICT/);
     await start(c);
@@ -265,7 +289,8 @@ test('CLI membership lifecycle survives founder exit, offline removal and daemon
     assert.equal(network(c, 'status').localStatus, 'active', 'old removal retry cannot withdraw a fresh generation');
     network(c, 'leave');
     const own = network(d, 'status').membershipId;
-    network(d, 'remove', own);
+    const ownOperator = await operator(d);
+    await ownOperator.request('removeNetworkMember', { networkId: network(d, 'status').networkId, membershipId: own, requestId: 'web-self-exit' });
     assert.equal(network(d, 'status').localStatus, 'left');
     // Maintenance blocks membership writes without disabling status reads.
     const status = await control(b, 'status');

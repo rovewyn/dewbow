@@ -105,6 +105,21 @@ export interface SessionHistory extends EventHistory, Omit<NativeHistory, "obser
 export interface HistoryPosition { cursor?: number | undefined; updateCursor?: string | undefined }
 export interface SessionUpdates { contractVersion: "v1"; instanceId: string; details: SessionDetails; history: SessionHistory }
 export interface NetworkTarget { networkId: string; hostId: string }
+export interface NetworkMember {
+  hostId: string; membershipId: string; publicKey: string; isSelf: boolean;
+  reachability: "local" | "reachable" | "unknown"; endpoints: string[];
+}
+export interface NetworkJoin { joinAttemptId: string; hostId: string; publicKey: string; publicKeyFingerprint: string }
+export interface NetworkStatus {
+  networkId: string | null; membershipId: string | null; historyId: string | null; networkName: string | null;
+  localStatus: "none" | "joining" | "active" | "left" | "removed";
+  joinRequestId: string | null; joinAttemptId: string | null; joinStatus: string | null;
+  joiningHostId: string | null; joiningPublicKey: string | null;
+  peerSettings: { listenEndpoint: string | null; advertisedEndpoints: string[] };
+  peerListenerStatus: "listening" | "stopped";
+  dissemination: { kind: "membership" | "departure"; networkId: string; membershipId: string; status: string; historyId?: string; departureRecordId?: string }[];
+}
+export interface NetworkInvitation { invitationId: string; invitation: string | null; expiresAt: string; status: string }
 export interface BusinessContext {
   protocolVersion: 1; networkId: string; callerMembershipId: string; targetMembershipId: string;
   historyId: string; sourceHostId: string; targetHostId: string;

@@ -39,6 +39,8 @@ servers:
 security:
   - operatorCookie: []
 tags:
+  - name: Network
+    description: Local operator Network lifecycle with equal member authority.
   - name: Authentication
     description: CLI-ticket exchange and operator cookie lifecycle.
   - name: Discovery
@@ -735,6 +737,64 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+    post:
+      operationId: createSessionOnNetworkHost
+      tags:
+        - Sessions
+      summary: Create a native conversation with frozen management configuration on an
+        explicitly selected Network host
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - workDir
+                - requestId
+              properties:
+                workDir:
+                  $ref: "#/components/schemas/Text"
+                  description: Existing absolute directory on the execution host, checked by that
+                    daemon.
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                sessionOptions:
+                  $ref: "#/components/schemas/SessionOptions"
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "201":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+
   /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}:
     get:
       operationId: getRemoteSession
@@ -966,6 +1026,974 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '500': {$ref: '#/components/responses/InternalError'}
         '503': {$ref: '#/components/responses/Unavailable'}
+  /api/v1/network:
+    get:
+      operationId: getNetwork
+      tags:
+        - Network
+      summary: Read current Network status
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters: []
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks:
+    post:
+      operationId: createNetwork
+      tags:
+        - Network
+      summary: Create a Network
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - networkName
+                - requestId
+              properties:
+                networkName:
+                  $ref: "#/components/schemas/Text"
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                listenEndpoint:
+                  type: string
+                advertisedEndpoints:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkChange"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/network-joins:
+    post:
+      operationId: joinNetwork
+      tags:
+        - Network
+      summary: Join through an existing member
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - invitation
+                - requestId
+              properties:
+                invitation:
+                  $ref: "#/components/schemas/Text"
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                listenEndpoint:
+                  type: string
+                advertisedEndpoints:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkJoinResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/members:
+    get:
+      operationId: listNetworkMembers
+      tags:
+        - Network
+      summary: Read members and reachability
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - members
+                    properties:
+                      members:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/NetworkMember"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/invitations:
+    post:
+      operationId: createInvitation
+      tags:
+        - Network
+      summary: Create a single-admission invitation
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkInvitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/joins:
+    get:
+      operationId: listNetworkJoins
+      tags:
+        - Network
+      summary: List pending local confirmations
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - joins
+                    properties:
+                      joins:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/NetworkJoin"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/joins/{joinAttemptId}:
+    get:
+      operationId: getNetworkJoin
+      tags:
+        - Network
+      summary: Read the exact joining public key
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - name: joinAttemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - publicKey
+                    properties:
+                      publicKey:
+                        type: string
+                        minLength: 43
+                        maxLength: 43
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/joins/{joinAttemptId}/decisions:
+    post:
+      operationId: confirmNetworkJoin
+      tags:
+        - Network
+      summary: Allow or deny an exact joining key
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - name: joinAttemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - publicKey
+                - decision
+                - requestId
+              properties:
+                publicKey:
+                  type: string
+                  minLength: 43
+                  maxLength: 43
+                decision:
+                  type: string
+                  enum:
+                    - allow
+                    - deny
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/members/{membershipId}/removals:
+    post:
+      operationId: removeNetworkMember
+      tags:
+        - Network
+      summary: Remove an exact member or leave
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - name: membershipId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    $ref: "#/components/schemas/NetworkChange"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/members/{membershipId}/contact-addresses:
+    post:
+      operationId: setNetworkPeerAddress
+      tags:
+        - Network
+      summary: Set a local contact address
+      description: Local operator authority. Exact Network and member paths are
+        checked by the shared lifecycle service. Membership and known-recipient
+        dissemination are separate; no global propagation acknowledgement is
+        implied.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - name: membershipId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - endpoint
+                - requestId
+              properties:
+                endpoint:
+                  type: string
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          description: Local management result; does not establish global propagation or
+            native completion.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - result
+                properties:
+                  result:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      - code
+                    properties:
+                      code:
+                        type: string
+                        const: ADDRESS_UPDATED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/connections:
+    post:
+      operationId: connectSessionOnNetworkHost
+      tags:
+        - Sessions
+      summary: Connect or explicitly adopt the same native conversation on an
+        explicitly selected Network host
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/turns:
+    post:
+      operationId: sendMessageOnNetworkHost
+      tags:
+        - Execution
+      summary: Start one managed turn on an explicitly selected Network host
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - message
+                - requestId
+              properties:
+                message:
+                  $ref: "#/components/schemas/Text"
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                mode:
+                  type: string
+                  enum:
+                    - default
+                    - plan
+                  default: default
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "201":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/turns/{turnId}/instructions:
+    post:
+      operationId: steerTurnOnNetworkHost
+      tags:
+        - Execution
+      summary: Deliver an instruction to the exact active turn on an explicitly
+        selected Network host
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - message
+                - requestId
+              properties:
+                message:
+                  $ref: "#/components/schemas/Text"
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/turns/{turnId}/interruptions:
+    post:
+      operationId: interruptTurnOnNetworkHost
+      tags:
+        - Execution
+      summary: Request interruption of the exact active turn on an explicitly selected
+        Network host
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/answers:
+    post:
+      operationId: answerQuestionsOnNetworkHost
+      tags:
+        - Execution
+      summary: Answer the exact pending runtime question callback on an explicitly
+        selected Network host
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+        - $ref: "#/components/parameters/InteractionId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+                - answers
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                answers:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/QuestionAnswer"
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/networks/{networkId}/hosts/{hostId}/sessions/{sessionId}/turns/{turnId}/interactions/{interactionId}/decisions:
+    post:
+      operationId: decideApprovalOnNetworkHost
+      tags:
+        - Execution
+      summary: Allow or deny one pending runtime approval callback on an explicitly
+        selected Network host
+      description: The Network and host in the path are fixed routing context,
+        validated before outbound binding and dispatch. This host must be remote.
+        Context is excluded from the original semantic input fingerprint; original
+        scoped receipts and retries are preserved. Network changes never redirect
+        this request.
+      parameters:
+        - $ref: "#/components/parameters/NetworkId"
+        - $ref: "#/components/parameters/HostId"
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/TurnId"
+        - $ref: "#/components/parameters/InteractionId"
+        - $ref: "#/components/parameters/Origin"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+                - decision
+              properties:
+                requestId:
+                  $ref: "#/components/schemas/RequestId"
+                decision:
+                  type: string
+                  enum:
+                    - allow
+                    - deny
+      responses:
+        "200":
+          $ref: "#/components/responses/Operation"
+        "202":
+          $ref: "#/components/responses/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 components:
   securitySchemes:
     operatorCookie:
@@ -1482,3 +2510,278 @@ components:
           description: Ephemeral daemon instance identity; differs from persistent hostId.
         details: {$ref: '#/components/schemas/SessionDetails'}
         history: {$ref: '#/components/schemas/SessionHistory'}
+
+    NetworkMember:
+      type: object
+      additionalProperties: false
+      required:
+        - hostId
+        - membershipId
+        - publicKey
+        - isSelf
+        - reachability
+        - endpoints
+      properties:
+        hostId:
+          type: string
+          format: uuid
+        membershipId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        publicKey:
+          type: string
+          minLength: 43
+          maxLength: 43
+        isSelf:
+          type: boolean
+        reachability:
+          type: string
+          enum:
+            - local
+            - reachable
+            - unknown
+        endpoints:
+          type: array
+          items:
+            type: string
+    NetworkJoin:
+      type: object
+      additionalProperties: false
+      required:
+        - joinAttemptId
+        - hostId
+        - publicKey
+        - publicKeyFingerprint
+      properties:
+        joinAttemptId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        hostId:
+          type: string
+          format: uuid
+        publicKey:
+          type: string
+          minLength: 43
+          maxLength: 43
+        publicKeyFingerprint:
+          type: string
+    NetworkPropagation:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - networkId
+        - membershipId
+        - status
+      properties:
+        kind:
+          type: string
+          enum:
+            - membership
+            - departure
+        networkId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        membershipId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        status:
+          type: string
+        historyId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        departureRecordId:
+          type: string
+          minLength: 43
+          maxLength: 43
+    NetworkStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - networkId
+        - membershipId
+        - historyId
+        - networkName
+        - localStatus
+        - joinRequestId
+        - joinAttemptId
+        - joinStatus
+        - joiningHostId
+        - joiningPublicKey
+        - dissemination
+      properties:
+        networkId:
+          type:
+            - string
+            - "null"
+        membershipId:
+          type:
+            - string
+            - "null"
+        historyId:
+          type:
+            - string
+            - "null"
+        networkName:
+          type:
+            - string
+            - "null"
+        localStatus:
+          type: string
+          enum:
+            - none
+            - joining
+            - active
+            - left
+            - removed
+        joinRequestId:
+          type:
+            - string
+            - "null"
+        joinAttemptId:
+          type:
+            - string
+            - "null"
+        joinStatus:
+          type:
+            - string
+            - "null"
+        joiningHostId:
+          type:
+            - string
+            - "null"
+        joiningPublicKey:
+          type:
+            - string
+            - "null"
+        dissemination:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkPropagation"
+        peerSettings:
+          type: object
+          additionalProperties: false
+          required:
+            - listenEndpoint
+            - advertisedEndpoints
+          properties:
+            listenEndpoint:
+              type:
+                - string
+                - "null"
+            advertisedEndpoints:
+              type: array
+              items:
+                type: string
+        peerListenerStatus:
+          type: string
+          enum:
+            - listening
+            - stopped
+    NetworkChange:
+      type: object
+      additionalProperties: false
+      required:
+        - operation
+        - network
+      properties:
+        operation:
+          type: object
+          additionalProperties: false
+          required: []
+          properties:
+            recordId:
+              type: string
+              minLength: 43
+              maxLength: 43
+            selectionId:
+              type: string
+            code:
+              type: string
+        network:
+          $ref: "#/components/schemas/NetworkStatus"
+    NetworkInvitation:
+      type: object
+      additionalProperties: false
+      required:
+        - invitationId
+        - invitation
+        - expiresAt
+        - status
+      properties:
+        invitationId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        invitation:
+          type:
+            - string
+            - "null"
+        expiresAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum:
+            - live
+            - consumed
+            - expired
+    NetworkJoinResult:
+      type: object
+      additionalProperties: false
+      required:
+        - joinAttemptId
+        - issuerMembershipId
+        - status
+        - publicKey
+        - hostId
+        - publicKeyFingerprint
+        - network
+      properties:
+        joinAttemptId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        issuerMembershipId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        status:
+          type: string
+        publicKey:
+          type: string
+          minLength: 43
+          maxLength: 43
+        hostId:
+          type: string
+          format: uuid
+        publicKeyFingerprint:
+          type: string
+        network:
+          $ref: "#/components/schemas/NetworkStatus"
+    NetworkDecision:
+      type: object
+      additionalProperties: false
+      required:
+        - joinAttemptId
+        - issuerMembershipId
+      properties:
+        recordId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        joinAttemptId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        issuerMembershipId:
+          type: string
+          minLength: 43
+          maxLength: 43
+        code:
+          type: string

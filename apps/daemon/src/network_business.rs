@@ -261,6 +261,16 @@ impl Service {
     }
 
     pub(crate) async fn remote_operation(&self, name: &str, input: Value) -> anyhow::Result<Value> {
+        self.remote_operation_in(name, input, None).await
+    }
+
+    pub(crate) async fn remote_operation_in(
+        &self,
+        name: &str,
+        input: Value,
+        network: Option<NetworkId>,
+    ) -> anyhow::Result<Value> {
+        validate(name, &input)?;
         let _admission = self.maintenance.admit(name)?;
         let target = HostId::parse(text(&input, "hostId")?).map_err(input_error)?;
         let request = text(&input, "requestId")?.to_owned();
@@ -269,6 +279,14 @@ impl Service {
         let selected = repo
             .current_selection()?
             .ok_or_else(|| error("NOT_READY", "No Network selected."))?;
+        anyhow::ensure!(
+            network.is_none_or(|n| n == selected.history().network_id()),
+            error("FORBIDDEN", "The original Network is no longer selected.")
+        );
+        anyhow::ensure!(
+            target.to_string() != self.config.host_id,
+            error("INVALID_INPUT", "Use local resources for this host.")
+        );
         let scope = ReceiptScope {
             network_id: selected.history().network_id(),
             source_host_id: HostId::parse(&self.config.host_id)?,
