@@ -22,8 +22,9 @@ const invoke = (node, args, input) => execFileSync(binary, ['--state-dir', node.
   encoding: 'utf8', input, timeout: 40000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
 });
 const network = (node, ...args) => JSON.parse(invoke(node, ['network', '--json', ...args]));
-async function until(read, predicate, description) {
-  for (let i = 0; i < 150; i++) { const value = await read(); if (predicate(value)) return value; await delay(200); }
+async function until(read, predicate, description, timeoutMs = 30000) {
+  const deadline = performance.now() + timeoutMs;
+  do { const value = await read(); if (predicate(value)) return value; await delay(200); } while (performance.now() < deadline);
   throw new Error(`Timed out: ${description}`);
 }
 async function control(node, name, input = {}) {
@@ -153,12 +154,12 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     await assert.rejects(oa.raw('/api/v1/network?networkId=unexpected'), { code: 'INVALID_INPUT' });
     await assert.rejects(oa.raw('/api/v1/networks/' + Buffer.alloc(32, 9).toString('base64url') + '/members'), { code: 'FORBIDDEN' });
     await assert.rejects(oa.raw('/api/v1/networks/' + networkId + '/hosts/' + hostId + '/sessions', { method: 'POST', body: JSON.stringify({ ...creation, hostId }) }), { code: 'INVALID_INPUT' });
-    const created = await oa.request('createSession', creation);
+    const created = await recoverOriginal(oa, 'createSession', creation);
     assert.equal(created.status, 'delivered', JSON.stringify(created));
-    const racing = await Promise.all([0, 1].map(() => oa.request('createSession', { ...creation, requestId: 'same-entry-race' })));
+    const racing = await Promise.all([0, 1].map(() => recoverOriginal(oa, 'createSession', { ...creation, requestId: 'same-entry-race' })));
     assert.equal(racing[0].commandId, racing[1].commandId, 'concurrent identical entry submissions share one receipt');
-    assert.deepEqual(await oa.request('createSession', creation), created);
-    const fromC = await oc.request('createSession', creation);
+    assert.deepEqual(await recoverOriginal(oa, 'createSession', creation), created);
+    const fromC = await recoverOriginal(oc, 'createSession', creation);
     const local = await ob.request('createSession', creation);
     assert.equal(new Set([created.commandId, fromC.commandId, local.commandId]).size, 3, 'local and two source scopes do not alias');
     assert.equal(journal(a, "SELECT count(*) AS n FROM records WHERE kind='session'")[0].n, 0, 'entry does not own remote conversations');
@@ -169,13 +170,23 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     const configuration = (await details()).session.sessionConfig;
     assert.equal(configuration.resolved.approvalPolicy, 'on-request');
     assert.equal(configuration.resolved.sandbox.type, 'workspaceWrite');
-    assert.equal((await oa.request('connectSession', { hostId, sessionId: sid, requestId: 'connect' })).status, 'delivered');
-    const send = (op, message, requestId, sessionId = sid) => op.request('sendMessage', { hostId, sessionId, message, requestId });
+    const connectInput = { hostId, sessionId: sid, requestId: 'connect' };
+    // A ready operator listener is not proof that a remote connection can be
+    // admitted. A pre-dispatch refusal must retain the exact original attempt.
+    await stop(b);
+    await assert.rejects(oa.request('connectSession', connectInput), { code: 'NOT_READY' });
+    assert.equal(journal(b, "SELECT count(*) AS n FROM network_request_receipts WHERE request_id='connect'")[0].n, 0);
+    await start(b); ob = await operator(b);
+    const connected = await recoverOriginal(oa, 'connectSession', connectInput);
+    assert.equal(connected.status, 'delivered');
+    assert.equal((await recoverOriginal(oa, 'connectSession', connectInput)).commandId, connected.commandId);
+    assert.equal(journal(b, "SELECT count(*) AS n FROM network_request_receipts WHERE request_id='connect'")[0].n, 1);
+    const send = (op, message, requestId, sessionId = sid) => recoverOriginal(op, 'sendMessage', { hostId, sessionId, message, requestId });
     await send(oa, 'WAIT', 'wait');
     const active = (await until(details, d => !!d.session.activeTurnId, 'remote active turn')).session.activeTurnId;
     assert.equal((await send(oc, 'competing turn', 'busy')).error.code, 'SESSION_BUSY');
-    assert.equal((await oa.request('steerTurn', { hostId, sessionId: sid, turnId: active, message: 'Synthetic steering', requestId: 'steer' })).status, 'delivered');
-    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: sid, turnId: active, requestId: 'interrupt' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oa, 'steerTurn', { hostId, sessionId: sid, turnId: active, message: 'Synthetic steering', requestId: 'steer' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oc, 'interruptTurn', { hostId, sessionId: sid, turnId: active, requestId: 'interrupt' })).status, 'delivered');
     await until(details, d => !d.session.activeTurnId, 'remote interrupt completion');
     for (const [message, kind] of [['QUESTIONS', 'questions'], ['APPROVAL', 'approval']]) {
       await send(oa, message, `send-${kind}`);
@@ -183,9 +194,9 @@ test('remote native operations retain scoped receipts, authority and recovery ov
       const interaction = d.interactions.find(i => i.kind === kind && i.status === 'pending');
       const name = kind === 'questions' ? 'answerQuestions' : 'decideApproval';
       const input = { hostId, sessionId: sid, turnId: d.session.activeTurnId, interactionId: interaction.interactionId, requestId: `resolve-${kind}`, ...(kind === 'questions' ? { answers: [{ questionId: 'choice', answers: ['One'] }] } : { decision: 'deny' }) };
-      const receipt = await oc.request(name, input);
+      const receipt = await recoverOriginal(oc, name, input);
       assert.equal(receipt.status, 'delivered', JSON.stringify(receipt));
-      assert.equal((await oc.request(name, input)).commandId, receipt.commandId, 'callback response is not replayed');
+      assert.equal((await recoverOriginal(oc, name, input)).commandId, receipt.commandId, 'callback response is not replayed');
       await until(details, d => !d.session.activeTurnId, 'callback completion');
     }
     // Lose the entry HTTP response after target admission and native dispatch.
@@ -199,7 +210,7 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     await until(() => journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'"), rows => rows.length && JSON.parse(rows[0].receipt_json).status === 'delivered', 'target continues after entry disconnect');
     const original = JSON.parse(journal(b, "SELECT receipt_json FROM network_request_receipts WHERE request_id='lost-response'")[0].receipt_json);
     await crash(a); await start(a); oa = await operator(a, networkId);
-    assert.equal((await oa.request('createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
+    assert.equal((await recoverOriginal(oa, 'createSession', lostInput)).commandId, original.commandId, 'entry restart queries original target');
     const retryRoute = apiRequest('createSession', lostInput);
     const retry = await oa.raw(retryRoute.path, { method: 'POST', body: JSON.stringify(retryRoute.input) });
     assert.equal((await oa.raw(retry.location)).value.receipt.commandId, original.commandId);
@@ -223,7 +234,7 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     const question = pending.interactions.find(i => i.status === 'pending');
     await crash(b); await start(b); ob = await operator(b);
     assert.equal((await oa.raw(scopePath)).value.receipt.commandId, created.commandId);
-    const stale = await oa.request('answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
+    const stale = await recoverOriginal(oa, 'answerQuestions', { hostId, sessionId: sid, turnId: pending.session.activeTurnId, interactionId: question.interactionId, requestId: 'stale-callback', answers: [{ questionId: 'choice', answers: ['One'] }] });
     assert.equal(stale.error.code, 'STALE_INTERACTION');
     // Withdrawal revokes future access, leaves admitted work running, and permits another member to inspect it.
     await send(oa, 'WAIT', 'survives-removal', fromC.sessionId);
@@ -231,13 +242,15 @@ test('remote native operations retain scoped receipts, authority and recovery ov
     const running = await until(remoteDetails, d => !!d.session.activeTurnId, 'turn before removal');
     const oldMember = member(a);
     network(b, 'remove', oldMember);
-    await until(() => network(a, 'status'), s => s.localStatus === 'removed', 'caller exclusion');
-    await until(() => network(c, 'status').historyId, history => history === network(b, 'status').historyId, 'inspecting member reconciled');
+    // An excluded node learns withdrawal by pulling: the removing peer no longer
+    // dials it as a member. Allow the 30s+jitter revisit plus a bounded 30s attempt.
+    await until(() => network(a, 'status'), s => s.localStatus === 'removed', 'caller exclusion', 90000);
+    await until(() => network(c, 'status').historyId, history => history === network(b, 'status').historyId, 'inspecting member reconciled', 90000);
     assert.equal((await remoteDetails()).session.activeTurnId, running.session.activeTurnId);
     await assert.rejects(send(oa, 'denied', 'after-removal', fromC.sessionId), { code: 'FORBIDDEN' });
     const removedReceipt = scopePath.replace('shared-id', 'survives-removal');
     assert.equal((await oc.raw(removedReceipt)).value.receipt.requestId, 'survives-removal');
-    assert.equal((await oc.request('interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
+    assert.equal((await recoverOriginal(oc, 'interruptTurn', { hostId, sessionId: fromC.sessionId, turnId: running.session.activeTurnId, requestId: 'interrupt-after-removal' })).status, 'delivered');
     network(a, 'leave'); await admit(b, a);
     assert.notEqual(member(a), oldMember);
     // Admission can precede the next bounded handshake on a loaded runner. Every
