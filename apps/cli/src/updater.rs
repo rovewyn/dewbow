@@ -60,6 +60,10 @@ struct Lock {
 }
 fn normalize(path: &Path) -> anyhow::Result<PathBuf> {
     dewbow_sdk::private::no_links(path)?;
+    #[cfg(windows)]
+    if path.is_file() {
+        return normalize_file(path);
+    }
     let mut parent = path;
     let mut remaining = Vec::new();
     while !parent.try_exists()? {
@@ -78,6 +82,44 @@ fn normalize(path: &Path) -> anyhow::Result<PathBuf> {
         normalized.push(component);
     }
     Ok(normalized)
+}
+
+#[cfg(windows)]
+fn normalize_file(path: &Path) -> anyhow::Result<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            FILE_ATTRIBUTE_REPARSE_POINT, FindClose, FindFirstFileW, WIN32_FIND_DATAW,
+        },
+    };
+    let parent = fs::canonicalize(
+        path.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
+    let query = parent.join(path.file_name().context("File has no name")?);
+    let wide: Vec<u16> = query.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut found: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+    let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut found) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    unsafe {
+        FindClose(handle);
+    }
+    ensure!(
+        found.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+        "Reparse private paths are unsupported"
+    );
+    let length = found
+        .cFileName
+        .iter()
+        .position(|&c| c == 0)
+        .context("Invalid file name")?;
+    // Resolve the selected directory entry, not an open inode whose launch name
+    // may be replaced while GetFinalPathNameByHandle resolves another hard link.
+    Ok(parent.join(std::ffi::OsString::from_wide(&found.cFileName[..length])))
 }
 
 fn lock(path: &Path) -> anyhow::Result<Option<Lock>> {
@@ -139,10 +181,11 @@ fn write_atomic(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
 }
 fn root(executable: &Path) -> anyhow::Result<PathBuf> {
     dewbow_sdk::private::no_links(executable)?;
-    Ok(fs::canonicalize(executable)?
+    fs::metadata(executable)?;
+    let parent = executable
         .parent()
-        .context("Installation has no directory")?
-        .join(".dewbow-updater"))
+        .context("Installation has no directory")?;
+    Ok(fs::canonicalize(parent)?.join(".dewbow-updater"))
 }
 fn runner(job: &Path) -> PathBuf {
     job.join(if cfg!(windows) {
@@ -842,6 +885,50 @@ mod tests {
     use std::process::{Command, Stdio};
     const LIMIT: Duration = Duration::from_secs(30);
     const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    #[cfg(windows)]
+    #[test]
+    fn installation_paths_stay_stable_during_atomic_replacement() {
+        use std::sync::{Arc, Barrier};
+        let parent = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let directory = parent.join(format!("dewbow-path-race-test-{}", dewbow_protocol::id()));
+        fs::create_dir(&directory).unwrap();
+        let executable = directory.join("dewbow.exe");
+        fs::write(&executable, b"previous").unwrap();
+        assert_eq!(
+            normalize(&directory.join("DEWBOW.EXE")).unwrap(),
+            executable
+        );
+        let expected = directory.join(".dewbow-updater");
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_directory = directory.clone();
+        let writer_barrier = barrier.clone();
+        let writer = std::thread::spawn(move || {
+            writer_barrier.wait();
+            for index in 0..1000 {
+                let candidate = writer_directory.join("candidate");
+                fs::write(&candidate, b"next").unwrap();
+                replacement::replace(
+                    &writer_directory.join("dewbow.exe"),
+                    &candidate,
+                    &writer_directory.join(format!("previous-{index}")),
+                )
+                .unwrap();
+            }
+        });
+        barrier.wait();
+        let observed = (0..1000).try_for_each(|_| -> anyhow::Result<()> {
+            ensure!(
+                normalize(&executable)? == executable,
+                "Installation name changed"
+            );
+            ensure!(root(&executable)? == expected, "Upgrade directory changed");
+            Ok(())
+        });
+        writer.join().unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+        observed.unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
