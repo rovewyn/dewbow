@@ -280,6 +280,36 @@ async fn business_reads_bind_current_history_and_both_tls_generations() {
     drop(client);
     server.shutdown().await;
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn business_preparation_uses_matching_hello_but_not_a_stale_local_history() {
+    let (a, b, c) = common();
+    let server = c.listen().await;
+    let mut client = PeerClient::connect(b.repo(), &endpoint(&server), c.member(), true)
+        .await
+        .unwrap();
+    assert_eq!(client.hello().access, Access::Business);
+    assert_eq!(
+        client.hello().history.as_ref(),
+        Some(b.selected().history().snapshot())
+    );
+    // Closing the server makes any extra Peer RPC fail deterministically. The
+    // authenticated matching commitment already establishes this preparation.
+    server.shutdown().await;
+    client
+        .synchronize_for_business(b.repo(), Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+    // The local selection is checked again, rather than trusting an old hello
+    // forever. A changed history must take the synchronization path.
+    b.change(Change::Remove(a.member()));
+    assert!(
+        client
+            .synchronize_for_business(b.repo(), Instant::now() + Duration::from_secs(5))
+            .await
+            .is_err()
+    );
+}
+
 fn endpoint(runtime: &PeerRuntime) -> String {
     format!("https://{}", runtime.local_addr())
 }

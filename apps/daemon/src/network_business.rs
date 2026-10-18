@@ -208,19 +208,8 @@ impl Service {
             match connected {
                 Ok(mut peer) => {
                     let deadline = Instant::now() + Duration::from_secs(10);
-                    let current = repo
-                        .current_selection()?
-                        .ok_or_else(|| error("FORBIDDEN", "No active Network."))?;
                     if reconcile {
-                        let _: Value = peer
-                            .request(
-                                "notifyHistory",
-                                &NotifyHistory {
-                                    history: current.history().snapshot().clone(),
-                                },
-                            )
-                            .await?;
-                        peer.synchronize(repo, deadline).await?;
+                        peer.synchronize_for_business(repo, deadline).await?;
                     }
                     let current = repo
                         .current_selection()?
