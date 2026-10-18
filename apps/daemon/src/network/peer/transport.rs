@@ -197,6 +197,10 @@ impl PeerRuntime {
     ) -> Result<PeerClient> {
         PeerClient::connect_shared(repo, address, member, explicit_seed, Some(&self.shared)).await
     }
+    #[cfg(test)]
+    pub(super) fn task_abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.as_ref().unwrap().abort_handle()
+    }
     pub async fn shutdown(mut self) {
         self.shared.stop();
         let _ = self.stop.send(true);
