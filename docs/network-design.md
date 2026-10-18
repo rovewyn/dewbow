@@ -273,9 +273,9 @@ Restricted proof exchange never includes native content or secrets, but complete
 
 [Network protocol v1](network-protocol.md) fixes canonical record encodings, identifiers, whole-history validation, trust bootstrap, synchronization messages, departure signing, request scopes and operational defaults. `networkId` identifies genesis, `membershipId` identifies one admission, and `historyId` identifies an accepted set. There is no globally assigned immutable branch number.
 
-The implementation issues still deliver separate changes: identity/storage, membership rules, peer links/sync, CLI lifecycle, remote reads, execution, Web and acceptance. Implement the specified contracts in the existing ownership boundaries. Do not treat the design as a released interface, a database-version allocation or evidence of working networking.
+The implementation covers identity/storage, membership rules, Peer links/synchronization, CLI lifecycle, remote reads, execution, Web and synthetic acceptance within the existing ownership boundaries. The operational guides describe available interfaces; the acceptance guide distinguishes automated coverage from physical-machine and live native evidence. Implementation status does not establish a published release.
 
-Before enabling Network writes, the storage implementation must audit the supported tagged formats, select the ordered next format and implement the preserving migration/configuration extension. Before exposing operator operations, align interfaces.md and openapi.yaml with the actual routes. Select and audit library versions in those implementation PRs; the protocol's algorithms and bytes do not depend on a specific library. Release targets and publication require their separate workflow.
+Network writes use the validated management format and supported migration paths in [storage](storage.md). Future additions must review compatibility against supported tagged formats, keep interfaces.md and openapi.yaml aligned with actual routes, and audit library changes. The protocol's algorithms and bytes do not depend on a specific library. Release targets and publication require their separate workflow.
 
 ## Acceptance requirements
 
