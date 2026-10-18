@@ -349,10 +349,20 @@ async fn founder_offline_unknown_admission_and_revocation_use_real_tls() {
         .await;
     assert!(denied.is_err());
     assert!(d.selected().history().is_active(d.member())); // Local reachability is not membership knowledge.
-    drop(client);
-    let address = server.local_addr();
+    // Check the owned task and connection instead of reacquiring an ephemeral
+    // address that another parallel test may already have claimed.
+    let task = server.task_abort_handle();
+    assert!(!task.is_finished());
     server.shutdown().await;
-    assert!(tokio::net::TcpListener::bind(address).await.is_ok());
+    assert!(task.is_finished());
+    assert_eq!(
+        client
+            .request::<Value>("openHistory", &OpenHistory { frontier: None })
+            .await
+            .unwrap_err()
+            .code,
+        "UNAVAILABLE"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
