@@ -82,6 +82,35 @@ fn adopt_blocking(
 }
 
 impl PeerClient {
+    pub(crate) async fn synchronize_for_business(
+        &mut self,
+        repo: &Repository,
+        deadline: Instant,
+    ) -> Result<()> {
+        let selected = repo
+            .current_selection()
+            .map_err(unavailable)?
+            .ok_or_else(|| PeerError::new("FORBIDDEN"))?;
+        // The authenticated hello already commits to this verified history. Do
+        // not rebuild and exchange the same history before every mutation. Both
+        // endpoints still check the live business context at request admission.
+        if selected.status() == SelectionStatus::Active
+            && self.hello.access == Access::Business
+            && self.hello.history.as_ref() == Some(selected.history().snapshot())
+        {
+            return Ok(());
+        }
+        let _: Value = self
+            .request(
+                "notifyHistory",
+                &NotifyHistory {
+                    history: selected.history().snapshot().clone(),
+                },
+            )
+            .await?;
+        self.synchronize(repo, deadline).await
+    }
+
     /// Pull a fixed complete snapshot; callers run the reverse direction independently.
     pub async fn synchronize(&mut self, repo: &Repository, deadline: Instant) -> Result<()> {
         let shared = self.shared.clone();
