@@ -66,6 +66,10 @@ async function until(read, predicate, description, timeout = 90000) {
   }
   throw new Error(`Timed out: ${description}`);
 }
+async function withRequestContext(label, operation) {
+  try { return await operation(); }
+  catch (cause) { throw new Error(`Upgrade acceptance ${label} failed`, { cause }); }
+}
 async function freePort() {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -156,28 +160,30 @@ try {
     await cli('init', '--codex-executable', fixture, '--codex-home', home, '--port', String(await freePort()));
     const config = await readJson(join(state, 'config.json'));
     const origin = `http://127.0.0.1:${config.port}`;
-    const control = async (name, input) => {
-      const response = await fetch(`${origin}/internal/${name}`, { method: 'POST', signal: AbortSignal.timeout(10000),
+    const control = (operation, input) => withRequestContext(`${name} control ${operation}`, async () => {
+      const response = await fetch(`${origin}/internal/${operation}`, { method: 'POST', signal: AbortSignal.timeout(10000),
         headers: { Connection: 'close', Authorization: `Bearer ${config.controlToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(input ?? {}) });
       const data = await response.json();
       if (data.error) throw new Error(data.error.message);
       return data.result;
-    };
+    });
     const operator = async () => {
       const { ticket } = await control('ticket');
-      const login = await fetch(`${origin}/auth/login`, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
-      assert.equal(login.status, 200);
-      const cookie = login.headers.get('set-cookie').split(';')[0];
+      const cookie = await withRequestContext(`${name} operator login`, async () => {
+        const login = await fetch(`${origin}/auth/login`, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
+        assert.equal(login.status, 200);
+        return login.headers.get('set-cookie').split(';')[0];
+      });
       // Only the immutable synthetic predecessor uses the removed RPC transport.
       const legacy = !networkMode && (await control('status')).version === baselineVersion;
-      return async (name, input) => {
-        const route = legacy ? { path: `/api/${name}`, method: 'POST', input } : apiRequest(name, input);
+      return (operation, input) => withRequestContext(`${name} operator ${operation}`, async () => {
+        const route = legacy ? { path: `/api/${operation}`, method: 'POST', input } : apiRequest(operation, input);
         const response = await fetch(`${origin}${route.path}`, { method: route.method, signal: AbortSignal.timeout(10000),
           headers: { Connection: 'close', Origin: origin, Cookie: cookie, ...(route.input ? { 'Content-Type': 'application/json' } : {}) }, ...(route.input ? { body: JSON.stringify(route.input) } : {}) });
         const data = await response.json();
         if (data.error) throw new Error(data.error.message);
         return data.result;
-      };
+      });
     };
     const first = JSON.parse(await cli('daemon', 'start'));
     const request = { hostId: config.hostId, workDir: work, requestId: `create-${name}` };

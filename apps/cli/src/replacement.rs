@@ -132,7 +132,21 @@ mod tests {
             } else {
                 "dewbow"
             });
-            fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+            // Only the copying worker owns a writable handle. Parallel test
+            // forks in this parent must not inherit it and keep the text busy.
+            let mut copier = Command::new(std::env::current_exe().unwrap());
+            dewbow_daemon::config::hidden(&mut copier);
+            let copied = copier
+                .args(["--exact", "replacement::tests::replacement_worker"])
+                .env("DEWBOW_REPLACEMENT_COPY", &executable)
+                .output()
+                .unwrap();
+            assert!(
+                copied.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&copied.stdout),
+                String::from_utf8_lossy(&copied.stderr)
+            );
             let mut child = Command::new(&executable);
             dewbow_daemon::config::hidden(&mut child);
             let outcome = child
@@ -176,6 +190,10 @@ mod tests {
 
     #[test]
     fn replacement_worker() {
+        if let Some(destination) = std::env::var_os("DEWBOW_REPLACEMENT_COPY") {
+            fs::copy(std::env::current_exe().unwrap(), destination).unwrap();
+            return;
+        }
         let Ok(phase) = std::env::var("DEWBOW_REPLACEMENT_TEST") else {
             return;
         };
