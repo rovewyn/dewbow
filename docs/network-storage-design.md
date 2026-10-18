@@ -1,6 +1,6 @@
 # Network storage, keys and crash recovery
 
-Status: proposed implementation design, documentation only. This document refines the [Network design](network-design.md) and [Network protocol v1](network-protocol.md) for [issue #37](https://github.com/rovewyn/dewbow/issues/37). It does not create tables, generate keys, run migrations, allocate a storage version or expose Network operations. The current implementation and supported formats remain described by [management storage and compatibility](storage.md).
+Status: implemented storage contract. This document refines the [Network design](network-design.md) and [Network protocol v1](network-protocol.md) for protected keys, retained membership and request recovery. The [management storage guide](storage.md#network-storage-foundation) describes the current schema, executable DDL and startup validation. Supported upgrade sources, transition exceptions and rollback limits are recorded in the target release's notes; implementation does not by itself establish publication or runtime acceptance.
 
 ## Ownership and identity
 
@@ -17,11 +17,11 @@ Preserve `config.json` and its existing `hostId`, local control credential and n
     <anotherKeyId>.pk8
 ```
 
-The existing `records(kind, id, data)` table retains its released local operation identities and management semantics. Add the Network tables below to the same database through a future reviewed migration. Native conversations, credentials, history, tool output and completed native turn status remain owned by Codex. Neither private key files nor inactive upgrade backups are additional live databases.
+The existing `records(kind, id, data)` table retains its local operation identities and management semantics. The Network tables below share that database and are installed through its versioned schema initialization or supported migration. Native conversations, credentials, history, tool output and completed native turn status remain owned by Codex. Neither private key files nor inactive upgrade backups are additional live databases.
 
 ## Schema notation and constraints
 
-The following field lists specify the proposed logical layout, not executable migration DDL. `PK` means primary key, `FK` means a same-database foreign key and `?` means nullable. Fields are required unless marked nullable. SQL names use lowercase plural table names and snake_case columns; stored JSON uses camelCase.
+The following field lists specify the logical layout. The [executable DDL](../apps/daemon/src/network/schema.sql) defines the exact SQL structure and constraints. `PK` means primary key, `FK` means a same-database foreign key and `?` means nullable. Fields are required unless marked nullable. SQL names use lowercase plural table names and snake_case columns; stored JSON uses camelCase.
 
 - Store protocol digests, nonces, invitation IDs, attempt IDs, operation IDs and raw public keys as fixed 32-byte `BLOB` values. Check type and length. Decode canonical base64url at the protocol boundary; preserve protocol ordering by decoded bytes.
 - Keep existing `hostId` values as canonical UUID text. Local `selection_id`, `key_id` and conflict `witness_id` are new random UUID text. Request, command, session and turn IDs keep their existing contract representations without normalization or prefixes.
@@ -109,9 +109,9 @@ Target admission serializes current caller/target generation checks, native sess
 
 `receipt_json` is the existing delivery-outcome shape, not completed native execution history or a second content record. `recovery_refs_json` contains only minimum active/uncertain native associations and is cleared when resolved. The entry retains only result references/delivery information, not native output, callback bodies or a second target receipt authority.
 
-Retain Network outbound bindings and receipts indefinitely in this v1 storage proposal, exceeding the peer protocol's 24-hour minimum. Existing local receipts retain their separate policy: settled receipts become eligible for cleanup after at least 24 hours, while uncertain or active recovery remains protected. Network rows do not participate in that local cleanup. A later bounded Network cleanup policy requires a separate compatibility review and atomic cleanup of required routing/receipt relationships. A null receipt or inaccessible target is not proof of nonexecution.
+Retain Network outbound bindings and receipts indefinitely, exceeding the peer protocol's 24-hour minimum. Existing local receipts retain their separate policy: settled receipts become eligible for cleanup after at least 24 hours, while uncertain or active recovery remains protected. Network rows do not participate in that local cleanup. A later bounded Network cleanup policy requires a separate compatibility review and atomic cleanup of required routing/receipt relationships. A null receipt or inaccessible target is not proof of nonexecution.
 
-Index outstanding outbound work by `dispatch_state`; index target recovery by the retained internal command/session/turn associations. Integrating remote execution must update recovery code to respect the new scope without rewriting released local IDs or introducing a duplicate native action.
+Index outstanding outbound work by `dispatch_state`; index target recovery by the retained internal command/session/turn associations. Remote execution recovery must respect this scope without rewriting local IDs or introducing a duplicate native action.
 
 ## Contact candidates and conflict evidence
 
@@ -205,7 +205,7 @@ Record verification and membership selection share the serialized adoption bound
 
 ## Migration and rollback boundary
 
-Before implementation, audit supported published tags and the target release's [release notes](release-notes/README.md), then choose the next storage format and exact executable DDL/indexes. This document assigns neither a schema integer nor a product version and does not broaden the existing support window. Extending tables, durable JSON or recovery scope requires format review even if the local management API remains `v1`.
+The current schema and executable DDL are defined in [management storage and compatibility](storage.md). Before changing them, audit supported published tags and the target release's [release notes](release-notes/README.md). This contract does not broaden the support window or make a source format supported merely because a synthetic fixture can migrate. Extending tables, durable JSON or recovery scope requires format review even if the local management API remains `v1`.
 
 1. Acquire exclusive lifecycle ownership and verify that the previous daemon and its owned native runtime have stopped. Validate the full source format before write PRAGMAs or transformations; preserve malformed, unknown and future state without rewriting its version.
 2. Retain a private, consistent recoverable backup, including WAL-backed database state, configuration and any key files already required by a supported source. An inactive backup is not another runtime store.
@@ -218,9 +218,9 @@ Migration never rewrites native Codex storage or replays a callback/request. Cop
 
 ## Implementation boundaries and acceptance
 
-Issue #37 establishes protected key storage, the reviewed schema/migration and transaction-level persistence contracts. The membership engine in #38 supplies complete validated changes; #39 connects peer synchronization; #40 exposes lifecycle operations; #42 integrates remote request execution. These storage contracts do not make any unfinished peer or public operation available. Keep unimplemented admission paths closed.
+The storage implementation provides protected keys, versioned schema/migration and transaction-level persistence. The [membership engine](network-membership-engine.md) supplies complete validated changes; [Peer transport](network-peers.md) connects synchronization and lifecycle services; [remote execution](network-execution.md) uses scoped receipts and recovery. CLI and Web expose these services through their separate authority boundaries.
 
-Future implementation acceptance must cover:
+Required storage acceptance covers:
 
 - Supported tagged-format synthetic fixtures preserve host/session/native IDs, local receipt keys and fingerprints, frozen configuration and active/uncertain recovery associations; fresh-install tests alone are insufficient.
 - Invalid/future databases and key containers are rejected without mutation. Startup verifies selected-history closure, commitments, current/active uniqueness, invitation/result relationships, exact key bindings and full receipt scopes before admission.
@@ -233,4 +233,4 @@ Future implementation acceptance must cover:
 - Migration interruption, repeated startup, WAL-consistent backup and updater pre-commit recovery preserve supported state. Post-commit work prevents unsafe snapshot restoration.
 - No content archive, incomplete-record staging queue, durable callback body, second live database or global member-state authority is introduced.
 
-Documentation validation checks consistency, local links and whitespace only. No migration, key-permission, crash-injection or multi-node runtime acceptance is claimed by this design update.
+The [Network acceptance guide](network-acceptance.md) maps implemented synthetic checks and separate physical LAN/VPN and live native acceptance. Changes to this specification alone do not establish runtime acceptance; retain actual run evidence privately and report unverified cases explicitly.

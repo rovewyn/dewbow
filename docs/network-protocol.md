@@ -1,6 +1,6 @@
 # Network protocol v1
 
-Status: proposed specification, design only. This is the protocol companion to the [Network design](network-design.md) and the implementation baseline for issue #36. No networking code, endpoint, command, database format or release is delivered by this document. MUST and MUST NOT identify requirements of a future conforming implementation.
+Status: implemented protocol specification. This is the protocol companion to the [Network design](network-design.md), covering signed membership, authenticated Peer exchange and direct remote operations. MUST and MUST NOT identify implementation requirements. Use the [CLI](cli.md#network-membership), [Web](web.md#network-workflow) and [Peer transport](network-peers.md) guides for operation, [management storage](storage.md) for supported formats, and [Network acceptance](network-acceptance.md) for coverage and limits. Publication and compatibility transitions remain governed by the target release's notes.
 
 ## Model and guarantees
 

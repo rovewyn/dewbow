@@ -72,6 +72,14 @@ Automated changelog generation and release PR maintenance can be added later. Th
 
 [Release](../.github/workflows/release.yml) runs when a tag matches `[0-9]*.[0-9]*.[0-9]*` or when manually dispatched. This filter includes stable and prerelease tags without a prefix; the preparation job requires an exact match with the product version. Both default to building and uploading Actions artifacts only. A branch dispatch can exercise release preparation before tagging. No release is created unless a later manual dispatch selects `publish: true`.
 
+To validate a reviewed branch without publication, keep the agreed development version and its notes marked unreleased, then run:
+
+```sh
+gh workflow run release.yml --ref <reviewed-branch> -f publish=false
+```
+
+Check the resulting run's source commit and all native build jobs. This creates Actions artifacts only; it does not create a version tag, prerelease or GitHub Release.
+
 The workflow installs pinned Node/npm and Rust directly, without mise, uses `npm ci` and Cargo `--locked`, builds Web before Rust, runs typechecking and the Rust/npm checks, builds the optimized executable, and verifies the extracted archive's executable with `--version` and `--help`. All matrix jobs must succeed before the publication job can run.
 
 The distribution targets for future releases are:
@@ -87,7 +95,7 @@ The macOS archives are separate native builds, not universal binaries. Select `a
 
 These targets are explicit; CI operating-system coverage does not imply other architectures or older OS versions are supported. Linux uses GNU libc, not a musl static build. [Standalone installers and the explicit upgrade command](installation.md) consume these checked release archives. Binary signing, notarization, automatic background updates and package-registry publication are deferred.
 
-Each archive is named `dewbow-<version>-<target>.<extension>` and contains only `dewbow` (or `dewbow.exe`), `CLI.md` and `release.json`. The manifest records the product version, full source commit, target, executable SHA-256 and upgrade policy. The current policy in `scripts/package-release.mjs` declares contract `v1`, management state schema `1`, and `rollbackSafe: true`. Review this declaration against the preceding release during release preparation. Set `rollbackSafe: false` for changes requiring a state reset, incompatible native prerequisites, or unsafe restoration; the automated upgrader then refuses before maintenance and the release must provide manual instructions. Never label a breaking state change safe to bypass the refusal. A separate `<archive>.sha256` records the archive checksum. Actions keeps build artifacts for 14 days. Local state, Codex data, environment files and build logs are never package inputs.
+Each archive is named `dewbow-<version>-<target>.<extension>` and contains only `dewbow` (or `dewbow.exe`), `CLI.md` and `release.json`. The manifest records the product version, full source commit, target, executable SHA-256 and upgrade policy. `scripts/package-release.mjs` supplies the contract, storage schema and rollback declaration. Review these values against the [current storage format](storage.md#version-identifiers), supported source releases and the target release's notes during release preparation. Set `rollbackSafe: false` for changes requiring a state reset, incompatible native prerequisites, or unsafe restoration; the automated upgrader then refuses before maintenance and the release must provide manual instructions. Never label a breaking state change safe to bypass the refusal. A separate `<archive>.sha256` records the archive checksum. Actions keeps build artifacts for 14 days. Local state, Codex data, environment files and build logs are never package inputs.
 
 For a local Windows build and package check, use the same pinned Node/npm versions and Rust 1.99.0:
 
