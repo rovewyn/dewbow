@@ -40,10 +40,10 @@ The root Cargo workspace builds Rust. The private `@dewbow/workspace` npm worksp
 - [Network peer transport](network-peers.md) describes authenticated connections, membership reconciliation, configuration and CLI lifecycle recovery.
 - [Remote Network execution](network-execution.md) describes direct typed operations, scoped receipts, authority and conservative recovery.
 
-## Design proposals
+## Network design and contracts
 
 - [Decentralized Network design](network-design.md) defines membership, automatic merges, forks and offline return behavior.
 - [Network protocol v1](network-protocol.md) specifies signed records, validation, peer exchange, departure delivery and request admission.
-- [Network storage, keys and crash recovery](network-storage-design.md) proposes local tables, protected keys, transaction boundaries and interrupted-state recovery for issue #37.
+- [Network storage, keys and crash recovery](network-storage-design.md) defines implemented local tables, protected keys, transaction boundaries and interrupted-state recovery.
 
-These documents remain the design baseline. Membership validation, storage, authenticated Peer synchronization and CLI lifecycle are implemented; remote native reads and subscriptions are implemented. Remote native mutations and scoped receipt recovery are also implemented. Network Web management and remote conversations are implemented.
+These documents specify the implemented first-scope Network. Use the operational guides for CLI/Web workflows and [Network acceptance](network-acceptance.md) for validation coverage and limits. Check the target release's notes for publication status and supported transitions.
